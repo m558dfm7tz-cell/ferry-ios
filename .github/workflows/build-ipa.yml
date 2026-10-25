@@ -1,0 +1,61 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode with iOS 18 SDK
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          else
+            echo "Xcode_16.4 not found. Available Xcodes:"
+            ls -1 /Applications | grep -i xcode || true
+            echo "Current developer dir:"
+            xcode-select -p
+          fi
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Ferry.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/Ferry.xcarchive/Products/Applications/Ferry.app build/Payload/Ferry.app
+          cd build
+          zip -r -y Ferry-unsigned.ipa Payload
+          cd ..
+          ls -lh build/Ferry-unsigned.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ferry-unsigned-ipa
+          path: build/Ferry-unsigned.ipa
+          if-no-files-found: error
