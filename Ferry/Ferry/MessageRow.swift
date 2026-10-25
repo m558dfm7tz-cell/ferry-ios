@@ -5,19 +5,27 @@ import UniformTypeIdentifiers
 struct MessageRow: View {
     let message: MessagePayload
     let image: UIImage??
+    let videoThumbnail: UIImage??
     let loadImage: () async -> Void
+    let loadVideoThumbnail: () async -> Void
     let loadFile: () async -> Data?
     let isCurrent: Bool
+    let isFavorite: Bool
+    let onToggleFavorite: () async -> Void
+    let selectionMode: Bool
+    let isSelected: Bool
+    let onToggleSelection: () -> Void
 
     @State private var copied = false
-    @State private var viewing = false
     @State private var exporting = false
     @State private var exportDocument: ExportedFile?
     @State private var shareItem: ShareItem?
+    @State private var previewItem: MessagePreview?
     @State private var showToast = false
     @State private var toastText = ""
 
     private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
+    private var isVideo: Bool { message.file?.mediaType.hasPrefix("video/") == true }
     private var isImageOrVideo: Bool {
         let mime = message.file?.mediaType ?? ""
         return mime.hasPrefix("image/") || mime.hasPrefix("video/")
@@ -34,14 +42,17 @@ struct MessageRow: View {
     }
 
     var body: some View {
-        VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
-            metaRow
-            content
-            if isImage, message.file != nil, imageLoaded {
-                mediaActionRow
+        HStack(alignment: .center, spacing: 12) {
+            if selectionMode { selectionIndicator }
+            VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
+                metaRow
+                content
+                if isImage, message.file != nil, imageLoaded {
+                    mediaActionRow
+                }
             }
+            .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
         }
-        .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
         .overlay { if showToast { toastView } }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
                       defaultFilename: message.file?.name ?? "文件") { result in
@@ -49,12 +60,42 @@ struct MessageRow: View {
             if case .success = result { flashToast("已保存") }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
-        .fullScreenCover(isPresented: $viewing) {
-            if case .some(.some(let decoded)) = image {
-                ImageViewer(image: decoded, name: message.file?.name ?? "图片",
-                            mediaType: message.file?.mediaType ?? "image/jpeg", load: loadFile)
+        .fullScreenCover(item: $previewItem) { preview in previewView(for: preview) }
+    }
+
+    @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
+        switch preview.kind {
+        case .image:
+            if let image = preview.image {
+                ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType, load: loadFile)
+            }
+        case .video:
+            if let url = preview.url {
+                VideoPlayerView(url: url, name: preview.name, mediaType: preview.mediaType)
+            }
+        case .audio:
+            if let url = preview.url {
+                AudioPlayerView(url: url, name: preview.name, mediaType: preview.mediaType)
+            }
+        case .document:
+            if let url = preview.url {
+                DocumentPreviewView(url: url)
+            }
+        case .text:
+            if let text = preview.text {
+                TextFileView(text: text, name: preview.name)
             }
         }
+    }
+
+    private var selectionIndicator: some View {
+        Button { onToggleSelection() } label: {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.title3)
+                .foregroundStyle(isSelected ? Color.accentColor : Color(.systemGray))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSelected ? "取消选择" : "选择")
     }
 
     private var metaRow: some View {
@@ -102,6 +143,8 @@ struct MessageRow: View {
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .foregroundStyle(isCurrent ? .white : .primary)
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .contextMenu { textMenu }
         } else if isImage, let file = message.file {
             switch image {
             case .some(.some(let decoded)):
@@ -110,22 +153,58 @@ struct MessageRow: View {
                     .frame(maxWidth: 240, maxHeight: 320)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .onTapGesture { viewing = true }
+                    .onTapGesture {
+                        if !selectionMode {
+                            previewItem = MessagePreview(kind: .image, name: file.name,
+                                                         mediaType: file.mediaType, image: decoded)
+                        }
+                    }
                     .contextMenu { mediaMenu }
             case .some(.none):
-                FileCard(file: file, isCurrent: isCurrent,
+                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
                          onSave: { Task { await save() } },
-                         onShare: { Task { await share() } })
+                         onShare: { Task { await share() } },
+                         onFavorite: { Task { await onToggleFavorite() } })
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
                     .overlay { ProgressView() }
                     .task { await loadImage() }
             }
+        } else if isVideo, let file = message.file {
+            switch videoThumbnail {
+            case .some(.some(let thumbnail)):
+                ZStack {
+                    Image(uiImage: thumbnail)
+                        .resizable().scaledToFill()
+                        .frame(width: 220, height: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(radius: 4)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
+                .contextMenu { mediaMenu }
+            case .some(.none):
+                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
+                         onSave: { Task { await save() } },
+                         onShare: { Task { await share() } },
+                         onFavorite: { Task { await onToggleFavorite() } })
+                    .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
+            case .none:
+                RoundedRectangle(cornerRadius: 18).fill(.quaternary)
+                    .frame(width: 220, height: 150)
+                    .overlay { ProgressView() }
+                    .task { await loadVideoThumbnail() }
+            }
         } else if let file = message.file {
-            FileCard(file: file, isCurrent: isCurrent,
+            FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
                      onSave: { Task { await save() } },
-                     onShare: { Task { await share() } })
+                     onShare: { Task { await share() } },
+                     onFavorite: { Task { await onToggleFavorite() } })
+                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
         }
     }
 
@@ -141,6 +220,18 @@ struct MessageRow: View {
     @ViewBuilder private var mediaMenu: some View {
         Button { Task { await save() } } label: { Label("保存", systemImage: "square.and.arrow.down") }
         Button { Task { await share() } } label: { Label("分享", systemImage: "square.and.arrow.up") }
+        favoriteButton
+    }
+
+    @ViewBuilder private var textMenu: some View {
+        Button { Task { await copyText() } } label: { Label("复制", systemImage: "doc.on.doc") }
+        favoriteButton
+    }
+
+    @ViewBuilder private var favoriteButton: some View {
+        Button { Task { await onToggleFavorite() } } label: {
+            Label(isFavorite ? "取消收藏" : "收藏", systemImage: isFavorite ? "star.fill" : "star")
+        }
     }
 
     private var toastView: some View {
@@ -151,6 +242,26 @@ struct MessageRow: View {
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(Color.black.opacity(0.8), in: Capsule())
         .transition(.opacity)
+    }
+
+    private func openFilePreview() async {
+        guard let file = message.file else { return }
+        let mediaType = file.mediaType
+        guard let data = await loadFile() else { return }
+
+        if PreviewRouter.isVideo(mediaType) {
+            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            previewItem = MessagePreview(kind: .video, name: file.name, mediaType: mediaType, url: url)
+        } else if PreviewRouter.isAudio(mediaType) {
+            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            previewItem = MessagePreview(kind: .audio, name: file.name, mediaType: mediaType, url: url)
+        } else if PreviewRouter.isPlainText(file) {
+            let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) ?? "无法解码文本。"
+            previewItem = MessagePreview(kind: .text, name: file.name, mediaType: mediaType, text: text)
+        } else {
+            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            previewItem = MessagePreview(kind: .document, name: file.name, mediaType: mediaType, url: url)
+        }
     }
 
     private func save() async {
@@ -196,8 +307,10 @@ struct MessageRow: View {
 private struct FileCard: View {
     let file: FileInfo
     let isCurrent: Bool
+    let isFavorite: Bool
     let onSave: () -> Void
     let onShare: () -> Void
+    let onFavorite: () -> Void
 
     private var isVideo: Bool { file.mediaType.hasPrefix("video/") }
 
@@ -236,6 +349,9 @@ private struct FileCard: View {
                 Label(isVideo ? "保存" : "保存到文件", systemImage: isVideo ? "square.and.arrow.down" : "folder")
             }
             Button(action: onShare) { Label("分享", systemImage: "square.and.arrow.up") }
+            Button(action: onFavorite) {
+                Label(isFavorite ? "取消收藏" : "收藏", systemImage: isFavorite ? "star.fill" : "star")
+            }
         }
     }
 }

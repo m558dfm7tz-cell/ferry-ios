@@ -20,8 +20,10 @@ final class AppModel {
     private(set) var discovered: [DiscoveredServer] = []
     private(set) var discoveryMessage: String?
     private(set) var images: [String: UIImage?] = [:]
+    private(set) var videoThumbnails: [String: UIImage?] = [:]
 
     let uploader = Uploader()
+    let localStore: LocalDataStore
 
     private let client: any FerryServicing
     private let credentials: CredentialStoring
@@ -31,6 +33,7 @@ final class AppModel {
     private var cursor: Int64 = 0
     private var generation = UUID()
     private var loadingImages: Set<String> = []
+    private var loadingThumbnails: Set<String> = []
     private var pollTask: Task<Void, Never>?
     private var isActive = true
     private static let serverKey = "ferry.server.origin"
@@ -42,6 +45,7 @@ final class AppModel {
         self.defaults = defaults
         serverAddress = defaults.string(forKey: Self.serverKey) ?? ""
         deviceName = UIDevice.current.name
+        localStore = LocalDataStore(defaults: defaults)
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
     }
@@ -222,6 +226,51 @@ final class AppModel {
         }
     }
 
+    func loadVideoThumbnail(for message: MessagePayload) async {
+        guard let file = message.file, file.mediaType.hasPrefix("video/") else { return }
+        guard videoThumbnails[message.id] == nil, !loadingThumbnails.contains(message.id) else { return }
+        if let cached = VideoThumbnailCache.cachedThumbnail(for: message.id) {
+            videoThumbnails[message.id] = cached
+            return
+        }
+        guard let endpoint, let token else { return }
+        let current = generation
+        loadingThumbnails.insert(message.id)
+        defer { loadingThumbnails.remove(message.id) }
+        do {
+            let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
+            guard current == generation else { return }
+            let ext = PreviewRouter.fileExtension(name: file.name, mediaType: file.mediaType)
+            let thumbnail = await VideoThumbnailCache.generate(from: data, id: message.id, fileExtension: ext)
+            guard current == generation else { return }
+            videoThumbnails[message.id] = thumbnail
+        } catch {
+            guard current == generation else { return }
+            videoThumbnails[message.id] = UIImage?.none
+        }
+    }
+
+    func deleteSelected(_ ids: Set<String>) {
+        localStore.hide(ids)
+        messages.removeAll { ids.contains($0.id) }
+    }
+
+    func clearAllMessages() {
+        let maxSequence = messages.map(\.sequence).max() ?? 0
+        localStore.clearAll(upTo: maxSequence)
+        messages.removeAll()
+    }
+
+    func toggleFavorite(_ message: MessagePayload) async {
+        if localStore.isFavorite(message.id) {
+            localStore.removeFavorite(message.id)
+        } else {
+            var data: Data?
+            if message.file != nil { data = await fileData(for: message) }
+            localStore.addFavorite(message, fileData: data)
+        }
+    }
+
     func fileData(for message: MessagePayload) async -> Data? {
         guard let file = message.file, let endpoint, let token else { return nil }
         let current = generation
@@ -249,7 +298,9 @@ final class AppModel {
         currentDevice = nil
         messages = []
         images = [:]
+        videoThumbnails = [:]
         loadingImages = []
+        loadingThumbnails = []
         cursor = 0
         draft = ""
         isSending = false
@@ -305,6 +356,7 @@ final class AppModel {
     }
 
     private func append(_ message: MessagePayload) {
+        guard !localStore.isHidden(message) else { return }
         guard !messages.contains(where: { $0.id == message.id }) else { return }
         messages.append(message)
         messages.sort { $0.sequence < $1.sequence }
