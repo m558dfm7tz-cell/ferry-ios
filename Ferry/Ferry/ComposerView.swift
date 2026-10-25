@@ -210,13 +210,19 @@ struct ComposerView: View {
             Task { await model.send() }
         } label: {
             Image(systemName: "arrow.up")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.black)
                 .frame(width: barButtonSize, height: barButtonSize)
-                .foregroundStyle(.white)
+                .background(sendButtonFill, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!model.canSend)
         .accessibilityLabel("发送")
+    }
+
+    /// Web-style send button: filled near-white circle with a dark up arrow.
+    private var sendButtonFill: Color {
+        Color(red: 0.93, green: 0.94, blue: 0.96)
     }
 
     private func openCamera() {

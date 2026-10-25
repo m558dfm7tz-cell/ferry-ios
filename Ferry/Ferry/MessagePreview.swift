@@ -31,8 +31,20 @@ struct MessagePreview: Identifiable {
 /// favorites list so both route message files to the same previews.
 enum PreviewRouter {
     static func isImage(_ mediaType: String) -> Bool { mediaType.hasPrefix("image/") }
-    static func isVideo(_ mediaType: String) -> Bool { mediaType.hasPrefix("video/") }
     static func isAudio(_ mediaType: String) -> Bool { mediaType.hasPrefix("audio/") }
+
+    /// Video detection accepts `video/*` mime OR a mp4/mov/m4v extension
+    /// (case-insensitive), so videos uploaded as `application/octet-stream`
+    /// still render as videos, not file cards.
+    static func isVideo(_ mediaType: String, name: String = "") -> Bool {
+        if mediaType.hasPrefix("video/") { return true }
+        let ext = (name as NSString).pathExtension.lowercased()
+        return ["mp4", "mov", "m4v"].contains(ext)
+    }
+
+    static func isVideo(_ file: FileInfo) -> Bool {
+        isVideo(file.mediaType, name: file.name)
+    }
 
     /// Plain text files get a native SwiftUI text viewer; everything else
     /// non-media falls through to QuickLook.

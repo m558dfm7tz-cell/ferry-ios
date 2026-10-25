@@ -98,7 +98,7 @@ struct FavoritesView: View {
             guard let image = UIImage(data: data) else { return nil }
             let localURL = favorite.localFileName.map { model.localStore.favoriteFileURL(for: $0) }
             return MessagePreview(kind: .image, name: file.name, mediaType: mediaType, url: localURL, image: image)
-        } else if PreviewRouter.isVideo(mediaType) {
+        } else if PreviewRouter.isVideo(mediaType, name: file.name) {
             guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return nil }
             return MessagePreview(kind: .video, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isAudio(mediaType) {
@@ -163,7 +163,7 @@ private struct FavoriteRow: View {
     }
 
     @ViewBuilder private var iconForType: some View {
-        if PreviewRouter.isVideo(mediaType) {
+        if PreviewRouter.isVideo(mediaType, name: message.file?.name ?? "") {
             Image(systemName: "play.circle.fill").font(.title).foregroundStyle(.white)
         } else if PreviewRouter.isAudio(mediaType) {
             Image(systemName: "waveform").font(.title2).foregroundStyle(.secondary)

@@ -45,6 +45,7 @@ struct TimelineView: View {
                                 MessageRow(message: message,
                                            image: model.images[message.id],
                                            videoThumbnail: model.videoThumbnails[message.id],
+                                           videoDuration: model.videoDurations[message.id] ?? 0,
                                            loadImage: { await model.loadImage(for: message) },
                                            loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
                                            loadFile: { await model.fileData(for: message) },

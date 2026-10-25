@@ -21,6 +21,7 @@ final class AppModel {
     private(set) var discoveryMessage: String?
     private(set) var images: [String: UIImage?] = [:]
     private(set) var videoThumbnails: [String: UIImage?] = [:]
+    private(set) var videoDurations: [String: Double] = [:]
 
     let uploader = Uploader()
     let localStore: LocalDataStore
@@ -227,10 +228,11 @@ final class AppModel {
     }
 
     func loadVideoThumbnail(for message: MessagePayload) async {
-        guard let file = message.file, file.mediaType.hasPrefix("video/") else { return }
+        guard let file = message.file, PreviewRouter.isVideo(file) else { return }
         guard videoThumbnails[message.id] == nil, !loadingThumbnails.contains(message.id) else { return }
         if let cached = VideoThumbnailCache.cachedThumbnail(for: message.id) {
             videoThumbnails[message.id] = cached
+            videoDurations[message.id] = VideoThumbnailCache.cachedDuration(for: message.id)
             return
         }
         guard let endpoint, let token else { return }
@@ -241,9 +243,10 @@ final class AppModel {
             let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
             guard current == generation else { return }
             let ext = PreviewRouter.fileExtension(name: file.name, mediaType: file.mediaType)
-            let thumbnail = await VideoThumbnailCache.generate(from: data, id: message.id, fileExtension: ext)
+            let poster = await VideoThumbnailCache.generate(from: data, id: message.id, fileExtension: ext)
             guard current == generation else { return }
-            videoThumbnails[message.id] = thumbnail
+            videoThumbnails[message.id] = poster.image
+            videoDurations[message.id] = poster.duration
         } catch {
             guard current == generation else { return }
             videoThumbnails[message.id] = UIImage?.none
@@ -299,6 +302,7 @@ final class AppModel {
         messages = []
         images = [:]
         videoThumbnails = [:]
+        videoDurations = [:]
         loadingImages = []
         loadingThumbnails = []
         cursor = 0

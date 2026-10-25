@@ -6,6 +6,7 @@ struct MessageRow: View {
     let message: MessagePayload
     let image: UIImage??
     let videoThumbnail: UIImage??
+    let videoDuration: Double
     let loadImage: () async -> Void
     let loadVideoThumbnail: () async -> Void
     let loadFile: () async -> Data?
@@ -17,6 +18,7 @@ struct MessageRow: View {
     let onToggleSelection: () -> Void
 
     @State private var copied = false
+    @State private var saved = false
     @State private var exporting = false
     @State private var exportDocument: ExportedFile?
     @State private var shareItem: ShareItem?
@@ -25,10 +27,15 @@ struct MessageRow: View {
     @State private var toastText = ""
 
     private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
-    private var isVideo: Bool { message.file?.mediaType.hasPrefix("video/") == true }
+    private var isVideo: Bool {
+        guard let file = message.file else { return false }
+        return PreviewRouter.isVideo(file)
+    }
     private var isImageOrVideo: Bool {
-        let mime = message.file?.mediaType ?? ""
-        return mime.hasPrefix("image/") || mime.hasPrefix("video/")
+        let file = message.file
+        let mime = file?.mediaType ?? ""
+        let name = file?.name ?? ""
+        return PreviewRouter.isImage(mime) || PreviewRouter.isVideo(mime, name: name)
     }
     private var imageLoaded: Bool {
         if case .some(.some(_)) = image { return true }
@@ -57,7 +64,10 @@ struct MessageRow: View {
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
                       defaultFilename: message.file?.name ?? "文件") { result in
             exportDocument = nil
-            if case .success = result { flashToast("已保存") }
+            if case .success = result {
+                flashToast("已保存")
+                flashSaved()
+            }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
         .fullScreenCover(item: $previewItem) { preview in previewView(for: preview) }
@@ -153,15 +163,15 @@ struct MessageRow: View {
                     .frame(maxWidth: 240, maxHeight: 320)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .contextMenu { mediaMenu }
                     .onTapGesture {
                         if !selectionMode {
                             previewItem = MessagePreview(kind: .image, name: file.name,
                                                          mediaType: file.mediaType, image: decoded)
                         }
                     }
-                    .contextMenu { mediaMenu }
             case .some(.none):
-                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
+                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
                          onSave: { Task { await save() } },
                          onShare: { Task { await share() } },
                          onFavorite: { Task { await onToggleFavorite() } })
@@ -184,11 +194,22 @@ struct MessageRow: View {
                         .foregroundStyle(.white.opacity(0.9))
                         .shadow(radius: 4)
                 }
+                .overlay(alignment: .bottomTrailing) {
+                    if videoDuration > 0 {
+                        Text(TimeText.mmss(videoDuration))
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.black.opacity(0.6),
+                                        in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .padding(6)
+                    }
+                }
                 .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
                 .contextMenu { mediaMenu }
+                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
             case .some(.none):
-                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
+                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
                          onSave: { Task { await save() } },
                          onShare: { Task { await share() } },
                          onFavorite: { Task { await onToggleFavorite() } })
@@ -200,7 +221,7 @@ struct MessageRow: View {
                     .task { await loadVideoThumbnail() }
             }
         } else if let file = message.file {
-            FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite,
+            FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
                      onSave: { Task { await save() } },
                      onShare: { Task { await share() } },
                      onFavorite: { Task { await onToggleFavorite() } })
@@ -210,11 +231,13 @@ struct MessageRow: View {
 
     private var mediaActionRow: some View {
         HStack(spacing: 10) {
-            RoundActionButton(systemName: "square.and.arrow.down", label: "保存",
+            RoundActionButton(systemName: saved ? "checkmark" : "square.and.arrow.down", label: "保存",
+                              tint: saved ? .green : .primary,
                               background: Color(.systemFill)) { Task { await save() } }
             RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
                               background: Color(.systemFill)) { Task { await share() } }
         }
+        .animation(.easeInOut(duration: 0.15), value: saved)
     }
 
     @ViewBuilder private var mediaMenu: some View {
@@ -249,7 +272,7 @@ struct MessageRow: View {
         let mediaType = file.mediaType
         guard let data = await loadFile() else { return }
 
-        if PreviewRouter.isVideo(mediaType) {
+        if PreviewRouter.isVideo(mediaType, name: file.name) {
             guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
             previewItem = MessagePreview(kind: .video, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isAudio(mediaType) {
@@ -268,8 +291,13 @@ struct MessageRow: View {
         guard let data = await loadFile() else { return }
         if isImageOrVideo {
             do {
-                try await PhotoSaver.save(data, mediaType: message.file?.mediaType ?? "image/jpeg")
+                try await PhotoSaver.save(data, mediaType: message.file?.mediaType ?? "image/jpeg",
+                                          name: message.file?.name ?? "文件")
                 flashToast("已保存到相册")
+                flashSaved()
+            } catch PhotoSaver.SaveError.incompatible {
+                exportDocument = ExportedFile(data: data)
+                exporting = true
             } catch {
                 flashToast("保存失败")
             }
@@ -302,17 +330,26 @@ struct MessageRow: View {
             withAnimation(.easeOut(duration: 0.15)) { showToast = false }
         }
     }
+
+    private func flashSaved() {
+        saved = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            saved = false
+        }
+    }
 }
 
 private struct FileCard: View {
     let file: FileInfo
     let isCurrent: Bool
     let isFavorite: Bool
+    let saved: Bool
     let onSave: () -> Void
     let onShare: () -> Void
     let onFavorite: () -> Void
 
-    private var isVideo: Bool { file.mediaType.hasPrefix("video/") }
+    private var isVideo: Bool { PreviewRouter.isVideo(file) }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -329,9 +366,9 @@ private struct FileCard: View {
             }
             Spacer(minLength: 12)
             HStack(spacing: 8) {
-                RoundActionButton(systemName: isVideo ? "square.and.arrow.down" : "folder",
+                RoundActionButton(systemName: saved ? "checkmark" : (isVideo ? "square.and.arrow.down" : "folder"),
                                   label: isVideo ? "保存" : "保存到文件",
-                                  tint: isCurrent ? .white : .primary,
+                                  tint: saved ? .green : (isCurrent ? .white : .primary),
                                   background: isCurrent ? .white.opacity(0.2) : Color(.systemFill),
                                   action: onSave)
                 RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
@@ -339,6 +376,7 @@ private struct FileCard: View {
                                   background: isCurrent ? .white.opacity(0.2) : Color(.systemFill),
                                   action: onShare)
             }
+            .animation(.easeInOut(duration: 0.15), value: saved)
         }
         .padding(14)
         .background(isCurrent ? Color.accentColor : .incomingBubble,

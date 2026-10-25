@@ -15,12 +15,13 @@ struct AttachmentActions: View {
     var onToast: ((String) -> Void)? = nil
 
     @State private var busy = false
+    @State private var saved = false
     @State private var exporting = false
     @State private var document: ExportedFile?
     @State private var shareItem: ShareItem?
 
     private var isImageOrVideo: Bool {
-        mediaType.hasPrefix("image/") || mediaType.hasPrefix("video/")
+        PreviewRouter.isImage(mediaType) || PreviewRouter.isVideo(mediaType, name: name)
     }
 
     private var contentType: UTType {
@@ -28,12 +29,14 @@ struct AttachmentActions: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             Button { Task { await save() } } label: {
-                icon(isImageOrVideo ? "square.and.arrow.down" : "folder")
+                icon(saved ? "checkmark" : (isImageOrVideo ? "square.and.arrow.down" : "folder"),
+                     tint: saved ? Color.green : nil)
             }
             .disabled(busy)
             .accessibilityLabel(isImageOrVideo ? "保存" : "保存到文件")
+            .animation(.easeInOut(duration: 0.15), value: saved)
 
             Button { Task { await share() } } label: {
                 icon("square.and.arrow.up")
@@ -43,17 +46,22 @@ struct AttachmentActions: View {
         }
         .fileExporter(isPresented: $exporting, document: document, contentType: contentType, defaultFilename: name) { result in
             document = nil
-            if case .success = result { onToast?("已保存") }
+            if case .success = result {
+                onToast?("已保存")
+                flashSaved()
+            }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
     }
 
-    private func icon(_ systemName: String) -> some View {
+    /// Large (52pt) round action buttons with a 22pt icon, matching the
+    /// enlarged preview chrome from T3.1 (>=44pt hit area).
+    private func icon(_ systemName: String, tint iconTint: Color? = nil) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 16, weight: .medium))
-            .frame(width: 36, height: 36)
+            .font(.system(size: 22, weight: .medium))
+            .frame(width: 52, height: 52)
             .background(Color.white.opacity(0.15), in: Circle())
-            .foregroundStyle(tint)
+            .foregroundStyle(iconTint ?? tint)
     }
 
     private func save() async {
@@ -62,14 +70,26 @@ struct AttachmentActions: View {
         guard let data = await load() else { return }
         if isImageOrVideo {
             do {
-                try await PhotoSaver.save(data, mediaType: mediaType)
+                try await PhotoSaver.save(data, mediaType: mediaType, name: name)
                 onToast?("已保存到相册")
+                flashSaved()
+            } catch PhotoSaver.SaveError.incompatible {
+                document = ExportedFile(data: data)
+                exporting = true
             } catch {
                 onToast?("保存失败")
             }
         } else {
             document = ExportedFile(data: data)
             exporting = true
+        }
+    }
+
+    private func flashSaved() {
+        saved = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            saved = false
         }
     }
 
