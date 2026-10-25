@@ -11,7 +11,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("发送原始视频（不转码）", isOn: $sendOriginalVideo)
+                    Toggle("发送视频时不转换格式", isOn: $sendOriginalVideo)
                     Text("关闭时，从相册或相机发送的视频会默认转码为 MP4（H.264/AAC），兼容性更好。")
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: {
