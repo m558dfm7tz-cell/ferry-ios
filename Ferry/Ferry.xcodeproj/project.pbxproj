@@ -8,15 +8,34 @@
 
 /* Begin PBXBuildFile section */
 		1A0000000000000000000009 /* FerryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000006 /* FerryApp.swift */; };
-		1A000000000000000000000A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000007 /* ContentView.swift */; };
 		1A000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000008 /* Assets.xcassets */; };
+		1A0000000000000000000021 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000016 /* Models.swift */; };
+		1A0000000000000000000022 /* ServerEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000017 /* ServerEndpoint.swift */; };
+		1A0000000000000000000023 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000018 /* CredentialStore.swift */; };
+		1A0000000000000000000024 /* FerryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000019 /* FerryClient.swift */; };
+		1A0000000000000000000025 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001A /* AppModel.swift */; };
+		1A0000000000000000000026 /* LANDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001B /* LANDiscovery.swift */; };
+		1A0000000000000000000027 /* PhotoSaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001C /* PhotoSaver.swift */; };
+		1A0000000000000000000028 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001D /* RootView.swift */; };
+		1A0000000000000000000029 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001E /* TimelineView.swift */; };
+		1A000000000000000000002A /* MessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001F /* MessageRow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1A0000000000000000000005 /* Ferry.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ferry.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000006 /* FerryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryApp.swift; sourceTree = "<group>"; };
-		1A0000000000000000000007 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1A0000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1A0000000000000000000016 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		1A0000000000000000000017 /* ServerEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerEndpoint.swift; sourceTree = "<group>"; };
+		1A0000000000000000000018 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		1A0000000000000000000019 /* FerryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryClient.swift; sourceTree = "<group>"; };
+		1A000000000000000000001A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		1A000000000000000000001B /* LANDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LANDiscovery.swift; sourceTree = "<group>"; };
+		1A000000000000000000001C /* PhotoSaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSaver.swift; sourceTree = "<group>"; };
+		1A000000000000000000001D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		1A000000000000000000001E /* TimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineView.swift; sourceTree = "<group>"; };
+		1A000000000000000000001F /* MessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRow.swift; sourceTree = "<group>"; };
+		1A0000000000000000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -50,8 +69,18 @@
 			isa = PBXGroup;
 			children = (
 				1A0000000000000000000006 /* FerryApp.swift */,
-				1A0000000000000000000007 /* ContentView.swift */,
+				1A0000000000000000000016 /* Models.swift */,
+				1A0000000000000000000017 /* ServerEndpoint.swift */,
+				1A0000000000000000000018 /* CredentialStore.swift */,
+				1A0000000000000000000019 /* FerryClient.swift */,
+				1A000000000000000000001A /* AppModel.swift */,
+				1A000000000000000000001B /* LANDiscovery.swift */,
+				1A000000000000000000001C /* PhotoSaver.swift */,
+				1A000000000000000000001D /* RootView.swift */,
+				1A000000000000000000001E /* TimelineView.swift */,
+				1A000000000000000000001F /* MessageRow.swift */,
 				1A0000000000000000000008 /* Assets.xcassets */,
+				1A0000000000000000000020 /* Info.plist */,
 			);
 			path = Ferry;
 			sourceTree = "<group>";
@@ -126,7 +155,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0000000000000000000009 /* FerryApp.swift in Sources */,
-				1A000000000000000000000A /* ContentView.swift in Sources */,
+				1A0000000000000000000021 /* Models.swift in Sources */,
+				1A0000000000000000000022 /* ServerEndpoint.swift in Sources */,
+				1A0000000000000000000023 /* CredentialStore.swift in Sources */,
+				1A0000000000000000000024 /* FerryClient.swift in Sources */,
+				1A0000000000000000000025 /* AppModel.swift in Sources */,
+				1A0000000000000000000026 /* LANDiscovery.swift in Sources */,
+				1A0000000000000000000027 /* PhotoSaver.swift in Sources */,
+				1A0000000000000000000028 /* RootView.swift in Sources */,
+				1A0000000000000000000029 /* TimelineView.swift in Sources */,
+				1A000000000000000000002A /* MessageRow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -258,9 +296,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Ferry/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Ferry;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -286,9 +325,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Ferry/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Ferry;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
