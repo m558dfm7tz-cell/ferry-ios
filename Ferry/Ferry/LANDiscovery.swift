@@ -70,7 +70,7 @@ enum LANDiscovery {
                 }
                 return found
             }
-            results.append(contentsOf: origins.map(DiscoveredServer.init(origin:)))
+            results.append(contentsOf: origins.map { DiscoveredServer(origin: $0) })
         }
         results.sort { $0.origin < $1.origin }
         return results

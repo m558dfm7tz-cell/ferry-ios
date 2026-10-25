@@ -108,14 +108,11 @@ final class AppModel {
         let current = generation
         let sentDraft = draft
         isSending = true
-        let task = Task { [client] in
-            try await client.sendText(endpoint: endpoint, token: token, text: sentDraft)
-        }
         defer {
             if current == generation { isSending = false }
         }
         do {
-            let message = try await task.value
+            let message = try await client.sendText(endpoint: endpoint, token: token, text: sentDraft)
             guard current == generation else { return }
             append(message)
             if draft == sentDraft { draft = "" }

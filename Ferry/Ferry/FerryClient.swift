@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 
-@MainActor
 protocol FerryServicing {
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool
     func join(endpoint: ServerEndpoint, password: String, name: String) async throws -> AccessClaim
@@ -30,7 +29,7 @@ struct FerryClient: FerryServicing {
     init(session: URLSession = .shared) { self.session = session }
 
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool {
-        let payload: AccessStatusPayload = try await json(endpoint: endpoint, path: "/api/v1/access")
+        let payload: AccessStatusPayload = try await json(endpoint: endpoint, path: "/api/v1/access", token: nil)
         return payload.passwordRequired
     }
 

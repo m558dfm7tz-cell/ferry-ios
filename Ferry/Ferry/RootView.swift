@@ -1,11 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @Bindable var model: AppModel
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(.systemBackground), Color.accentColor.opacity(0.08)],
+            LinearGradient(colors: [Color(uiColor: .systemBackground), Color.accentColor.opacity(0.08)],
                            startPoint: .top, endPoint: .bottomTrailing).ignoresSafeArea()
             if model.phase == .setup || model.phase == .connecting { AccessView(model: model) }
             else { TimelineView(model: model) }
