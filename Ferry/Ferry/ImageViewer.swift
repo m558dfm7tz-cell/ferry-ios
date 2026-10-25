@@ -14,6 +14,7 @@ struct ImageViewer: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showToast = false
     @State private var toastText = ""
+    @State private var showOCR = false
 
     var body: some View {
         ZStack {
@@ -29,7 +30,22 @@ struct ImageViewer: View {
                               onToast: { text in flashToast(text) })
                 .padding(20)
         }
+        .overlay(alignment: .bottomLeading) {
+            Button { showOCR = true } label: {
+                Image(systemName: "text.viewfinder")
+                    .font(.system(size: 22, weight: .medium))
+                    .frame(width: 52, height: 52)
+                    .background(Color.white.opacity(0.15), in: Circle())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("识别文字")
+            .padding(20)
+        }
         .overlay { if showToast { toastView } }
+        .sheet(isPresented: $showOCR) {
+            OCRView(image: image, name: name)
+        }
         .statusBarHidden()
     }
 

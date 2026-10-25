@@ -21,5 +21,9 @@
 	<string>Ferry 在录制视频时使用麦克风。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Ferry 将你收到的照片和视频保存到相册。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ferry 读取你选择的实况照片及其视频，以便发送到电脑。</string>
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 </dict>
 </plist>

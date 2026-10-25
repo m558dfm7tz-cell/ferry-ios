@@ -8,6 +8,7 @@ struct FerryApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .preferredColorScheme(.dark)
                 .onChange(of: scenePhase) { _, phase in model.setActive(phase == .active) }
         }
     }

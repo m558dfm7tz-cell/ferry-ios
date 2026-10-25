@@ -6,8 +6,11 @@ protocol FerryServicing {
     func join(endpoint: ServerEndpoint, password: String, name: String) async throws -> AccessClaim
     func currentDevice(endpoint: ServerEndpoint, token: String) async throws -> Device
     func messages(endpoint: ServerEndpoint, token: String, after: Int64) async throws -> MessagesPage
+    func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage
+    func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload
     func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data
+    func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
 }
 
 struct FerryClient: FerryServicing {
@@ -49,9 +52,26 @@ struct FerryClient: FerryServicing {
                        query: [URLQueryItem(name: "after", value: String(after)), URLQueryItem(name: "limit", value: "200")])
     }
 
+    func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage {
+        try await json(endpoint: endpoint, path: "/api/v1/messages", token: token,
+                       query: [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: String(limit))])
+    }
+
+    func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage {
+        try await json(endpoint: endpoint, path: "/api/v1/messages", token: token,
+                       query: [URLQueryItem(name: "before", value: String(before)), URLQueryItem(name: "limit", value: String(limit))])
+    }
+
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload {
         try await json(endpoint: endpoint, path: "/api/v1/messages/text", method: "POST", token: token,
                        body: try JSONSerialization.data(withJSONObject: ["text": text]))
+    }
+
+    /// `POST /api/v1/files/{id}/download-link`: returns a short-lived (≈90 s)
+    /// unauthenticated download URL. The empty body is accepted by the server.
+    func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload {
+        try await json(endpoint: endpoint, path: "/api/v1/files/\(messageID)/download-link",
+                       method: "POST", token: token, body: nil)
     }
 
     /// Attachment bytes, not JSON: `download_url` is a server-supplied path and

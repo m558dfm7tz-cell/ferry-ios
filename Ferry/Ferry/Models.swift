@@ -140,7 +140,50 @@ struct AccessStatusPayload: Decodable, Sendable {
 struct MessagesPage: Decodable, Sendable {
     let messages: [MessagePayload]
     let nextCursor: Int64
-    enum CodingKeys: String, CodingKey { case messages; case nextCursor = "next_cursor" }
+    let hasOlder: Bool
+    let revision: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case messages, revision
+        case nextCursor = "next_cursor"
+        case hasOlder = "has_older"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messages = try container.decode([MessagePayload].self, forKey: .messages)
+        nextCursor = try container.decodeIfPresent(Int64.self, forKey: .nextCursor) ?? 0
+        hasOlder = try container.decodeIfPresent(Bool.self, forKey: .hasOlder) ?? false
+        revision = try container.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
+    }
+}
+
+/// Response of `POST /api/v1/files/{id}/download-link` (status 201).
+struct DownloadLinkPayload: Decodable, Sendable {
+    let url: String
+    let expiresInSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case expiresInSeconds = "expires_in_seconds"
+    }
+}
+
+/// Stable local-calendar day key ("yyyy-MM-dd") used for the date-jump index.
+/// Built from a local `startOfDay` date so it matches the timeline's WeChat
+/// day separators, which also render in the device's local time zone.
+enum DayKey {
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
+    }
 }
 
 struct APIErrorEnvelope: Decodable, Sendable {

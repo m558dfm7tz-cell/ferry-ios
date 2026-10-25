@@ -1,11 +1,14 @@
 import AVFoundation
 import UIKit
 import Foundation
+import os
 
 /// Generates and caches poster frames for video messages, keyed by message id.
 /// Thumbnails are stored on disk under Application Support/Thumbnails/<id>.jpg
 /// and durations in a sidecar <id>.duration so both survive relaunches.
 enum VideoThumbnailCache {
+    private static let logger = Logger(subsystem: "com.ferry.test", category: "VideoThumbnail")
+
     private static var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("Thumbnails", isDirectory: true)
@@ -23,13 +26,18 @@ enum VideoThumbnailCache {
         return Double(string.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    /// Generate a poster frame. Robust to files that fail to decode a frame at
+    /// exactly t=0: falls back to synchronous `copyCGImage` at 0 s and 0.5 s
+    /// with infinite tolerances. Logs the failure reason (never tokens) via
+    /// os.Logger so a video never silently becomes a plain file card.
     static func generate(from data: Data, id: String, fileExtension ext: String) async -> (image: UIImage?, duration: Double) {
-        let safeExt = ext.isEmpty ? "mov" : ext
+        let safeExt = ext.isEmpty ? "mov" : ext.lowercased()
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("thumb-\(UUID().uuidString).\(safeExt)")
         do {
             try data.write(to: temp, options: .atomic)
         } catch {
+            logger.error("thumbnail write temp failed: \(error.localizedDescription, privacy: .public)")
             return (nil, 0)
         }
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -41,17 +49,59 @@ enum VideoThumbnailCache {
             if seconds.isFinite, seconds > 0 { duration = seconds }
         }
 
+        // Confirm the file actually has a decodable video track before trying
+        // to pull a frame (AVAssetImageGenerator throws otherwise).
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard !tracks.isEmpty else {
+                logger.error("no video tracks for message \(id, privacy: .public)")
+                return (nil, duration)
+            }
+        } catch {
+            logger.error("loadTracks failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return (nil, duration)
+        }
+
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 640, height: 640)
-        do {
-            let (cgImage, _) = try await generator.image(at: CMTime(seconds: 0, preferredTimescale: 600))
-            let image = UIImage(cgImage: cgImage)
+
+        if let image = await asyncImage(generator: generator, seconds: 0, id: id) {
             save(image, id: id)
             saveDuration(duration, id: id)
             return (image, duration)
+        }
+        for seconds in [0.0, 0.5] {
+            if let image = syncImage(generator: generator, seconds: seconds) {
+                save(image, id: id)
+                saveDuration(duration, id: id)
+                return (image, duration)
+            }
+        }
+        logger.error("thumbnail generation failed for message \(id, privacy: .public)")
+        return (nil, duration)
+    }
+
+    private static func asyncImage(generator: AVAssetImageGenerator, seconds: Double, id: String) async -> UIImage? {
+        do {
+            let (cgImage, _) = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
+            return UIImage(cgImage: cgImage)
         } catch {
-            return (nil, duration)
+            logger.error("async image(at:\(seconds)) failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func syncImage(generator: AVAssetImageGenerator, seconds: Double) -> UIImage? {
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        do {
+            var actualTime = CMTime.zero
+            let cgImage = try generator.copyCGImage(at: CMTime(seconds: seconds, preferredTimescale: 600),
+                                                    actualTime: &actualTime)
+            return UIImage(cgImage: cgImage)
+        } catch {
+            return nil
         }
     }
 

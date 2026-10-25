@@ -9,6 +9,38 @@ permissions:
   contents: read
 
 jobs:
+  # UI tests run as a separate, non-blocking job: the IPA build below does not
+  # depend on it, so a flaky simulator/test failure cannot block a release.
+  ui-tests:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode with iOS 18 SDK
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          else
+            echo "Xcode_16.4 not found. Current developer dir:"
+            xcode-select -p
+          fi
+
+      - name: Run UI tests
+        run: |
+          NAME="iPhone 16"
+          if ! xcrun simctl list devices available | grep -q "iPhone 16 ("; then
+            NAME=$(xcrun simctl list devices available | grep -o 'iPhone [0-9][0-9]*' | head -1 || true)
+            if [ -z "$NAME" ]; then NAME="iPhone 16"; fi
+          fi
+          echo "Using simulator: $NAME"
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -destination "platform=iOS Simulator,name=$NAME" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
   build:
     runs-on: macos-15
     steps:

@@ -13,8 +13,10 @@ struct MessageRow: View {
     let isCurrent: Bool
     let isFavorite: Bool
     let onToggleFavorite: () async -> Void
+    let copyTemporaryLink: () async -> String?
     let selectionMode: Bool
     let isSelected: Bool
+    let isHighlighted: Bool
     let onToggleSelection: () -> Void
 
     @State private var copied = false
@@ -61,6 +63,12 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
         }
         .overlay { if showToast { toastView } }
+        .background {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.yellow.opacity(0.25))
+            }
+        }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
                       defaultFilename: message.file?.name ?? "文件") { result in
             exportDocument = nil
@@ -158,23 +166,14 @@ struct MessageRow: View {
         } else if isImage, let file = message.file {
             switch image {
             case .some(.some(let decoded)):
-                Image(uiImage: decoded)
-                    .resizable().scaledToFit()
-                    .frame(maxWidth: 240, maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .contextMenu { mediaMenu }
-                    .onTapGesture {
-                        if !selectionMode {
-                            previewItem = MessagePreview(kind: .image, name: file.name,
-                                                         mediaType: file.mediaType, image: decoded)
-                        }
-                    }
+                imageBubble(decoded, file: file)
             case .some(.none):
                 FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
+                         onOpen: openFile,
                          onSave: { Task { await save() } },
                          onShare: { Task { await share() } },
-                         onFavorite: { Task { await onToggleFavorite() } })
+                         onFavorite: { Task { await onToggleFavorite() } },
+                         onCopyLink: { await copyTemporaryLink() })
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
@@ -184,36 +183,11 @@ struct MessageRow: View {
         } else if isVideo, let file = message.file {
             switch videoThumbnail {
             case .some(.some(let thumbnail)):
-                ZStack {
-                    Image(uiImage: thumbnail)
-                        .resizable().scaledToFill()
-                        .frame(width: 220, height: 150)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .shadow(radius: 4)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if videoDuration > 0 {
-                        Text(TimeText.mmss(videoDuration))
-                            .font(.caption2.monospacedDigit().weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.black.opacity(0.6),
-                                        in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                            .padding(6)
-                    }
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .contextMenu { mediaMenu }
-                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
+                videoBubble(thumbnail: thumbnail, file: file)
             case .some(.none):
-                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
-                         onSave: { Task { await save() } },
-                         onShare: { Task { await share() } },
-                         onFavorite: { Task { await onToggleFavorite() } })
-                    .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
+                // Thumbnail failed: show a dark placeholder with a play icon and
+                // duration rather than degrading to a plain file card.
+                videoBubble(thumbnail: nil, file: file)
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 220, height: 150)
@@ -222,11 +196,71 @@ struct MessageRow: View {
             }
         } else if let file = message.file {
             FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
+                     onOpen: openFile,
                      onSave: { Task { await save() } },
                      onShare: { Task { await share() } },
-                     onFavorite: { Task { await onToggleFavorite() } })
-                .onTapGesture { if !selectionMode { Task { await openFilePreview() } } }
+                     onFavorite: { Task { await onToggleFavorite() } },
+                     onCopyLink: { await copyTemporaryLink() })
         }
+    }
+
+    @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
+        Button {
+            if !selectionMode {
+                previewItem = MessagePreview(kind: .image, name: file.name,
+                                             mediaType: file.mediaType, image: decoded)
+            }
+        } label: {
+            Image(uiImage: decoded)
+                .resizable().scaledToFit()
+                .frame(maxWidth: 240, maxHeight: 320)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityIdentifier("bubble.image")
+        .contextMenu { mediaMenu }
+    }
+
+    @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
+        Button {
+            openFile()
+        } label: {
+            ZStack {
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable().scaledToFill()
+                } else {
+                    Color(white: 0.16)
+                }
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .shadow(radius: 4)
+            }
+            .frame(width: 220, height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                if videoDuration > 0 {
+                    Text(TimeText.mmss(videoDuration))
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.black.opacity(0.6),
+                                    in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .padding(6)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityIdentifier("bubble.video")
+        .contextMenu { mediaMenu }
+    }
+
+    private func openFile() {
+        guard !selectionMode else { return }
+        Task { await openFilePreview() }
     }
 
     private var mediaActionRow: some View {
@@ -243,6 +277,7 @@ struct MessageRow: View {
     @ViewBuilder private var mediaMenu: some View {
         Button { Task { await save() } } label: { Label("保存", systemImage: "square.and.arrow.down") }
         Button { Task { await share() } } label: { Label("分享", systemImage: "square.and.arrow.up") }
+        Button { Task { await performCopyTemporaryLink() } } label: { Label("复制临时下载链接", systemImage: "link") }
         favoriteButton
     }
 
@@ -322,6 +357,14 @@ struct MessageRow: View {
         copied = false
     }
 
+    private func performCopyTemporaryLink() async {
+        if let error = await copyTemporaryLink() {
+            flashToast(error)
+        } else {
+            flashToast("已复制，约90秒内有效")
+        }
+    }
+
     private func flashToast(_ text: String) {
         toastText = text
         withAnimation(.easeIn(duration: 0.15)) { showToast = true }
@@ -345,26 +388,41 @@ private struct FileCard: View {
     let isCurrent: Bool
     let isFavorite: Bool
     let saved: Bool
+    let onOpen: () -> Void
     let onSave: () -> Void
     let onShare: () -> Void
     let onFavorite: () -> Void
+    let onCopyLink: () async -> String?
+
+    @State private var showToast = false
+    @State private var toastText = ""
 
     private var isVideo: Bool { PreviewRouter.isVideo(file) }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: isVideo ? "film.fill" : "doc.fill")
-                .foregroundStyle(isCurrent ? .white : .cyan)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(file.name)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(isCurrent ? .white : .primary)
-                Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
-                    .font(.caption)
-                    .foregroundStyle(isCurrent ? .white.opacity(0.8) : .secondary)
+        ZStack(alignment: .trailing) {
+            Button(action: onOpen) {
+                HStack(spacing: 12) {
+                    Image(systemName: isVideo ? "film.fill" : "doc.fill")
+                        .foregroundStyle(isCurrent ? .white : .cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.name)
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                            .foregroundStyle(isCurrent ? .white : .primary)
+                        Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
+                            .font(.caption)
+                            .foregroundStyle(isCurrent ? .white.opacity(0.8) : .secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(14)
+                .padding(.trailing, 84)
+                .background(isCurrent ? Color.accentColor : .incomingBubble,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-            Spacer(minLength: 12)
+            .buttonStyle(.plain)
+
             HStack(spacing: 8) {
                 RoundActionButton(systemName: saved ? "checkmark" : (isVideo ? "square.and.arrow.down" : "folder"),
                                   label: isVideo ? "保存" : "保存到文件",
@@ -376,20 +434,46 @@ private struct FileCard: View {
                                   background: isCurrent ? .white.opacity(0.2) : Color(.systemFill),
                                   action: onShare)
             }
+            .padding(.trailing, 14)
             .animation(.easeInOut(duration: 0.15), value: saved)
         }
-        .padding(14)
-        .background(isCurrent ? Color.accentColor : .incomingBubble,
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { if showToast { toastView } }
         .contextMenu {
             Button(action: onSave) {
                 Label(isVideo ? "保存" : "保存到文件", systemImage: isVideo ? "square.and.arrow.down" : "folder")
             }
             Button(action: onShare) { Label("分享", systemImage: "square.and.arrow.up") }
+            Button { Task { await copyLink() } } label: { Label("复制临时下载链接", systemImage: "link") }
             Button(action: onFavorite) {
                 Label(isFavorite ? "取消收藏" : "收藏", systemImage: isFavorite ? "star.fill" : "star")
             }
+        }
+    }
+
+    private var toastView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(toastText).foregroundStyle(.white).font(.footnote.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.black.opacity(0.8), in: Capsule())
+        .transition(.opacity)
+    }
+
+    private func copyLink() async {
+        if let error = await onCopyLink() {
+            flashToast(error)
+        } else {
+            flashToast("已复制，约90秒内有效")
+        }
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        withAnimation(.easeIn(duration: 0.15)) { showToast = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.easeOut(duration: 0.15)) { showToast = false }
         }
     }
 }

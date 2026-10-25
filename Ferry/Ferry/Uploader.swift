@@ -1,6 +1,8 @@
+import AVFoundation
 import CoreTransferable
 import Foundation
 import Observation
+import Photos
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -16,16 +18,16 @@ import UniformTypeIdentifiers
 final class Uploader {
     struct Item: Identifiable, Equatable {
         let id: UUID
-        let name: String
-        let mediaType: String
-        let size: Int64
+        var name: String
+        var mediaType: String
+        var size: Int64
         let boundary: String
-        let bodyURL: URL
+        var bodyURL: URL
         var progress: Double = 0
         var phase: Phase = .waiting
         var error: String?
 
-        enum Phase: Equatable { case waiting, uploading, done, failed }
+        enum Phase: Equatable { case waiting, uploading, transcoding, done, failed }
     }
 
     static let maxBytes: Int64 = 64 << 20
@@ -91,6 +93,63 @@ final class Uploader {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         try? FileManager.default.removeItem(at: items[index].bodyURL)
         items.remove(at: index)
+    }
+
+    /// Re-queue a failed item and restart the sequential pump.
+    func retry(_ id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].phase = .waiting
+        items[index].progress = 0
+        items[index].error = nil
+        pump()
+    }
+
+    /// Add a queue item that is still being transcoded. It shows "转码中…" and
+    /// uploads nothing until `completeTranscode` is called with the result.
+    @discardableResult
+    func enqueueTranscoding(name: String) -> UUID {
+        let safeName = Self.safeFilename(name)
+        let boundary = "Ferry-" + UUID().uuidString
+        let bodyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".multipart")
+        FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+        let id = UUID()
+        items.append(Item(id: id, name: safeName, mediaType: "video/mp4", size: 0,
+                          boundary: boundary, bodyURL: bodyURL, phase: .transcoding))
+        return id
+    }
+
+    /// Replace a transcoding item's placeholder body with the finished bytes
+    /// and start uploading it. Returns a Chinese error message on failure.
+    @discardableResult
+    func completeTranscode(_ id: UUID, data: Data, name: String, mediaType: String) -> String? {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
+        guard data.count <= Self.maxBytes else {
+            failTranscode(id, error: "「\(name)」超过 64 MB，无法发送。")
+            return "「\(name)」超过 64 MB，无法发送。"
+        }
+        let safeName = Self.safeFilename(name)
+        let safeMime = Self.safeMediaType(mediaType)
+        guard let bodyURL = try? Self.writeBody(data: data, filename: safeName, mediaType: safeMime,
+                                                boundary: items[index].boundary) else {
+            failTranscode(id, error: "「\(name)」无法准备上传。")
+            return "「\(name)」无法准备上传。"
+        }
+        try? FileManager.default.removeItem(at: items[index].bodyURL)
+        items[index].name = safeName
+        items[index].mediaType = safeMime
+        items[index].size = Int64(data.count)
+        items[index].bodyURL = bodyURL
+        items[index].progress = 0
+        items[index].phase = .waiting
+        pump()
+        return nil
+    }
+
+    func failTranscode(_ id: UUID, error: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].phase = .failed
+        items[index].error = error
     }
 
     func removeFinished() {
@@ -270,20 +329,102 @@ struct MovieTransfer: Transferable {
 /// Turns a PhotosPicker item, a file URL, or a camera capture into upload-ready
 /// bytes plus a media type and file name.
 enum MediaLoader {
-    static func media(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
-        let types = item.supportedContentTypes
-        let isVideo = types.contains { $0.conforms(to: .movie) }
-        if isVideo {
-            guard let movie = try? await item.loadTransferable(type: MovieTransfer.self),
-                  let data = try? Data(contentsOf: movie.url) else { return nil }
-            try? FileManager.default.removeItem(at: movie.url)
-            let ext = movie.url.pathExtension.lowercased()
-            let mime = mime(forExtension: ext.isEmpty ? "mov" : ext)
-            return (data, mime, generatedName(prefix: "视频", mime: mime))
-        }
-        let mime = types.first?.preferredMIMEType ?? "image/jpeg"
+    static func isLivePhoto(_ item: PhotosPickerItem) -> Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .livePhoto) }
+    }
+
+    static func isMovie(_ item: PhotosPickerItem) -> Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+    }
+
+    /// Still image (or the still frame of a Live Photo) from a picker item.
+    static func image(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
         guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
+        let mime = imageMime(from: data)
         return (data, mime, generatedName(prefix: "照片", mime: mime))
+    }
+
+    /// Original movie bytes copied to a temp file, without re-encoding.
+    static func movie(from item: PhotosPickerItem) async -> (url: URL, mime: String, name: String)? {
+        guard let movie = try? await item.loadTransferable(type: MovieTransfer.self) else { return nil }
+        let ext = movie.url.pathExtension.lowercased()
+        let mime = mime(forExtension: ext.isEmpty ? "mov" : ext)
+        let name = generatedName(prefix: "视频", mime: mime)
+        return (movie.url, mime, name)
+    }
+
+    /// Transcode a source video to MP4 (H.264/AAC) for better compatibility.
+    static func transcodeToMP4(from url: URL) async -> URL? {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("transcode-\(UUID().uuidString).mp4")
+        let asset = AVURLAsset(url: url)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            return nil
+        }
+        session.outputURL = output
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = true
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            session.exportAsynchronously { continuation.resume() }
+        }
+        if session.status == .completed {
+            return output
+        }
+        try? FileManager.default.removeItem(at: output)
+        return nil
+    }
+
+    static func mp4Name(from name: String) -> String {
+        let base = (name as NSString).deletingPathExtension
+        return (base.isEmpty ? "视频" : base) + ".mp4"
+    }
+
+    /// Extract the paired video of a Live Photo from the photo library. Falls
+    /// back to nil (still-only) when the asset/resource is unavailable.
+    static func livePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
+        guard let identifier = item.itemIdentifier else { return nil }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard let asset = assets.firstObject else { return nil }
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let videoResource = resources.first(where: { $0.type == .pairedVideo }) else { return nil }
+        let ext = (videoResource.originalFilename as NSString).pathExtension.lowercased()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("live-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+        let buffer = NSMutableData()
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                PHAssetResourceManager.default().requestData(for: videoResource, options: nil) { chunk in
+                    buffer.append(chunk)
+                } completionHandler: { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        do {
+                            try Data(referencing: buffer).write(to: url, options: .atomic)
+                            continuation.resume()
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            }
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
+    /// Detect the image container from magic bytes (avoids trusting the picker's
+    /// reported content type, which is unreliable for Live Photo stills).
+    static func imageMime(from data: Data) -> String {
+        if data.count >= 2, data[0] == 0xFF, data[1] == 0xD8 { return "image/jpeg" }
+        if data.count >= 4, data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 { return "image/png" }
+        if data.count >= 12, data[4] == 0x66, data[5] == 0x74, data[6] == 0x79, data[7] == 0x70 {
+            let brand = String(bytes: data[8..<12], encoding: .ascii) ?? ""
+            if ["heic", "heix", "hevc", "mif1", "heif"].contains(brand) { return "image/heic" }
+        }
+        return "image/jpeg"
     }
 
     static func file(from url: URL) -> (data: Data, mime: String, name: String)? {

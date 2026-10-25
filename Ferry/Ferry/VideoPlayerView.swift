@@ -40,25 +40,21 @@ struct VideoPlayerView: View {
                 .offset(y: dragOffset)
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
                 .gesture(dismissDrag)
-
-            if showControls {
-                VStack {
-                    Spacer()
-                    playbackControls
-                }
-                .padding(.horizontal, 20).padding(.bottom, 6)
-                .transition(.opacity)
-            }
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
                 .lineLimit(2).padding(20)
         }
-        .overlay(alignment: .bottomTrailing) {
-            AttachmentActions(name: name, mediaType: mediaType,
-                              load: { try? Data(contentsOf: url) }, tint: .white,
-                              onToast: { text in flashToast(text) })
-                .padding(20)
+        .safeAreaInset(edge: .bottom) {
+            if showControls {
+                VStack(spacing: 12) {
+                    actionRow
+                    playbackControls
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .transition(.opacity)
+            }
         }
         .overlay { if showToast { toastView } }
         .statusBarHidden()
@@ -69,6 +65,17 @@ struct VideoPlayerView: View {
 
     private var scale: CGFloat { 1 - min(1, abs(dragOffset) / 600) * 0.2 }
     private var opacity: Double { 1 - min(1, abs(dragOffset) / 400) * 0.6 }
+
+    /// Save/share large round actions on their own row, above the playback
+    /// controls, so they never cover the time labels or slider.
+    private var actionRow: some View {
+        HStack {
+            Spacer()
+            AttachmentActions(name: name, mediaType: mediaType,
+                              load: { try? Data(contentsOf: url) }, tint: .white,
+                              onToast: { text in flashToast(text) })
+        }
+    }
 
     private var playbackControls: some View {
         VStack(spacing: 8) {
@@ -81,7 +88,7 @@ struct VideoPlayerView: View {
             }
             .tint(.white)
 
-            HStack {
+            HStack(spacing: 10) {
                 Button { togglePlay() } label: {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 40))

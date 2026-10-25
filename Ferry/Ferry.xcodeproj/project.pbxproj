@@ -32,6 +32,10 @@
 		1A0000000000000000000054 /* DocumentPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000044 /* DocumentPreviewView.swift */; };
 		1A0000000000000000000055 /* VideoThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000045 /* VideoThumbnailCache.swift */; };
 		1A0000000000000000000056 /* FavoritesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000046 /* FavoritesView.swift */; };
+		1A0000000000000000000057 /* OCRView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000047 /* OCRView.swift */; };
+		1A0000000000000000000058 /* DateJumpSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000048 /* DateJumpSheet.swift */; };
+		1A0000000000000000000059 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000049 /* SettingsView.swift */; };
+		1A0000000000000000000063 /* FerryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000061 /* FerryUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,10 +66,22 @@
 		1A0000000000000000000044 /* DocumentPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPreviewView.swift; sourceTree = "<group>"; };
 		1A0000000000000000000045 /* VideoThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoThumbnailCache.swift; sourceTree = "<group>"; };
 		1A0000000000000000000046 /* FavoritesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000047 /* OCRView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000048 /* DateJumpSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateJumpSheet.swift; sourceTree = "<group>"; };
+		1A0000000000000000000049 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000060 /* FerryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FerryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A0000000000000000000061 /* FerryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		1A000000000000000000000E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000066 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -79,6 +95,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0000000000000000000004 /* Ferry */,
+				1A0000000000000000000062 /* FerryUITests */,
 				1A0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -87,8 +104,17 @@
 			isa = PBXGroup;
 			children = (
 				1A0000000000000000000005 /* Ferry.app */,
+				1A0000000000000000000060 /* FerryUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		1A0000000000000000000062 /* FerryUITests */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000061 /* FerryUITests.swift */,
+			);
+			path = FerryUITests;
 			sourceTree = "<group>";
 		};
 		1A0000000000000000000004 /* Ferry */ = {
@@ -117,6 +143,9 @@
 				1A0000000000000000000044 /* DocumentPreviewView.swift */,
 				1A0000000000000000000045 /* VideoThumbnailCache.swift */,
 				1A0000000000000000000046 /* FavoritesView.swift */,
+				1A0000000000000000000047 /* OCRView.swift */,
+				1A0000000000000000000048 /* DateJumpSheet.swift */,
+				1A0000000000000000000049 /* SettingsView.swift */,
 				1A0000000000000000000008 /* Assets.xcassets */,
 				1A0000000000000000000020 /* Info.plist */,
 				1A0000000000000000000036 /* InfoPlist.strings */,
@@ -144,6 +173,24 @@
 			productReference = 1A0000000000000000000005 /* Ferry.app */;
 			productType = "com.apple.product-type.application";
 		};
+		1A0000000000000000000064 /* FerryUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A000000000000000000006C /* Build configuration list for PBXNativeTarget "FerryUITests" */;
+			buildPhases = (
+				1A0000000000000000000065 /* Sources */,
+				1A0000000000000000000066 /* Frameworks */,
+				1A0000000000000000000067 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1A0000000000000000000069 /* PBXTargetDependency */,
+			);
+			name = FerryUITests;
+			productName = FerryUITests;
+			productReference = 1A0000000000000000000060 /* FerryUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -156,6 +203,10 @@
 				TargetAttributes = {
 					1A000000000000000000000C = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					1A0000000000000000000064 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 1A000000000000000000000C;
 					};
 				};
 			};
@@ -174,6 +225,7 @@
 			projectRoot = "";
 			targets = (
 				1A000000000000000000000C /* Ferry */,
+				1A0000000000000000000064 /* FerryUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -185,6 +237,13 @@
 			files = (
 				1A000000000000000000000B /* Assets.xcassets in Resources */,
 				1A0000000000000000000037 /* InfoPlist.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000067 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,6 +277,17 @@
 				1A0000000000000000000054 /* DocumentPreviewView.swift in Sources */,
 				1A0000000000000000000055 /* VideoThumbnailCache.swift in Sources */,
 				1A0000000000000000000056 /* FavoritesView.swift in Sources */,
+				1A0000000000000000000057 /* OCRView.swift in Sources */,
+				1A0000000000000000000058 /* DateJumpSheet.swift in Sources */,
+				1A0000000000000000000059 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000065 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A0000000000000000000063 /* FerryUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -233,6 +303,24 @@
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */
+
+/* Begin PBXContainerItemProxy section */
+		1A0000000000000000000068 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1A0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A000000000000000000000C;
+			remoteInfo = Ferry;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		1A0000000000000000000069 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1A000000000000000000000C /* Ferry */;
+			targetProxy = 1A0000000000000000000068 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1A0000000000000000000010 /* Debug */ = {
@@ -360,7 +448,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -390,7 +478,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -414,6 +502,38 @@
 			};
 			name = Release;
 		};
+		1A000000000000000000006A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 6;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Ferry;
+			};
+			name = Debug;
+		};
+		1A000000000000000000006B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 6;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Ferry;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -431,6 +551,15 @@
 			buildConfigurations = (
 				1A0000000000000000000012 /* Debug */,
 				1A0000000000000000000013 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1A000000000000000000006C /* Build configuration list for PBXNativeTarget "FerryUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A000000000000000000006A /* Debug */,
+				1A000000000000000000006B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

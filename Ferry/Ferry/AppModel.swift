@@ -22,6 +22,10 @@ final class AppModel {
     private(set) var images: [String: UIImage?] = [:]
     private(set) var videoThumbnails: [String: UIImage?] = [:]
     private(set) var videoDurations: [String: Double] = [:]
+    private(set) var hasOlder = false
+    private(set) var isLoadingOlder = false
+    private(set) var isLoadingInitial = false
+    private(set) var dayCounts: [String: Int] = [:]
 
     let uploader = Uploader()
     let localStore: LocalDataStore
@@ -37,7 +41,11 @@ final class AppModel {
     private var loadingThumbnails: Set<String> = []
     private var pollTask: Task<Void, Never>?
     private var isActive = true
+    private var dayIndexStarted = false
+    private var countedMessageIDs: Set<String> = []
     private static let serverKey = "ferry.server.origin"
+    private static let pageSize = 50
+    private static let maxHistoryPages = 40
 
     init(client: any FerryServicing = FerryClient(), credentials: CredentialStoring = KeychainCredentialStore(),
          defaults: UserDefaults = .standard) {
@@ -82,6 +90,12 @@ final class AppModel {
     }
 
     func start() async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiTestMock") {
+            applyMockMessagesIfNeeded()
+            return
+        }
+        #endif
         guard phase == .setup else { return }
         guard let endpoint = try? ServerEndpoint(serverAddress) else { return }
         do {
@@ -123,7 +137,7 @@ final class AppModel {
             accessPassword = ""
             phase = .connected
             uploader.configure(endpoint: endpoint, token: claim.token)
-            await refreshMessages(generation: current)
+            await loadInitial(generation: current)
             startPolling()
         } catch { handle(error, generation: current) }
     }
@@ -306,6 +320,12 @@ final class AppModel {
         loadingImages = []
         loadingThumbnails = []
         cursor = 0
+        hasOlder = false
+        isLoadingOlder = false
+        isLoadingInitial = false
+        dayCounts = [:]
+        dayIndexStarted = false
+        countedMessageIDs = []
         draft = ""
         isSending = false
         statusMessage = nil
@@ -323,7 +343,7 @@ final class AppModel {
             phase = .connected
             statusMessage = nil
             uploader.configure(endpoint: endpoint, token: token)
-            await refreshMessages(generation: current)
+            await loadInitial(generation: current)
             startPolling()
         } catch is CancellationError {
             return
@@ -359,12 +379,187 @@ final class AppModel {
         } catch { handle(error, generation: current) }
     }
 
+    /// Initial (WeChat-style) load: fetch the newest page and, later, start
+    /// scanning older history in the background for the date-jump calendar.
+    private func loadInitial(generation current: UUID) async {
+        guard current == generation, let endpoint, let token else { return }
+        isLoadingInitial = true
+        defer { isLoadingInitial = false }
+        do {
+            let page = try await client.messagesLatest(endpoint: endpoint, token: token, limit: Self.pageSize)
+            guard current == generation else { return }
+            applyInitial(page)
+            phase = .connected
+            statusMessage = nil
+            buildDayIndexIfNeeded()
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
+        } catch { handle(error, generation: current) }
+    }
+
+    private func applyInitial(_ page: MessagesPage) {
+        let visible = page.messages.filter { !localStore.isHidden($0) }
+        messages = visible.sorted { $0.sequence < $1.sequence }
+        hasOlder = page.hasOlder
+        cursor = max(messages.map(\.sequence).max() ?? 0, page.nextCursor)
+        dayCounts = [:]
+        countedMessageIDs = []
+        countDays(messages)
+    }
+
+    /// Load one older page and prepend it, preserving the caller's scroll
+    /// anchor (the caller scrolls back to the previous first message).
+    @discardableResult
+    func loadOlder() async -> Bool {
+        guard !isLoadingOlder, hasOlder, let endpoint, let token,
+              let oldest = messages.first?.sequence else { return false }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        let current = generation
+        do {
+            let page = try await client.messagesBefore(endpoint: endpoint, token: token, before: oldest, limit: Self.pageSize)
+            guard current == generation else { return false }
+            prepend(page.messages)
+            hasOlder = page.hasOlder
+            return true
+        } catch is CancellationError {
+            return false
+        } catch let error as URLError where error.code == .cancelled {
+            return false
+        } catch {
+            guard current == generation else { return false }
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func prepend(_ incoming: [MessagePayload]) {
+        let existing = Set(messages.map(\.id))
+        let visible = incoming.filter { !localStore.isHidden($0) && !existing.contains($0.id) }
+        guard !visible.isEmpty else { return }
+        messages.insert(contentsOf: visible, at: 0)
+        messages.sort { $0.sequence < $1.sequence }
+        countDays(visible)
+        cursor = max(cursor, visible.map(\.sequence).max() ?? cursor)
+    }
+
+    private func countDays(_ msgs: [MessagePayload]) {
+        for message in msgs where !countedMessageIDs.contains(message.id) {
+            countedMessageIDs.insert(message.id)
+            guard let date = TimestampFormat.date(from: message.createdAt) else { continue }
+            let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
+            dayCounts[key, default: 0] += 1
+        }
+    }
+
+    /// Background history scan so the calendar dots reflect more than the
+    /// currently-visible window. It only accumulates per-day counts and never
+    /// touches `messages`, so the timeline does not jump. Bounded to
+    /// `maxHistoryPages` pages (≈2000 messages).
+    private func buildDayIndexIfNeeded() {
+        guard !dayIndexStarted else { return }
+        dayIndexStarted = true
+        let startBefore = messages.first?.sequence ?? 0
+        guard startBefore > 0 else { return }
+        Task { [weak self] in
+            await self?.scanHistory(from: startBefore)
+        }
+    }
+
+    private func scanHistory(from startBefore: Int64) async {
+        var before = startBefore
+        var pages = 0
+        while pages < Self.maxHistoryPages, !Task.isCancelled {
+            guard let endpoint, let token else { return }
+            let current = generation
+            do {
+                let page = try await client.messagesBefore(endpoint: endpoint, token: token, before: before, limit: Self.pageSize)
+                guard current == generation else { return }
+                let visible = page.messages.filter { !localStore.isHidden($0) }
+                countDays(visible)
+                guard let oldest = page.messages.map(\.sequence).min() else { return }
+                before = oldest
+                pages += 1
+                if !page.hasOlder { return }
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    enum DateJumpResult: Equatable {
+        case found(String)
+        case empty
+        case cancelled
+    }
+
+    /// Find the first message on a local calendar day, paging older until it is
+    /// loaded (or history is exhausted / cancelled). Purely client-side: there
+    /// is no by-date server endpoint.
+    func locateDay(_ day: Date) async -> DateJumpResult {
+        let target = Calendar.current.startOfDay(for: day)
+        let targetKey = DayKey.string(from: target)
+
+        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+            return .found(hit.id)
+        }
+        // A day newer than the newest loaded message cannot exist in history.
+        if let latest = messages.last,
+           let latestDate = TimestampFormat.date(from: latest.createdAt),
+           Calendar.current.startOfDay(for: latestDate) < target {
+            return .empty
+        }
+
+        var pages = 0
+        while hasOlder, !Task.isCancelled, pages < Self.maxHistoryPages {
+            guard await loadOlder() else { break }
+            pages += 1
+            if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+                return .found(hit.id)
+            }
+        }
+        if Task.isCancelled { return .cancelled }
+        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+            return .found(hit.id)
+        }
+        return .empty
+    }
+
+    private static func messageDayKey(_ message: MessagePayload) -> String? {
+        guard let date = TimestampFormat.date(from: message.createdAt) else { return nil }
+        return DayKey.string(from: Calendar.current.startOfDay(for: date))
+    }
+
+    /// Copy the ≈90 s temporary download link for a file message to the
+    /// pasteboard. Returns nil on success or a Chinese error message.
+    @discardableResult
+    func copyTemporaryLink(for message: MessagePayload) async -> String? {
+        guard let endpoint, let token else { return "尚未连接服务器" }
+        do {
+            let link = try await client.downloadLink(endpoint: endpoint, token: token, messageID: message.id)
+            UIPasteboard.general.string = endpoint.url(path: link.url).absoluteString
+            return nil
+        } catch {
+            if let clientError = error as? FerryClient.ClientError {
+                return clientError.errorDescription ?? "获取链接失败"
+            }
+            return "获取链接失败"
+        }
+    }
+
     private func append(_ message: MessagePayload) {
         guard !localStore.isHidden(message) else { return }
         guard !messages.contains(where: { $0.id == message.id }) else { return }
         messages.append(message)
         messages.sort { $0.sequence < $1.sequence }
         cursor = max(cursor, message.sequence)
+        countDays([message])
     }
 
     private func handleUnauthorized() {
@@ -374,6 +569,45 @@ final class AppModel {
         phase = .setup
         statusMessage = "当前设备已断开连接，请重新连接。"
     }
+
+    #if DEBUG
+    /// UI-test stub: with "-uiTestMock" the app skips pairing/network entirely
+    /// and injects one text, one image and one video message so the timeline
+    /// and its bubble context menus can be exercised deterministically.
+    private func applyMockMessagesIfNeeded() {
+        phase = .connected
+        let createdAt = ISO8601DateFormatter().string(from: Date())
+        let text = MessagePayload(id: "mock-text", sequence: 1, kind: .text,
+                                  senderName: "测试", senderKind: "iphone",
+                                  isCurrentDevice: true, createdAt: createdAt,
+                                  text: "测试文本消息", file: nil)
+        let imageFile = FileInfo(name: "mock.jpg", mediaType: "image/jpeg", size: 1,
+                                 downloadURL: "/api/v1/files/mock-image")
+        let image = MessagePayload(id: "mock-image", sequence: 2, kind: .file,
+                                   senderName: "测试", senderKind: "iphone",
+                                   isCurrentDevice: false, createdAt: createdAt,
+                                   text: nil, file: imageFile)
+        let videoFile = FileInfo(name: "mock.mp4", mediaType: "video/mp4", size: 1,
+                                 downloadURL: "/api/v1/files/mock-video")
+        let video = MessagePayload(id: "mock-video", sequence: 3, kind: .file,
+                                   senderName: "测试", senderKind: "iphone",
+                                   isCurrentDevice: false, createdAt: createdAt,
+                                   text: nil, file: videoFile)
+        messages = [text, image, video]
+        images["mock-image"] = makeMockImage()
+        videoThumbnails["mock-video"] = makeMockImage()
+        videoDurations["mock-video"] = 5.0
+        countDays([text, image, video])
+    }
+
+    private func makeMockImage() -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 90))
+        return renderer.image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 120, height: 90))
+        }
+    }
+    #endif
 
     private func handle(_ error: Error, generation current: UUID) {
         guard current == generation else { return }

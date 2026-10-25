@@ -120,31 +120,85 @@ private struct FavoriteRow: View {
     let onOpen: () async -> Void
     let onUnfavorite: () async -> Void
 
+    @State private var showToast = false
+    @State private var toastText = ""
+
     private var message: MessagePayload { favorite.message }
     private var mediaType: String { message.file?.mediaType ?? "" }
+    private var hasText: Bool { message.text != nil }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            thumbnail
-            VStack(alignment: .leading, spacing: 4) {
-                Text(message.displayDeviceName).font(.caption).foregroundStyle(.secondary)
-                contentLine
-                Text(message.timeText).font(.caption2).foregroundStyle(.tertiary)
+        Button {
+            Task { await onOpen() }
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                thumbnail
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(message.displayDeviceName).font(.caption).foregroundStyle(.secondary)
+                    contentLine
+                    Text(message.timeText).font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
-            Button { Task { await onUnfavorite() } } label: {
-                Image(systemName: "star.fill").foregroundStyle(.yellow)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("取消收藏")
+            .padding(12)
+            .background(Color.incomingBubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding(12)
-        .background(Color.incomingBubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .onTapGesture { Task { await onOpen() } }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 8) {
+                if hasText { copyButton }
+                Button { Task { await onUnfavorite() } } label: {
+                    Image(systemName: "star.fill").foregroundStyle(.yellow)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("取消收藏")
+            }
+            .padding(12)
+        }
+        .overlay { if showToast { toastView } }
         .contextMenu {
             Button { Task { await onOpen() } } label: { Label("打开", systemImage: "arrow.up.left.and.arrow.down.right") }
+            if hasText {
+                Button { copyText() } label: { Label("复制", systemImage: "doc.on.doc") }
+            }
             Button(role: .destructive) { Task { await onUnfavorite() } } label: { Label("取消收藏", systemImage: "star.slash") }
+        }
+    }
+
+    private var copyButton: some View {
+        Button { copyText() } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, height: 30)
+                .background(Color(.systemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("复制")
+    }
+
+    private var toastView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(toastText).foregroundStyle(.white).font(.footnote.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.black.opacity(0.8), in: Capsule())
+        .transition(.opacity)
+    }
+
+    private func copyText() {
+        guard let text = message.text else { return }
+        UIPasteboard.general.string = text
+        flashToast("已复制")
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        withAnimation(.easeIn(duration: 0.15)) { showToast = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.easeOut(duration: 0.15)) { showToast = false }
         }
     }
 

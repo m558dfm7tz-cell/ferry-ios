@@ -17,6 +17,7 @@ struct ComposerView: View {
     @State private var pasted = false
     @State private var errorMessage: String?
     @State private var textFieldHeight: CGFloat = 0
+    @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -107,31 +108,9 @@ struct ComposerView: View {
         let visible = model.uploader.items.filter { $0.phase != .done }
         return Group {
             if !visible.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(visible) { item in
-                        HStack(spacing: 8) {
-                            if item.phase == .failed {
-                                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(item.name).font(.footnote).lineLimit(1)
-                                    if let error = item.error {
-                                        Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2)
-                                    }
-                                }
-                            } else {
-                                ProgressView(value: item.progress).progressViewStyle(.circular)
-                                    .frame(width: 18, height: 18)
-                                Text(item.name).font(.footnote).lineLimit(1)
-                                Text("\(Int(item.progress * 100))%").font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 4)
-                            if item.phase == .failed {
-                                Button { model.uploader.remove(item.id) } label: {
-                                    Image(systemName: "xmark").font(.caption2)
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.secondary)
-                            }
-                        }
+                        uploadRow(item)
                     }
                 }
                 .padding(10).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -139,9 +118,46 @@ struct ComposerView: View {
         }
     }
 
+    private func uploadRow(_ item: Uploader.Item) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if item.phase == .failed {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                }
+                Text(item.name).font(.footnote).lineLimit(1)
+                Spacer(minLength: 4)
+                if item.phase == .failed {
+                    Text("失败").font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                    Button { model.uploader.retry(item.id) } label: {
+                        Text("重试").font(.footnote.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered).controlSize(.mini)
+                } else if item.phase == .transcoding {
+                    Text("转码中…").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("\(Int(item.progress * 100))%").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Button { model.uploader.remove(item.id) } label: {
+                    Image(systemName: "xmark").font(.caption2)
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityLabel("取消")
+            }
+            if item.phase == .failed, let error = item.error {
+                Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2)
+            } else if item.phase == .transcoding {
+                ProgressView()
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView(value: item.progress)
+                    .progressViewStyle(.linear)
+            }
+        }
+    }
+
     private var inputBar: some View {
         HStack(spacing: 10) {
-            PhotosPicker(selection: $photoItems, maxSelectionCount: 9, matching: .any(of: [.images, .videos])) {
+            PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos, .livePhotos])) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 22, weight: .light))
                     .foregroundStyle(.white)
@@ -243,10 +259,69 @@ struct ComposerView: View {
 
     private func loadAndEnqueue(_ items: [PhotosPickerItem]) async {
         for item in items {
-            if let loaded = await MediaLoader.media(from: item) {
-                if let error = model.uploader.enqueue(data: loaded.data, name: loaded.name, mediaType: loaded.mime) {
+            await loadAndEnqueueOne(item)
+        }
+    }
+
+    private func loadAndEnqueueOne(_ item: PhotosPickerItem) async {
+        if MediaLoader.isLivePhoto(item) {
+            await enqueueLivePhoto(item)
+        } else if MediaLoader.isMovie(item) {
+            if let movie = await MediaLoader.movie(from: item) {
+                enqueueVideo(from: movie.url, mime: movie.mime, name: movie.name)
+            }
+        } else {
+            if let image = await MediaLoader.image(from: item) {
+                enqueueData(image.data, name: image.name, mediaType: image.mime)
+            }
+        }
+    }
+
+    private func enqueueData(_ data: Data, name: String, mediaType: String) {
+        if let error = model.uploader.enqueue(data: data, name: name, mediaType: mediaType) {
+            errorMessage = error
+        }
+    }
+
+    /// Live Photo: send the still image plus the paired video as two messages.
+    /// Falls back to still-only when the paired video cannot be read.
+    private func enqueueLivePhoto(_ item: PhotosPickerItem) async {
+        if let image = await MediaLoader.image(from: item) {
+            enqueueData(image.data, name: image.name, mediaType: image.mime)
+        }
+        guard let videoURL = await MediaLoader.livePhotoVideoURL(from: item) else { return }
+        let base = MediaLoader.generatedName(prefix: "实况照片", mime: "video/mp4")
+        let liveName = ((base as NSString).deletingPathExtension) + "_live.mp4"
+        enqueueVideo(from: videoURL, mime: "video/quicktime", name: liveName)
+    }
+
+    /// Enqueue a source video URL: transcodes to MP4 by default (showing
+    /// "转码中…" in the queue), or sends the original container when the
+    /// "发送原始视频" setting is enabled — or when transcoding fails.
+    private func enqueueVideo(from url: URL, mime: String, name: String) {
+        if sendOriginalVideo {
+            guard let data = try? Data(contentsOf: url) else { return }
+            try? FileManager.default.removeItem(at: url)
+            enqueueData(data, name: name, mediaType: mime)
+            return
+        }
+        let originalData = try? Data(contentsOf: url)
+        let mp4Name = MediaLoader.mp4Name(from: name)
+        let id = model.uploader.enqueueTranscoding(name: mp4Name)
+        Task { @MainActor in
+            let output = await MediaLoader.transcodeToMP4(from: url)
+            try? FileManager.default.removeItem(at: url)
+            if let output, let data = try? Data(contentsOf: output) {
+                try? FileManager.default.removeItem(at: output)
+                if let error = model.uploader.completeTranscode(id, data: data, name: mp4Name, mediaType: "video/mp4") {
                     errorMessage = error
                 }
+            } else if let originalData {
+                if let error = model.uploader.completeTranscode(id, data: originalData, name: name, mediaType: mime) {
+                    errorMessage = error
+                }
+            } else {
+                model.uploader.failTranscode(id, error: "视频转码失败")
             }
         }
     }
@@ -275,11 +350,10 @@ struct ComposerView: View {
                 }
             }
         case .video(let url):
-            if let loaded = MediaLoader.capturedVideo(from: url) {
-                if let error = model.uploader.enqueue(data: loaded.data, name: loaded.name, mediaType: loaded.mime) {
-                    errorMessage = error
-                }
-            }
+            let ext = (url.pathExtension.isEmpty ? "mov" : url.pathExtension).lowercased()
+            let mime = MediaLoader.mime(forExtension: ext)
+            let name = MediaLoader.generatedName(prefix: "拍摄", mime: mime)
+            enqueueVideo(from: url, mime: mime, name: name)
         }
     }
 }
