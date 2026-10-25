@@ -6,10 +6,37 @@
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>10.0.0.0/8</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>172.16.0.0/12</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>192.168.0.0/16</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>169.254.0.0/16</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Ferry 使用相机拍摄照片和视频发送到你的电脑，以及扫描电脑上的连接二维码。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ferry connects to your self-hosted Ferry Server on your local network to send and receive messages.</string>
+	<string>Ferry 连接到你在本地网络上的自建 Ferry 服务器来收发消息。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ferry 在录制视频时使用麦克风。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Ferry saves photos and videos you receive to your photo library.</string>
+	<string>Ferry 将你收到的照片和视频保存到相册。</string>
 </dict>
 </plist>

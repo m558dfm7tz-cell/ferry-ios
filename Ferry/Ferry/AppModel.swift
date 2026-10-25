@@ -18,7 +18,10 @@ final class AppModel {
     private(set) var isSending = false
     private(set) var isDiscovering = false
     private(set) var discovered: [DiscoveredServer] = []
+    private(set) var discoveryMessage: String?
     private(set) var images: [String: UIImage?] = [:]
+
+    let uploader = Uploader()
 
     private let client: any FerryServicing
     private let credentials: CredentialStoring
@@ -39,10 +42,38 @@ final class AppModel {
         self.defaults = defaults
         serverAddress = defaults.string(forKey: Self.serverKey) ?? ""
         deviceName = UIDevice.current.name
+        uploader.onCreated = { [weak self] message in self?.append(message) }
+        uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
     }
 
     var canSend: Bool {
         !isSending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var imageMessages: [MessagePayload] {
+        messages.filter { $0.file?.mediaType.hasPrefix("image/") == true }
+    }
+
+    var daySections: [DaySection] {
+        var sections: [DaySection] = []
+        var current: [MessagePayload] = []
+        var currentDay: String?
+        for message in messages {
+            let day = TimestampFormat.dayLabel(from: message.createdAt)
+            if day != currentDay {
+                if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
+                current = []
+                currentDay = day
+            }
+            current.append(message)
+        }
+        if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
+        return sections
+    }
+
+    var lastServerOrigin: String? {
+        let value = defaults.string(forKey: Self.serverKey)
+        return (value?.isEmpty == false) ? value : nil
     }
 
     func start() async {
@@ -72,7 +103,7 @@ final class AppModel {
             // `/api/v1/access` reports whether the server enforces a password.
             let required = try await client.accessStatus(endpoint: endpoint)
             if required && accessPassword.isEmpty {
-                statusMessage = "This Ferry Server requires an access password. Enter it from the PC."
+                statusMessage = "该 Ferry 服务器需要访问密码，请在电脑上查看后输入。"
                 phase = .setup
                 return
             }
@@ -86,6 +117,7 @@ final class AppModel {
             catch { credentialWarning = error.localizedDescription }
             accessPassword = ""
             phase = .connected
+            uploader.configure(endpoint: endpoint, token: claim.token)
             await refreshMessages(generation: current)
             startPolling()
         } catch { handle(error, generation: current) }
@@ -95,12 +127,29 @@ final class AppModel {
         guard !isDiscovering else { return }
         isDiscovering = true
         defer { isDiscovering = false }
+        await LANDiscovery.warmUp()
         discovered = await LANDiscovery.scan()
+        discoveryMessage = discovered.isEmpty
+            ? "未找到电脑。请确认 iPhone 与电脑在同一 Wi-Fi，且已在 设置 → 隐私与安全性 → 本地网络 中允许 Ferry。也可使用“扫描二维码”或上次连接的地址。"
+            : nil
     }
 
     func selectDiscovered(_ server: DiscoveredServer) {
         accessPassword = ""
         serverAddress = server.origin
+        discoveryMessage = nil
+    }
+
+    func applyScannedAddress(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let endpoint = try? ServerEndpoint(trimmed) else {
+            statusMessage = "二维码不是有效的 Ferry 服务器地址。"
+            return
+        }
+        accessPassword = ""
+        serverAddress = endpoint.origin
+        statusMessage = nil
+        discoveryMessage = nil
     }
 
     func send() async {
@@ -206,6 +255,7 @@ final class AppModel {
         isSending = false
         statusMessage = nil
         credentialWarning = nil
+        uploader.teardown()
         return generation
     }
 
@@ -217,6 +267,7 @@ final class AppModel {
             currentDevice = device
             phase = .connected
             statusMessage = nil
+            uploader.configure(endpoint: endpoint, token: token)
             await refreshMessages(generation: current)
             startPolling()
         } catch is CancellationError {
@@ -258,6 +309,14 @@ final class AppModel {
         messages.append(message)
         messages.sort { $0.sequence < $1.sequence }
         cursor = max(cursor, message.sequence)
+    }
+
+    private func handleUnauthorized() {
+        guard let endpoint else { phase = .setup; return }
+        try? credentials.removeToken(for: endpoint.origin)
+        _ = resetSession(endpoint: endpoint, token: nil)
+        phase = .setup
+        statusMessage = "当前设备已断开连接，请重新连接。"
     }
 
     private func handle(_ error: Error, generation current: UUID) {

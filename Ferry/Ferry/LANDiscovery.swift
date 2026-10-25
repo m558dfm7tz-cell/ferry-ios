@@ -8,19 +8,42 @@ struct DiscoveredServer: Identifiable, Hashable {
 
 /// Bounded /24 scan for a Ferry Server. Ferry publishes no mDNS/Bonjour or UDP
 /// beacon, so discovery probes the unauthenticated, read-only `GET /api/v1/access`
-/// endpoint on the server's LAN port. Manual URL entry remains the fallback.
+/// endpoint on the server's LAN port. Manual URL entry and QR scanning remain
+/// fallbacks.
 enum LANDiscovery {
     // The Windows FerryDesktop client boots the Go service with
-    // `-listen 127.0.0.1:42819 -lan -lan-listen <IPv4>:42819` (FerryBootstrapper.cs).
-    // The Go binary's own `-listen` default is 8080, but the desktop app the user
-    // actually runs uses 42819, so that is the port we scan. Manual entry covers
-    // any other deployment.
+    // `-listen 127.0.0.1:42819 -lan -lan-listen <IPv4>:42819` (FerryBootstrapper.cs),
+    // so the LAN-facing HTTP origin is `<IPv4>:42819`.
     static let scanPort = 42819
-    private static let batchSize = 32
-    private static let probeTimeout: TimeInterval = 1.0
+    private static let batchSize = 48
+    private static let probeTimeout: TimeInterval = 1.5
 
+    /// Warm the iOS local-network permission gate. On iOS 14+ the first
+    /// outbound connection to a private address shows the system prompt and
+    /// fails while it is pending, so one cheap probe is fired before the scan.
+    static func warmUp() async {
+        guard let ip = primaryIPv4(), let base = subnetBase(ip) else { return }
+        _ = await probe(host: "\(base).1")
+    }
+
+    static func scan() async -> [DiscoveredServer] {
+        guard let ip = primaryIPv4(), let base = subnetBase(ip) else { return [] }
+        // A second pass catches hosts that only answered after the local-network
+        // prompt was accepted mid-scan.
+        var results = await sweep(base: base, skip: ip)
+        if results.isEmpty {
+            try? await Task.sleep(for: .seconds(0.5))
+            results = await sweep(base: base, skip: ip)
+        }
+        results.sort { $0.origin < $1.origin }
+        return results
+    }
+
+    /// Preferred LAN IPv4. iOS lists Wi-Fi as `en0`; cellular (`pdp_ip*`) and
+    /// VPN (`utun*`, `ipsec*`) interfaces are excluded so the scan targets the
+    /// Wi-Fi subnet the PC is actually on.
     static func primaryIPv4() -> String? {
-        var address: String?
+        var fallback: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return nil }
         defer { freeifaddrs(ifaddr) }
@@ -33,15 +56,20 @@ enum LANDiscovery {
             let interface = String(cString: name)
             guard !interface.hasPrefix("utun"), !interface.hasPrefix("llw"),
                   !interface.hasPrefix("awdl"), !interface.hasPrefix("bridge"),
-                  !interface.hasPrefix("anpi") else { continue }
+                  !interface.hasPrefix("anpi"), !interface.hasPrefix("pdp_ip"),
+                  !interface.hasPrefix("ipsec"), !interface.hasPrefix("ap"),
+                  !interface.hasPrefix("vboxnet"), !interface.hasPrefix("stf") else { continue }
             guard let sa = current.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                 let ip = String(cString: host)
-                if isPrivateIPv4(ip) { address = ip; break }
+                if isPrivateIPv4(ip) {
+                    if interface == "en0" { return ip }
+                    if fallback == nil { fallback = ip }
+                }
             }
         }
-        return address
+        return fallback
     }
 
     static func subnetBase(_ ip: String) -> String? {
@@ -50,12 +78,11 @@ enum LANDiscovery {
         return octets[0...2].map(String.init).joined(separator: ".")
     }
 
-    static func scan() async -> [DiscoveredServer] {
-        guard let localIP = primaryIPv4(), let base = subnetBase(localIP) else { return [] }
+    private static func sweep(base: String, skip: String) async -> [DiscoveredServer] {
         var hosts: [String] = []
         for host in 1...254 {
             let ip = "\(base).\(host)"
-            if ip != localIP { hosts.append(ip) }
+            if ip != skip { hosts.append(ip) }
         }
         var results: [DiscoveredServer] = []
         for chunkStart in stride(from: 0, to: hosts.count, by: batchSize) {
@@ -72,7 +99,6 @@ enum LANDiscovery {
             }
             results.append(contentsOf: origins.map { DiscoveredServer(origin: $0) })
         }
-        results.sort { $0.origin < $1.origin }
         return results
     }
 

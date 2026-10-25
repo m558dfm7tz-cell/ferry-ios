@@ -10,8 +10,8 @@ enum PhotoSaver {
 
         var errorDescription: String? {
             switch self {
-            case .denied: "Photo access is disabled. Enable Add Photos in Settings."
-            case .failed: "The photo could not be saved."
+            case .denied: "相册权限被禁用，请在 设置 中允许添加照片。"
+            case .failed: "无法保存照片。"
             }
         }
     }

@@ -2,63 +2,89 @@ import SwiftUI
 
 struct TimelineView: View {
     @Bindable var model: AppModel
+    @FocusState private var composerFocused: Bool
+    @State private var showImageGrid = false
+    @State private var atBottom = true
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 22) {
+                    LazyVStack(spacing: 18) {
                         if model.messages.isEmpty {
-                            ContentUnavailableView("Ready to ferry", systemImage: "shippingbox",
-                                                   description: Text("Messages and files from your PC appear here."))
+                            ContentUnavailableView("等待传输", systemImage: "shippingbox",
+                                                   description: Text("来自电脑的消息和文件会显示在这里。"))
                                 .padding(.top, 100)
                         }
-                        ForEach(model.messages) { message in
-                            MessageRow(message: message, image: model.images[message.id],
-                                       loadImage: { await model.loadImage(for: message) },
-                                       loadFile: { await model.fileData(for: message) })
-                                .id(message.id)
+                        ForEach(model.daySections) { section in
+                            Text(section.dayLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 6)
+                            ForEach(section.messages) { message in
+                                MessageRow(message: message,
+                                           image: model.images[message.id],
+                                           loadImage: { await model.loadImage(for: message) },
+                                           loadFile: { await model.fileData(for: message) },
+                                           isCurrent: message.isCurrentDevice)
+                                    .id(message.id)
+                            }
                         }
-                    }.padding(.horizontal, 18).padding(.vertical, 20)
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 20)
                 }
                 .onChange(of: model.messages.count) { _, _ in
                     if let id = model.messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
+                }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 120
+                } action: { _, newValue in
+                    atBottom = newValue
+                }
+                .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                .overlay(alignment: .bottomTrailing) {
+                    if !atBottom {
+                        Button {
+                            if let id = model.messages.last?.id {
+                                withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                            }
+                        } label: {
+                            Label("最新消息", systemImage: "arrow.down")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(.black.opacity(0.72), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 16).padding(.bottom, 12)
+                        .transition(.opacity)
+                    }
                 }
             }
             .navigationTitle("Ferry")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Label(model.currentDevice?.name ?? "Device", systemImage: "iphone")
-                        .font(.subheadline.weight(.semibold)).accessibilityIdentifier("current-device")
+                    HStack(spacing: 16) {
+                        Label(model.currentDevice?.name ?? "设备", systemImage: "iphone")
+                            .font(.subheadline.weight(.semibold))
+                            .accessibilityIdentifier("current-device")
+                        Button {
+                            showImageGrid = true
+                        } label: {
+                            Image(systemName: "square.grid.2x2")
+                        }
+                        .accessibilityLabel("图片")
+                    }
                 }
             }
-            .safeAreaInset(edge: .bottom) { composer }
+            .safeAreaInset(edge: .bottom) { ComposerView(model: model, focused: $composerFocused) }
         }
-    }
-
-    private var composer: some View {
-        VStack(spacing: 8) {
-            if let warning = model.credentialWarning {
-                Label(warning, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.red)
-            }
-            if let message = model.statusMessage {
-                Label(message, systemImage: model.phase == .offline ? "wifi.exclamationmark" : "exclamationmark.triangle")
-                    .font(.footnote).foregroundStyle(model.phase == .offline ? .orange : .red)
-            }
-            if model.phase == .offline {
-                Button("Change Server", systemImage: "network") { model.disconnect() }
-                    .buttonStyle(.bordered).accessibilityIdentifier("change-server")
-            }
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message", text: $model.draft, axis: .vertical)
-                    .lineLimit(1...5).padding(.horizontal, 4).padding(.vertical, 10)
-                    .accessibilityIdentifier("message-input")
-                Button("Send", systemImage: "arrow.up") { Task { await model.send() } }
-                    .labelStyle(.iconOnly).buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(!model.canSend).accessibilityIdentifier("send-message")
-            }
-            .padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .sheet(isPresented: $showImageGrid) {
+            ImageGridView(messages: model.imageMessages,
+                          images: model.images,
+                          loadImage: { m in await model.loadImage(for: m) },
+                          loadFile: { m in await model.fileData(for: m) })
         }
-        .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }

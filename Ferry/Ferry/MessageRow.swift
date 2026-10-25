@@ -7,224 +7,226 @@ struct MessageRow: View {
     let image: UIImage??
     let loadImage: () async -> Void
     let loadFile: () async -> Data?
+    let isCurrent: Bool
+
     @State private var copied = false
     @State private var viewing = false
+    @State private var busy = false
+    @State private var exporting = false
+    @State private var exportDocument: ExportedFile?
+    @State private var shareItem: ShareItem?
 
     private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
+    private var isImageOrVideo: Bool {
+        let mime = message.file?.mediaType ?? ""
+        return mime.hasPrefix("image/") || mime.hasPrefix("video/")
+    }
+
+    private var fileContentType: UTType {
+        let mime = message.file?.mediaType ?? "application/octet-stream"
+        let name = message.file?.name ?? ""
+        return UTType(mimeType: mime) ?? UTType(filenameExtension: (name as NSString).pathExtension) ?? .data
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(String(message.senderName.prefix(1)).uppercased())
-                .font(.caption.bold()).frame(width: 30, height: 30)
-                .background(Color.accentColor.opacity(0.18), in: Circle())
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text(message.senderName).font(.subheadline.bold())
-                    if let text = message.text {
-                        Button(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                            copy(text)
-                        }
-                        .labelStyle(.titleOnly).font(.caption).buttonStyle(.plain)
-                        .foregroundStyle(.secondary).accessibilityIdentifier("copy-message")
-                    }
-                }
-                if let text = message.text {
-                    Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("message-text")
-                } else if isImage, let file = message.file {
-                    switch image {
-                    case .some(.some(let decoded)):
-                        Image(uiImage: decoded).resizable().scaledToFit()
-                            .frame(maxWidth: 260, maxHeight: 320)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .onTapGesture { viewing = true }
-                            .accessibilityIdentifier("message-image")
-                            .accessibilityLabel(file.name)
-                    case .some(.none):
-                        FileCard(file: file, load: loadFile)
-                    case .none:
-                        RoundedRectangle(cornerRadius: 18).fill(.quaternary)
-                            .frame(width: 176, height: 118)
-                            .overlay { ProgressView() }
-                            .task { await loadImage() }
-                    }
-                } else if let file = message.file {
-                    FileCard(file: file, load: loadFile)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading)
+        HStack(alignment: .top, spacing: 8) {
+            if !isCurrent { avatar }
+            VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
+                header
+                content
+                if message.file != nil { AttachmentActions(name: message.file?.name ?? "文件",
+                                                           mediaType: message.file?.mediaType ?? "application/octet-stream",
+                                                           load: loadFile) }
+            }
+            .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
+            if isCurrent { avatar }
         }
-        .accessibilityElement(children: .contain)
+        .contextMenu {
+            if message.file != nil { attachmentMenu }
+        }
+        .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
+                      defaultFilename: message.file?.name ?? "文件") { _ in
+            exportDocument = nil
+        }
+        .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
         .fullScreenCover(isPresented: $viewing) {
             if case .some(.some(let decoded)) = image {
-                ImageViewer(image: decoded, name: message.file?.name ?? "image",
+                ImageViewer(image: decoded, name: message.file?.name ?? "图片",
                             mediaType: message.file?.mediaType ?? "image/jpeg", load: loadFile)
             }
         }
     }
 
-    private func copy(_ text: String) {
-        UIPasteboard.general.string = text
-        copied = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.6))
-            copied = false
+    private var avatar: some View {
+        Text(String(message.senderName.prefix(1)).uppercased())
+            .font(.caption.bold())
+            .frame(width: 28, height: 28)
+            .background(Color.accentColor.opacity(0.18), in: Circle())
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: message.deviceIcon)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(message.displayDeviceName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("·")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text(message.timeText)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 12)
+            Button {
+                Task { await copy() }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(copied ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("复制")
+            .animation(.easeInOut(duration: 0.15), value: copied)
         }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let text = message.text {
+            LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
+                .textSelection(.enabled)
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(isCurrent ? Color.accentColor : Color(.secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .foregroundStyle(isCurrent ? .white : .primary)
+        } else if isImage, let file = message.file {
+            switch image {
+            case .some(.some(let decoded)):
+                Image(uiImage: decoded)
+                    .resizable().scaledToFit()
+                    .frame(maxWidth: 240, maxHeight: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .onTapGesture { viewing = true }
+            case .some(.none):
+                FileCard(file: file)
+            case .none:
+                RoundedRectangle(cornerRadius: 18).fill(.quaternary)
+                    .frame(width: 176, height: 118)
+                    .overlay { ProgressView() }
+                    .task { await loadImage() }
+            }
+        } else if let file = message.file {
+            FileCard(file: file)
+        }
+    }
+
+    @ViewBuilder private var attachmentMenu: some View {
+        if isImageOrVideo {
+            Button { Task { await saveToPhotos() } } label: { Label("保存", systemImage: "square.and.arrow.down") }
+        } else {
+            Button { Task { await saveToFiles() } } label: { Label("保存到文件", systemImage: "folder") }
+        }
+        Button { Task { await share() } } label: { Label("分享", systemImage: "square.and.arrow.up") }
+        Button { Task { await copy() } } label: { Label("复制", systemImage: "doc.on.doc") }
+    }
+
+    private func saveToPhotos() async {
+        busy = true
+        defer { busy = false }
+        guard let data = await loadFile() else { return }
+        try? await PhotoSaver.save(data, mediaType: message.file?.mediaType ?? "image/jpeg")
+    }
+
+    private func saveToFiles() async {
+        busy = true
+        defer { busy = false }
+        guard let data = await loadFile() else { return }
+        exportDocument = ExportedFile(data: data)
+        exporting = true
+    }
+
+    private func share() async {
+        busy = true
+        defer { busy = false }
+        guard let data = await loadFile() else { return }
+        if let url = AttachmentSupport.writeTemporaryFile(data, name: message.file?.name ?? "文件") {
+            shareItem = ShareItem(url: url)
+        }
+    }
+
+    private func copy() async {
+        if let text = message.text {
+            UIPasteboard.general.string = text
+        } else if isImage {
+            if case .some(.some(let decoded)) = image {
+                UIPasteboard.general.image = decoded
+            } else if let data = await loadFile(), let decoded = UIImage(data: data) {
+                UIPasteboard.general.image = decoded
+            } else {
+                return
+            }
+        } else if let file = message.file {
+            guard let data = await loadFile(), let url = AttachmentSupport.writeTemporaryFile(data, name: file.name) else { return }
+            UIPasteboard.general.url = url
+        } else {
+            return
+        }
+        copied = true
+        try? await Task.sleep(for: .seconds(1.6))
+        copied = false
     }
 }
 
 private struct FileCard: View {
     let file: FileInfo
-    let load: () async -> Data?
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: file.mediaType.hasPrefix("video/") ? "film.fill" : "doc.fill").foregroundStyle(.cyan)
             VStack(alignment: .leading, spacing: 2) {
                 Text(file.name).font(.body.weight(.medium)).lineLimit(1)
-                    .accessibilityIdentifier("message-file-name")
                 Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
-            AttachmentActions(name: file.name, mediaType: file.mediaType, load: load)
         }
-        .padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
-private struct ImageViewer: View {
-    let image: UIImage
-    let name: String
-    let mediaType: String
-    let load: () async -> Data?
-    @Environment(\.dismiss) private var dismiss
+/// Text that auto-detects http(s):// and bare `www.` links via `NSDataDetector`
+/// and renders them as tappable blue links (opened in the default browser).
+private struct LinkedText: View {
+    let text: String
+    let linkColor: Color
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            Image(uiImage: image).resizable().scaledToFit().ignoresSafeArea()
+        Text(attributed)
+            .environment(\.openURL, OpenURLAction { url in .systemAction(url) })
+    }
+
+    private var attributed: AttributedString {
+        var result = AttributedString(text)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return result
         }
-        .onTapGesture { dismiss() }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 12) {
-                AttachmentActions(name: name, mediaType: mediaType, load: load)
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .labelStyle(.iconOnly).buttonStyle(.bordered)
-            }
-            .padding(20)
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = detector.matches(in: text, options: [], range: nsRange)
+        for match in matches {
+            guard let url = match.url,
+                  let stringRange = Range(match.range, in: text) else { continue }
+            // Convert UTF-16 NSRange to a character offset so indices stay valid
+            // even when non-BMP characters precede the link.
+            let lowerOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
+            let upperOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
+            guard let lower = AttributedString.Index(lowerOffset, within: result),
+                  let upper = AttributedString.Index(upperOffset, within: result) else { continue }
+            result[lower..<upper].link = url
+            result[lower..<upper].foregroundColor = linkColor
+            result[lower..<upper].underlineStyle = .single
         }
+        return result
     }
-}
-
-/// Fetches attachment bytes on demand and offers the system export actions:
-/// save-to-Photos for image/video, Save to Files for everything else, and a
-/// share sheet for any file.
-private struct AttachmentActions: View {
-    let name: String
-    let mediaType: String
-    let load: () async -> Data?
-    @State private var busy = false
-    @State private var document: ExportedFile?
-    @State private var exporting = false
-    @State private var shareItem: ShareItem?
-
-    private var isImageOrVideo: Bool {
-        mediaType.hasPrefix("image/") || mediaType.hasPrefix("video/")
-    }
-
-    private var contentType: UTType {
-        UTType(mimeType: mediaType) ?? UTType(filenameExtension: (name as NSString).pathExtension) ?? .data
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            if isImageOrVideo {
-                Button {
-                    Task {
-                        busy = true
-                        defer { busy = false }
-                        guard let data = await load() else { return }
-                        try? await PhotoSaver.save(data, mediaType: mediaType)
-                    }
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down.on.square")
-                }
-                .labelStyle(.titleOnly).font(.caption).buttonStyle(.plain)
-                .disabled(busy).accessibilityIdentifier("save-photo")
-            } else {
-                Button {
-                    Task {
-                        busy = true
-                        defer { busy = false }
-                        guard let data = await load() else { return }
-                        document = ExportedFile(data: data)
-                        exporting = true
-                    }
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .labelStyle(.titleOnly).font(.caption).buttonStyle(.plain)
-                .disabled(busy).accessibilityIdentifier("save-file")
-                .fileExporter(isPresented: $exporting, document: document,
-                              contentType: contentType, defaultFilename: name) { _ in
-                    document = nil
-                }
-            }
-            Button {
-                Task {
-                    busy = true
-                    defer { busy = false }
-                    guard let data = await load() else { return }
-                    if let url = writeTemporaryFile(data, name: name) { shareItem = ShareItem(url: url) }
-                }
-            } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            .labelStyle(.titleOnly).font(.caption).buttonStyle(.plain)
-            .disabled(busy).accessibilityIdentifier("share-file")
-        }
-        .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
-    }
-
-    private func writeTemporaryFile(_ data: Data, name: String) -> URL? {
-        let directory = FileManager.default.temporaryDirectory
-        let safeName = (name as NSString).lastPathComponent.isEmpty ? "file" : (name as NSString).lastPathComponent
-        let url = directory.appendingPathComponent(safeName)
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            return nil
-        }
-    }
-}
-
-private struct ExportedFile: FileDocument {
-    static var readableContentTypes: [UTType] { [.data] }
-    let data: Data
-
-    init(data: Data) { self.data = data }
-
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
-    }
-}
-
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-
-private struct ShareItem: Identifiable {
-    let url: URL
-    var id: String { url.absoluteString }
 }

@@ -51,5 +51,5 @@ struct KeychainCredentialStore: CredentialStoring {
 private struct KeychainError: LocalizedError {
     let status: OSStatus
     init(_ status: OSStatus) { self.status = status }
-    var errorDescription: String? { "Could not access this device credential (Keychain error \(status))." }
+    var errorDescription: String? { "无法访问设备凭据（Keychain 错误 \(status)）。" }
 }

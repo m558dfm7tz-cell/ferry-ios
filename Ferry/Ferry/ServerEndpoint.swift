@@ -3,7 +3,7 @@ import Foundation
 struct ServerEndpoint: Equatable, Sendable {
     enum ValidationError: LocalizedError {
         case invalid
-        var errorDescription: String? { "Enter an HTTP or HTTPS server address, for example http://192.168.1.20:42819." }
+        var errorDescription: String? { "请输入 HTTP 或 HTTPS 服务器地址，例如 http://192.168.1.20:42819。" }
     }
 
     let baseURL: URL

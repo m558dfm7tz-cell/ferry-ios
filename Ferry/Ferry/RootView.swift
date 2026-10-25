@@ -18,14 +18,13 @@ struct RootView: View {
 private struct AccessView: View {
     @Bindable var model: AppModel
     @FocusState private var focused: Field?
+    @State private var showingScanner = false
     private enum Field: Hashable { case server, name, password }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
                 Spacer(minLength: 40)
-                // White paper-plane glyph, always shown on a dark tile so it
-                // reads identically in light and dark mode.
                 Image("PlaneLogo")
                     .resizable().scaledToFit()
                     .padding(18)
@@ -34,18 +33,18 @@ private struct AccessView: View {
                     .accessibilityHidden(true)
                 VStack(spacing: 8) {
                     Text("Ferry").font(.largeTitle.bold())
-                    Text("Your clipboard and files, across your own devices.")
+                    Text("在你的设备之间传输文字、文件和照片。")
                         .multilineTextAlignment(.center).foregroundStyle(.secondary)
                 }
                 VStack(spacing: 16) {
                     VStack(spacing: 16) {
-                        TextField("Server address", text: $model.serverAddress)
+                        TextField("服务器地址", text: $model.serverAddress)
                             .textContentType(.URL).keyboardType(.URL).textInputAutocapitalization(.never)
                             .autocorrectionDisabled().focused($focused, equals: .server)
                             .accessibilityIdentifier("server-address")
-                        TextField("Device name", text: $model.deviceName)
+                        TextField("设备名称", text: $model.deviceName)
                             .focused($focused, equals: .name).accessibilityIdentifier("device-name")
-                        SecureField("Access password (if enabled)", text: $model.accessPassword)
+                        SecureField("访问密码（如已启用）", text: $model.accessPassword)
                             .textContentType(.password)
                             .focused($focused, equals: .password).accessibilityIdentifier("access-password")
                         if let message = model.statusMessage {
@@ -53,7 +52,7 @@ private struct AccessView: View {
                                 .accessibilityIdentifier("access-error")
                         }
                         Button { focused = nil; Task { await model.connect() } } label: {
-                            HStack { if model.phase == .connecting { ProgressView() }; Text("Connect").frame(maxWidth: .infinity) }
+                            HStack { if model.phase == .connecting { ProgressView() }; Text("连接").frame(maxWidth: .infinity) }
                         }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(model.phase == .connecting)
@@ -66,6 +65,12 @@ private struct AccessView: View {
             }
             .padding(.horizontal, 24)
         }
+        .fullScreenCover(isPresented: $showingScanner) {
+            QRScannerView(onScan: { text in
+                showingScanner = false
+                model.applyScannedAddress(text)
+            }, onCancel: { showingScanner = false })
+        }
     }
 
     private var discovery: some View {
@@ -76,13 +81,29 @@ private struct AccessView: View {
                 HStack {
                     if model.isDiscovering { ProgressView() }
                     else { Image(systemName: "dot.radiowaves.left.and.right") }
-                    Text(model.isDiscovering ? "Scanning…" : "Find PC on network")
+                    Text(model.isDiscovering ? "正在扫描…" : "在网络中查找电脑")
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered).controlSize(.large)
             .disabled(model.isDiscovering)
             .accessibilityIdentifier("find-pc")
+
+            Button {
+                showingScanner = true
+            } label: {
+                HStack {
+                    Image(systemName: "qrcode.viewfinder")
+                    Text("扫描二维码连接")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered).controlSize(.large)
+
+            if let message = model.discoveryMessage {
+                Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if !model.discovered.isEmpty {
                 VStack(spacing: 8) {
@@ -102,6 +123,22 @@ private struct AccessView: View {
                         .accessibilityIdentifier("discovered-server")
                     }
                 }
+            } else if let last = model.lastServerOrigin {
+                Button {
+                    model.selectDiscovered(DiscoveredServer(origin: last))
+                } label: {
+                    HStack {
+                        Image(systemName: "clock.arrow.circlepath").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("上次连接的地址").font(.caption).foregroundStyle(.secondary)
+                            Text(last).font(.subheadline.monospaced())
+                        }
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
         }
     }

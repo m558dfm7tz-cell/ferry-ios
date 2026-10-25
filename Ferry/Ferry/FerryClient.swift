@@ -18,9 +18,9 @@ struct FerryClient: FerryServicing {
 
         var errorDescription: String? {
             switch self {
-            case .unauthorized: "This device is no longer connected."
+            case .unauthorized: "当前设备已断开连接。"
             case .rejected(let message): message
-            case .invalidResponse: "The Ferry Server returned an invalid response."
+            case .invalidResponse: "Ferry 服务器返回了无效响应。"
             }
         }
     }
