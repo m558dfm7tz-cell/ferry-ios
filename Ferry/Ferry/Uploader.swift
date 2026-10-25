@@ -1,3 +1,4 @@
+import CoreTransferable
 import Foundation
 import Observation
 import PhotosUI
@@ -248,11 +249,39 @@ private final class UploadSessionDelegate: NSObject, URLSessionDataDelegate {
     }
 }
 
+/// A `PhotosPickerItem` transferable for movies: imports the original movie
+/// bytes to a temp file without re-encoding, preserving the file extension.
+struct MovieTransfer: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let ext = received.file.pathExtension.lowercased()
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("picked-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return MovieTransfer(url: copy)
+        }
+    }
+}
+
 /// Turns a PhotosPicker item, a file URL, or a camera capture into upload-ready
 /// bytes plus a media type and file name.
 enum MediaLoader {
-    static func photo(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
-        let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+    static func media(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
+        let types = item.supportedContentTypes
+        let isVideo = types.contains { $0.conforms(to: .movie) }
+        if isVideo {
+            guard let movie = try? await item.loadTransferable(type: MovieTransfer.self),
+                  let data = try? Data(contentsOf: movie.url) else { return nil }
+            try? FileManager.default.removeItem(at: movie.url)
+            let ext = movie.url.pathExtension.lowercased()
+            let mime = mime(forExtension: ext.isEmpty ? "mov" : ext)
+            return (data, mime, generatedName(prefix: "视频", mime: mime))
+        }
+        let mime = types.first?.preferredMIMEType ?? "image/jpeg"
         guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
         return (data, mime, generatedName(prefix: "照片", mime: mime))
     }

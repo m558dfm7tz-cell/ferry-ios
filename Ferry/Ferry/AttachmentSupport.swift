@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// A compact row of round icon buttons for an attachment: 保存 (save), 分享
-/// (share), 复制 (copy). For non-media files the save action opens the system
+/// A compact row of large round icon buttons for an attachment: 保存 (save)
+/// and 分享 (share). For non-media files the save action opens the system
 /// "Save to Files" exporter; for images/videos it writes to the photo library.
 /// The buttons keep their own busy/sheet state so they can be embedded both in
 /// a message row and in the full-screen viewer.
@@ -12,12 +12,12 @@ struct AttachmentActions: View {
     let mediaType: String
     let load: () async -> Data?
     var tint: Color = .primary
+    var onToast: ((String) -> Void)? = nil
 
     @State private var busy = false
     @State private var exporting = false
     @State private var document: ExportedFile?
     @State private var shareItem: ShareItem?
-    @State private var copied = false
 
     private var isImageOrVideo: Bool {
         mediaType.hasPrefix("image/") || mediaType.hasPrefix("video/")
@@ -28,9 +28,9 @@ struct AttachmentActions: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Button { Task { await save() } } label: {
-                icon("square.and.arrow.down")
+                icon(isImageOrVideo ? "square.and.arrow.down" : "folder")
             }
             .disabled(busy)
             .accessibilityLabel(isImageOrVideo ? "保存" : "保存到文件")
@@ -40,24 +40,19 @@ struct AttachmentActions: View {
             }
             .disabled(busy)
             .accessibilityLabel("分享")
-
-            Button { Task { await copy() } } label: {
-                icon(copied ? "checkmark" : "doc.on.doc")
-            }
-            .disabled(busy)
-            .accessibilityLabel("复制")
         }
-        .fileExporter(isPresented: $exporting, document: document, contentType: contentType, defaultFilename: name) { _ in
+        .fileExporter(isPresented: $exporting, document: document, contentType: contentType, defaultFilename: name) { result in
             document = nil
+            if case .success = result { onToast?("已保存") }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
     }
 
     private func icon(_ systemName: String) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 13, weight: .medium))
-            .frame(width: 30, height: 30)
-            .background(Color.secondary.opacity(0.15), in: Circle())
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 36, height: 36)
+            .background(Color.white.opacity(0.15), in: Circle())
             .foregroundStyle(tint)
     }
 
@@ -66,7 +61,12 @@ struct AttachmentActions: View {
         defer { busy = false }
         guard let data = await load() else { return }
         if isImageOrVideo {
-            try? await PhotoSaver.save(data, mediaType: mediaType)
+            do {
+                try await PhotoSaver.save(data, mediaType: mediaType)
+                onToast?("已保存到相册")
+            } catch {
+                onToast?("保存失败")
+            }
         } else {
             document = ExportedFile(data: data)
             exporting = true
@@ -80,21 +80,6 @@ struct AttachmentActions: View {
         if let url = AttachmentSupport.writeTemporaryFile(data, name: name) {
             shareItem = ShareItem(url: url)
         }
-    }
-
-    private func copy() async {
-        busy = true
-        defer { busy = false }
-        if mediaType.hasPrefix("image/") {
-            guard let data = await load(), let image = UIImage(data: data) else { return }
-            UIPasteboard.general.image = image
-        } else {
-            guard let data = await load(), let url = AttachmentSupport.writeTemporaryFile(data, name: name) else { return }
-            UIPasteboard.general.url = url
-        }
-        copied = true
-        try? await Task.sleep(for: .seconds(1.4))
-        copied = false
     }
 }
 

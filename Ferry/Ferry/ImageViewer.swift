@@ -3,8 +3,8 @@ import UIKit
 
 /// Full-screen image viewer: single tap closes (waits for double-tap to fail),
 /// double tap zooms, pinch zooms, and a vertical swipe drags the image away to
-/// dismiss (snapping back if the drag is too short). Save/share/copy round
-/// actions remain in the top-right corner.
+/// dismiss (snapping back if the drag is too short). The file name is a large
+/// headline at the top; save/share round actions sit at the bottom-right.
 struct ImageViewer: View {
     let image: UIImage
     let name: String
@@ -12,6 +12,8 @@ struct ImageViewer: View {
     let load: () async -> Data?
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showToast = false
+    @State private var toastText = ""
 
     var body: some View {
         ZStack {
@@ -19,16 +21,35 @@ struct ImageViewer: View {
             ZoomableImageView(image: image, onDismiss: { dismiss() }).ignoresSafeArea()
         }
         .overlay(alignment: .topLeading) {
-            Text(name).font(.footnote).foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1).padding(20)
+            Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
+                .lineLimit(2).padding(20)
         }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 12) {
-                AttachmentActions(name: name, mediaType: mediaType, load: load, tint: .white)
-            }
-            .padding(20)
+        .overlay(alignment: .bottomTrailing) {
+            AttachmentActions(name: name, mediaType: mediaType, load: load, tint: .white,
+                              onToast: { text in flashToast(text) })
+                .padding(20)
         }
+        .overlay { if showToast { toastView } }
         .statusBarHidden()
+    }
+
+    private var toastView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(toastText).foregroundStyle(.white).font(.footnote.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.black.opacity(0.85), in: Capsule())
+        .transition(.opacity)
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        withAnimation(.easeIn(duration: 0.15)) { showToast = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.easeOut(duration: 0.15)) { showToast = false }
+        }
     }
 }
 

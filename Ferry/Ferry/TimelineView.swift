@@ -43,6 +43,8 @@ struct TimelineView: View {
                     atBottom = newValue
                 }
                 .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                .scrollContentBackground(.hidden)
+                .background(Color.chatBackground.ignoresSafeArea())
                 .overlay(alignment: .bottomTrailing) {
                     if !atBottom {
                         Button {

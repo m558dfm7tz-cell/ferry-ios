@@ -48,7 +48,7 @@ struct CameraPicker: UIViewControllerRepresentable {
         }
     }
 
-    enum CameraError: LocalizedError {
+    enum CameraError: LocalizedError, Equatable {
         case unavailable, cancelled
         var errorDescription: String? {
             switch self {

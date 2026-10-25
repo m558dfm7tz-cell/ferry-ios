@@ -11,15 +11,20 @@ struct MessageRow: View {
 
     @State private var copied = false
     @State private var viewing = false
-    @State private var busy = false
     @State private var exporting = false
     @State private var exportDocument: ExportedFile?
     @State private var shareItem: ShareItem?
+    @State private var showToast = false
+    @State private var toastText = ""
 
     private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
     private var isImageOrVideo: Bool {
         let mime = message.file?.mediaType ?? ""
         return mime.hasPrefix("image/") || mime.hasPrefix("video/")
+    }
+    private var imageLoaded: Bool {
+        if case .some(.some(_)) = image { return true }
+        return false
     }
 
     private var fileContentType: UTType {
@@ -29,24 +34,19 @@ struct MessageRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if !isCurrent { avatar }
-            VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
-                header
-                content
-                if message.file != nil { AttachmentActions(name: message.file?.name ?? "文件",
-                                                           mediaType: message.file?.mediaType ?? "application/octet-stream",
-                                                           load: loadFile) }
+        VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
+            metaRow
+            content
+            if isImage, message.file != nil, imageLoaded {
+                mediaActionRow
             }
-            .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
-            if isCurrent { avatar }
         }
-        .contextMenu {
-            if message.file != nil { attachmentMenu }
-        }
+        .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
+        .overlay { if showToast { toastView } }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
-                      defaultFilename: message.file?.name ?? "文件") { _ in
+                      defaultFilename: message.file?.name ?? "文件") { result in
             exportDocument = nil
+            if case .success = result { flashToast("已保存") }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
         .fullScreenCover(isPresented: $viewing) {
@@ -57,14 +57,7 @@ struct MessageRow: View {
         }
     }
 
-    private var avatar: some View {
-        Text(String(message.senderName.prefix(1)).uppercased())
-            .font(.caption.bold())
-            .frame(width: 28, height: 28)
-            .background(Color.accentColor.opacity(0.18), in: Circle())
-    }
-
-    private var header: some View {
+    private var metaRow: some View {
         HStack(spacing: 6) {
             Image(systemName: message.deviceIcon)
                 .font(.caption2)
@@ -78,18 +71,27 @@ struct MessageRow: View {
             Text(message.timeText)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            Spacer(minLength: 12)
-            Button {
-                Task { await copy() }
-            } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(copied ? .green : .secondary)
+            if message.text != nil {
+                copyButton
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("复制")
-            .animation(.easeInOut(duration: 0.15), value: copied)
         }
+    }
+
+    /// Web-style rounded-square copy button (text messages only), shown in the
+    /// meta row right after icon + name + time, with check-mark animation.
+    private var copyButton: some View {
+        Button {
+            Task { await copyText() }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(copied ? .green : .secondary)
+                .frame(width: 30, height: 30)
+                .background(Color(.systemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("复制")
+        .animation(.easeInOut(duration: 0.15), value: copied)
     }
 
     @ViewBuilder private var content: some View {
@@ -97,7 +99,7 @@ struct MessageRow: View {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
                 .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(isCurrent ? Color.accentColor : Color(.secondarySystemBackground),
+                .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .foregroundStyle(isCurrent ? .white : .primary)
         } else if isImage, let file = message.file {
@@ -107,9 +109,13 @@ struct MessageRow: View {
                     .resizable().scaledToFit()
                     .frame(maxWidth: 240, maxHeight: 320)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .onTapGesture { viewing = true }
+                    .contextMenu { mediaMenu }
             case .some(.none):
-                FileCard(file: file)
+                FileCard(file: file, isCurrent: isCurrent,
+                         onSave: { Task { await save() } },
+                         onShare: { Task { await share() } })
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
@@ -117,83 +123,157 @@ struct MessageRow: View {
                     .task { await loadImage() }
             }
         } else if let file = message.file {
-            FileCard(file: file)
+            FileCard(file: file, isCurrent: isCurrent,
+                     onSave: { Task { await save() } },
+                     onShare: { Task { await share() } })
         }
     }
 
-    @ViewBuilder private var attachmentMenu: some View {
-        if isImageOrVideo {
-            Button { Task { await saveToPhotos() } } label: { Label("保存", systemImage: "square.and.arrow.down") }
-        } else {
-            Button { Task { await saveToFiles() } } label: { Label("保存到文件", systemImage: "folder") }
+    private var mediaActionRow: some View {
+        HStack(spacing: 10) {
+            RoundActionButton(systemName: "square.and.arrow.down", label: "保存",
+                              background: Color(.systemFill)) { Task { await save() } }
+            RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
+                              background: Color(.systemFill)) { Task { await share() } }
         }
+    }
+
+    @ViewBuilder private var mediaMenu: some View {
+        Button { Task { await save() } } label: { Label("保存", systemImage: "square.and.arrow.down") }
         Button { Task { await share() } } label: { Label("分享", systemImage: "square.and.arrow.up") }
-        Button { Task { await copy() } } label: { Label("复制", systemImage: "doc.on.doc") }
     }
 
-    private func saveToPhotos() async {
-        busy = true
-        defer { busy = false }
-        guard let data = await loadFile() else { return }
-        try? await PhotoSaver.save(data, mediaType: message.file?.mediaType ?? "image/jpeg")
+    private var toastView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(toastText).foregroundStyle(.white).font(.footnote.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.black.opacity(0.8), in: Capsule())
+        .transition(.opacity)
     }
 
-    private func saveToFiles() async {
-        busy = true
-        defer { busy = false }
+    private func save() async {
         guard let data = await loadFile() else { return }
-        exportDocument = ExportedFile(data: data)
-        exporting = true
+        if isImageOrVideo {
+            do {
+                try await PhotoSaver.save(data, mediaType: message.file?.mediaType ?? "image/jpeg")
+                flashToast("已保存到相册")
+            } catch {
+                flashToast("保存失败")
+            }
+        } else {
+            exportDocument = ExportedFile(data: data)
+            exporting = true
+        }
     }
 
     private func share() async {
-        busy = true
-        defer { busy = false }
         guard let data = await loadFile() else { return }
         if let url = AttachmentSupport.writeTemporaryFile(data, name: message.file?.name ?? "文件") {
             shareItem = ShareItem(url: url)
         }
     }
 
-    private func copy() async {
-        if let text = message.text {
-            UIPasteboard.general.string = text
-        } else if isImage {
-            if case .some(.some(let decoded)) = image {
-                UIPasteboard.general.image = decoded
-            } else if let data = await loadFile(), let decoded = UIImage(data: data) {
-                UIPasteboard.general.image = decoded
-            } else {
-                return
-            }
-        } else if let file = message.file {
-            guard let data = await loadFile(), let url = AttachmentSupport.writeTemporaryFile(data, name: file.name) else { return }
-            UIPasteboard.general.url = url
-        } else {
-            return
-        }
+    private func copyText() async {
+        guard let text = message.text else { return }
+        UIPasteboard.general.string = text
         copied = true
         try? await Task.sleep(for: .seconds(1.6))
         copied = false
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        withAnimation(.easeIn(duration: 0.15)) { showToast = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.easeOut(duration: 0.15)) { showToast = false }
+        }
     }
 }
 
 private struct FileCard: View {
     let file: FileInfo
+    let isCurrent: Bool
+    let onSave: () -> Void
+    let onShare: () -> Void
+
+    private var isVideo: Bool { file.mediaType.hasPrefix("video/") }
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: file.mediaType.hasPrefix("video/") ? "film.fill" : "doc.fill").foregroundStyle(.cyan)
+            Image(systemName: isVideo ? "film.fill" : "doc.fill")
+                .foregroundStyle(isCurrent ? .white : .cyan)
             VStack(alignment: .leading, spacing: 2) {
-                Text(file.name).font(.body.weight(.medium)).lineLimit(1)
+                Text(file.name)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                    .foregroundStyle(isCurrent ? .white : .primary)
                 Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(isCurrent ? .white.opacity(0.8) : .secondary)
             }
             Spacer(minLength: 12)
+            HStack(spacing: 8) {
+                RoundActionButton(systemName: isVideo ? "square.and.arrow.down" : "folder",
+                                  label: isVideo ? "保存" : "保存到文件",
+                                  tint: isCurrent ? .white : .primary,
+                                  background: isCurrent ? .white.opacity(0.2) : Color(.systemFill),
+                                  action: onSave)
+                RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
+                                  tint: isCurrent ? .white : .primary,
+                                  background: isCurrent ? .white.opacity(0.2) : Color(.systemFill),
+                                  action: onShare)
+            }
         }
         .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(isCurrent ? Color.accentColor : .incomingBubble,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contextMenu {
+            Button(action: onSave) {
+                Label(isVideo ? "保存" : "保存到文件", systemImage: isVideo ? "square.and.arrow.down" : "folder")
+            }
+            Button(action: onShare) { Label("分享", systemImage: "square.and.arrow.up") }
+        }
     }
+}
+
+private struct RoundActionButton: View {
+    let systemName: String
+    let label: String
+    var tint: Color = .primary
+    var background: Color = Color(.systemFill)
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 36, height: 36)
+                .background(background, in: Circle())
+                .foregroundStyle(tint)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+extension Color {
+    /// Chat background: #1C1C1E in dark mode, system grouped background in light.
+    static let chatBackground = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 28/255, green: 28/255, blue: 30/255, alpha: 1)
+            : UIColor.systemGroupedBackground
+    })
+
+    /// Incoming bubble/card: #2C2C2E in dark mode, secondary grouped background in light.
+    static let incomingBubble = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 44/255, green: 44/255, blue: 46/255, alpha: 1)
+            : UIColor.secondarySystemGroupedBackground
+    })
 }
 
 /// Text that auto-detects http(s):// and bare `www.` links via `NSDataDetector`
