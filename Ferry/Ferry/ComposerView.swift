@@ -43,9 +43,12 @@ struct ComposerView: View {
             handleFiles(result)
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { capture in
+            CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { result in
                 showCamera = false
-                handleCapture(capture)
+                switch result {
+                case .success(let capture): handleCapture(capture)
+                case .failure(let error): errorMessage = error.localizedDescription
+                }
             }
         }
         .alert("发送失败", isPresented: errorBinding) {
@@ -124,9 +127,9 @@ struct ComposerView: View {
 
                 PasteButton(payloadType: String.self) { strings in
                     if let text = strings.first { model.draft += text; flashPaste() }
-                } label: {
-                    Image(systemName: pasted ? "checkmark" : "doc.on.clipboard")
                 }
+                .labelStyle(.iconOnly)
+                .tint(pasted ? .green : .accentColor)
                 .accessibilityLabel("粘贴")
             }
             TextField("消息", text: $model.draft, axis: .vertical)

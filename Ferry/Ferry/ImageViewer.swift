@@ -175,7 +175,7 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         scrollView.isScrollEnabled = scrollView.zoomScale > 1.01
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === dismissPan {
             // Drag-dismiss is disabled while zoomed so pinch/pan keeps working.
             return scrollView.zoomScale <= 1.01

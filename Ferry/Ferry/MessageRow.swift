@@ -217,12 +217,8 @@ private struct LinkedText: View {
         for match in matches {
             guard let url = match.url,
                   let stringRange = Range(match.range, in: text) else { continue }
-            // Convert UTF-16 NSRange to a character offset so indices stay valid
-            // even when non-BMP characters precede the link.
-            let lowerOffset = text.distance(from: text.startIndex, to: stringRange.lowerBound)
-            let upperOffset = text.distance(from: text.startIndex, to: stringRange.upperBound)
-            guard let lower = AttributedString.Index(lowerOffset, within: result),
-                  let upper = AttributedString.Index(upperOffset, within: result) else { continue }
+            guard let lower = AttributedString.Index(stringRange.lowerBound, within: result),
+                  let upper = AttributedString.Index(stringRange.upperBound, within: result) else { continue }
             result[lower..<upper].link = url
             result[lower..<upper].foregroundColor = linkColor
             result[lower..<upper].underlineStyle = .single
