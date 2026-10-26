@@ -556,7 +556,7 @@ final class AppModel {
     /// by the date-jump feature. The query matches the text body or file name
     /// (case-insensitive, Chinese OK). `messages` already excludes locally
     /// hidden/cleared messages, so results respect those too.
-    func searchMessages(query: String, filter: SearchFilter, maxPages: Int = Self.maxHistoryPages) async -> [MessagePayload] {
+    func searchMessages(query: String, filter: SearchFilter, maxPages: Int = 40) async -> [MessagePayload] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
         var results: [MessagePayload] = []
