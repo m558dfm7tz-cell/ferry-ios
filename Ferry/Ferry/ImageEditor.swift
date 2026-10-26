@@ -407,10 +407,34 @@ final class EditorCanvasUIView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Aspect-fit rect that centres `imageSize` inside `container`. This is the
+    /// single source of truth for the on-screen offset/scale: the canvas draws
+    /// with it and the SwiftUI layer uses the same math to map gestures, so a
+    /// finger and the drawn stroke always agree — and the full-res export (which
+    /// paints 1:1 into pixel space) stays consistent with the screen.
+    static func aspectFitRect(for imageSize: CGSize, in container: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              container.width > 0, container.height > 0 else { return .zero }
+        let scale = min(container.width / imageSize.width, container.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        return CGRect(x: (container.width - width) / 2,
+                      y: (container.height - height) / 2,
+                      width: width, height: height)
+    }
+
     override func draw(_ rect: CGRect) {
         guard let baseImage, bounds.width > 0, bounds.height > 0 else { return }
-        baseImage.draw(in: bounds)
-        AnnotationPainter.paint(annotations, pixellated: pixellatedImage, in: bounds.size)
+        // Centre the image inside the view (aspect-fit) instead of blindly
+        // filling `bounds`; the letterbox offset/scale are then applied to the
+        // annotations so strokes land exactly where the finger is.
+        let fitted = Self.aspectFitRect(for: baseImage.size, in: bounds.size)
+        baseImage.draw(in: fitted)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        context.translateBy(x: fitted.minX, y: fitted.minY)
+        AnnotationPainter.paint(annotations, pixellated: pixellatedImage, in: fitted.size)
+        context.restoreGState()
     }
 }
 
@@ -715,14 +739,15 @@ struct ImageEditorView: View {
     }
 
     /// The canvas fills the whole available area (so drags starting on the
-    /// letterbox still register) while the image itself is centred at `frame`.
+    /// letterbox still register) while the image itself is centred inside it by
+    /// `EditorCanvasUIView`'s own aspect-fit draw. `frame` is only needed here
+    /// for the crop overlay, which lives in the SwiftUI layer.
     private func canvasLayer(frame: CGRect, container: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
             EditorCanvas(base: model.base,
                          annotations: model.annotations + (draft.map { [$0] } ?? []),
                          pixellated: model.pixellated)
-                .frame(width: frame.width, height: frame.height)
-                .offset(x: frame.minX, y: frame.minY)
+                .frame(width: container.width, height: container.height)
             if isCropping {
                 CropOverlay(rect: $cropRect)
                     .frame(width: frame.width, height: frame.height)
@@ -1021,14 +1046,7 @@ struct ImageEditorView: View {
     // MARK: Geometry helpers
 
     private static func fittedRect(for imageSize: CGSize, in container: CGSize) -> CGRect {
-        guard imageSize.width > 0, imageSize.height > 0,
-              container.width > 0, container.height > 0 else { return .zero }
-        let scale = min(container.width / imageSize.width, container.height / imageSize.height)
-        let width = imageSize.width * scale
-        let height = imageSize.height * scale
-        return CGRect(x: (container.width - width) / 2,
-                      y: (container.height - height) / 2,
-                      width: width, height: height)
+        EditorCanvasUIView.aspectFitRect(for: imageSize, in: container)
     }
 
     private static func normalize(_ point: CGPoint, in frame: CGRect) -> CGPoint {
