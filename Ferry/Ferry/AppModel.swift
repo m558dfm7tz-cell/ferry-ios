@@ -69,6 +69,10 @@ final class AppModel {
     /// Custom-assistant names seen in the last server assistant-state snapshot,
     /// used to detect assistants deleted on another device.
     private var knownServerAssistantNames: Set<String> = []
+    /// Deletions made on this phone while offline, awaiting a server flush.
+    private var outbox: [PendingDeletion] = []
+    private var isFlushingOutbox = false
+    private static let outboxPrefix = "ferry.outbox."
     private var generation = UUID()
     private var loadingImages: Set<String> = []
     private var loadingThumbnails: Set<String> = []
@@ -221,6 +225,7 @@ final class AppModel {
         assistantStore.activate(space: space)
         avatarStore.activate(space: space)
         VideoThumbnailCache.setSpace(space)
+        loadOutbox()
     }
 
     /// Resolve the space for an origin on reconnect (token-only, no password).
@@ -243,6 +248,78 @@ final class AppModel {
 
     private func storedSpaceValue(for origin: String) -> String? {
         storedSpaceValues()[origin]
+    }
+
+    // MARK: - Offline deletion outbox
+
+    private var outboxKey: String { Self.outboxPrefix + (spaceKey?.value ?? "") }
+
+    private func loadOutbox() {
+        if let data = defaults.data(forKey: outboxKey),
+           let decoded = try? JSONDecoder().decode([PendingDeletion].self, from: data) {
+            outbox = decoded
+        } else {
+            outbox = []
+        }
+    }
+
+    private func persistOutbox() {
+        if let data = try? JSONEncoder().encode(outbox) {
+            defaults.set(data, forKey: outboxKey)
+        } else {
+            defaults.removeObject(forKey: outboxKey)
+        }
+    }
+
+    /// Queue a deletion made on this phone and try to push it right away.
+    private func enqueueDeletion(_ item: PendingDeletion) {
+        guard !outbox.contains(where: { $0.id == item.id }) else { return }
+        outbox.append(item)
+        persistOutbox()
+        Task { await flushOutbox() }
+    }
+
+    /// Push queued deletions to the server in order. Stops at the first failure
+    /// (offline or a server error) so items are retried on the next poll tick;
+    /// successful items are dequeued as they are acknowledged.
+    private func flushOutbox() async {
+        guard !outbox.isEmpty, !isFlushingOutbox, let endpoint, token != nil else { return }
+        isFlushingOutbox = true
+        defer { isFlushingOutbox = false }
+        for item in outbox {
+            do {
+                try await perform(item)
+                outbox.removeAll { $0.id == item.id }
+                persistOutbox()
+            } catch is CancellationError {
+                return
+            } catch {
+                return // offline / rejected: retry later
+            }
+        }
+    }
+
+    private func perform(_ item: PendingDeletion) async throws {
+        guard let endpoint, let token else { throw FerryClient.ClientError.invalidResponse }
+        switch item.kind {
+        case .messages:
+            _ = try await client.deleteMessages(endpoint: endpoint, token: token, ids: item.ids)
+        case .clearAll:
+            _ = try await client.deleteAllMessages(endpoint: endpoint, token: token)
+        case .favorite:
+            if let id = item.ids.first {
+                let opAt = Int64(Date().timeIntervalSince1970 * 1000)
+                _ = try await client.deleteFavorite(endpoint: endpoint, token: token, messageID: id, opAt: opAt)
+            }
+        case .assistant:
+            // Read-modify-write so the phone's PUT never clobbers the shared
+            // selected/reads state another device changed in the meantime.
+            let state = try await client.assistantState(endpoint: endpoint, token: token)
+            let updated = AssistantStatePayload(selected: state.selected,
+                                                reads: state.reads,
+                                                custom: state.custom.filter { $0.name != item.name })
+            _ = try await client.putAssistantState(endpoint: endpoint, token: token, state: updated)
+        }
     }
 
     func discover() async {
@@ -379,7 +456,11 @@ final class AppModel {
     /// while the assistant still resolves, and its custom avatar media is
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
+        let name = assistantStore.custom.first(where: { $0.id == id })?.name
         removeAssistantLocally(id: id)
+        if let name {
+            enqueueDeletion(PendingDeletion(kind: .assistant, name: name))
+        }
     }
 
     /// Remove one assistant's grouping and avatar from this phone (used both by
@@ -484,6 +565,7 @@ final class AppModel {
         localStore.hide(ids)
         messages.removeAll { ids.contains($0.id) }
         reviewStore.rebuild(from: messages)
+        enqueueDeletion(PendingDeletion(kind: .messages, ids: Array(ids)))
     }
 
     func clearAllMessages() {
@@ -491,11 +573,13 @@ final class AppModel {
         localStore.clearAll(upTo: maxSequence)
         messages.removeAll()
         reviewStore.rebuild(from: messages)
+        enqueueDeletion(PendingDeletion(kind: .clearAll))
     }
 
     func toggleFavorite(_ message: MessagePayload) async {
         if localStore.isFavorite(message.id) {
             localStore.removeFavorite(message.id)
+            enqueueDeletion(PendingDeletion(kind: .favorite, ids: [message.id]))
         } else {
             var data: Data?
             if message.file != nil { data = await fileData(for: message) }
@@ -611,6 +695,7 @@ final class AppModel {
             while !Task.isCancelled {
                 await self?.refreshMessages(generation: current)
                 await self?.refreshChanges(generation: current)
+                await self?.flushOutbox()
                 try? await Task.sleep(for: .seconds(2))
             }
         }

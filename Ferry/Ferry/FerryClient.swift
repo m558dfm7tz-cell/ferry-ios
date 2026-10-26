@@ -14,6 +14,10 @@ protocol FerryServicing {
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
     func changes(endpoint: ServerEndpoint, token: String, since: Int64) async throws -> ChangesPage
     func assistantState(endpoint: ServerEndpoint, token: String) async throws -> AssistantStatePayload
+    func putAssistantState(endpoint: ServerEndpoint, token: String, state: AssistantStatePayload) async throws -> AssistantStatePayload
+    func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
+    func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
+    func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
 }
 
 struct FerryClient: FerryServicing {
@@ -98,6 +102,26 @@ struct FerryClient: FerryServicing {
         try await json(endpoint: endpoint, path: "/api/v1/assistant-state", token: token)
     }
 
+    func putAssistantState(endpoint: ServerEndpoint, token: String, state: AssistantStatePayload) async throws -> AssistantStatePayload {
+        try await json(endpoint: endpoint, path: "/api/v1/assistant-state", method: "PUT", token: token,
+                       body: try JSONEncoder().encode(state))
+    }
+
+    func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount {
+        try await json(endpoint: endpoint, path: "/api/v1/messages/delete", method: "POST", token: token,
+                       body: try JSONSerialization.data(withJSONObject: ["ids": ids]))
+    }
+
+    func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount {
+        try await json(endpoint: endpoint, path: "/api/v1/messages/all", method: "DELETE", token: token,
+                       extraHeaders: ["X-Ferry-Confirm-Clear": "CLEAR_ALL"])
+    }
+
+    func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount {
+        try await json(endpoint: endpoint, path: "/api/v1/favorites/\(messageID)", method: "DELETE", token: token,
+                       query: [URLQueryItem(name: "op_at", value: String(opAt))])
+    }
+
     /// Attachment bytes, not JSON: `download_url` is a server-supplied path and
     /// the endpoint owns the origin, so a message cannot point the app at a
     /// different host. Streams to a cache file first so large files do not
@@ -138,7 +162,8 @@ struct FerryClient: FerryServicing {
     func json<T: Decodable>(endpoint: ServerEndpoint, path: String, method: String = "GET", token: String?,
                                     query: [URLQueryItem] = [], body: Data? = nil,
                                     contentType: String = "application/json",
-                                    deviceKind: String? = nil) async throws -> T {
+                                    deviceKind: String? = nil,
+                                    extraHeaders: [String: String] = [:]) async throws -> T {
         var request = URLRequest(url: endpoint.url(path: path, queryItems: query))
         request.httpMethod = method
         request.httpBody = body
@@ -146,6 +171,7 @@ struct FerryClient: FerryServicing {
         if body != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let deviceKind { request.setValue(deviceKind, forHTTPHeaderField: "X-Ferry-Device-Kind") }
+        for (key, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: key) }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {

@@ -305,3 +305,27 @@ struct AssistantStatePayload: Codable, Sendable {
     let reads: [String: Int64]
     let custom: [ServerCustomAssistant]
 }
+
+/// `{"deleted": N}` returned by the message/favorite delete endpoints.
+struct DeletedCount: Decodable, Sendable {
+    let deleted: Int
+}
+
+/// One deletion made on this phone that still needs to reach the server.
+/// Persisted per space and flushed in order when the phone is back online.
+struct PendingDeletion: Codable, Equatable, Identifiable, Sendable {
+    enum Kind: String, Codable, Sendable { case messages, clearAll, favorite, assistant }
+    let id: UUID
+    let kind: Kind
+    /// For `.messages` (ids to delete) and `.favorite` (one message id).
+    let ids: [String]
+    /// For `.assistant`: the assistant name to remove.
+    let name: String
+
+    init(id: UUID = UUID(), kind: Kind, ids: [String] = [], name: String = "") {
+        self.id = id
+        self.kind = kind
+        self.ids = ids
+        self.name = name
+    }
+}
