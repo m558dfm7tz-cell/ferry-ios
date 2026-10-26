@@ -238,12 +238,12 @@ struct TimelineView: View {
         ToolbarItem(placement: .topBarLeading) {
             if selectionMode {
                 Button("取消") { exitSelection() }
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             } else {
                 Button { showDeviceManagement = true } label: {
                     Image(systemName: connectionIcon.symbol)
                         .foregroundStyle(connectionIcon.color)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -259,13 +259,13 @@ struct TimelineView: View {
             if selectionMode {
                 Button("删除", role: .destructive) { selectionAlert = .delete }
                     .disabled(selectedIDs.isEmpty)
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
                     .accessibilityIdentifier("delete-selected")
             } else {
                 HStack(spacing: 4) {
                     Button { showSearch = true } label: {
                         Image(systemName: "magnifyingglass")
-                            .frame(minWidth: 44, minHeight: 44)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .accessibilityLabel("搜索")
@@ -278,7 +278,7 @@ struct TimelineView: View {
                         Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .frame(minWidth: 44, minHeight: 44)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .accessibilityLabel("更多")

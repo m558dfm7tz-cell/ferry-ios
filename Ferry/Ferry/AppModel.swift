@@ -29,6 +29,7 @@ final class AppModel {
 
     let uploader = Uploader()
     let localStore: LocalDataStore
+    let catalog = CommandCatalogStore()
 
     private let client: any FerryServicing
     private let credentials: CredentialStoring
@@ -147,6 +148,7 @@ final class AppModel {
             uploader.configure(endpoint: endpoint, token: claim.token)
             await loadInitial(generation: current)
             startPolling()
+            refreshCommandCatalog()
         } catch { handle(error, generation: current) }
     }
 
@@ -224,12 +226,20 @@ final class AppModel {
     func setActive(_ active: Bool) {
         isActive = active
         if active {
+            refreshCommandCatalog()
             if phase == .connected || phase == .offline { startPolling() }
             else { Task { await start() } }
         } else {
             pollTask?.cancel()
             pollTask = nil
         }
+    }
+
+    /// Trigger a (throttled) FerryHelper command-catalog fetch for the current
+    /// server host. Silently no-ops when there is no endpoint yet (and never
+    /// fetches in `-uiTestMock` mode because the endpoint is nil there).
+    func refreshCommandCatalog() {
+        catalog.refresh(host: endpoint?.baseURL.host)
     }
 
     func loadImage(for message: MessagePayload) async {
@@ -360,6 +370,7 @@ final class AppModel {
             uploader.configure(endpoint: endpoint, token: token)
             await loadInitial(generation: current)
             startPolling()
+            refreshCommandCatalog()
         } catch is CancellationError {
             return
         } catch let error as URLError where error.code == .cancelled {

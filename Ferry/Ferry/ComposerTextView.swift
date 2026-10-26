@@ -59,7 +59,12 @@ struct ComposerTextView: UIViewRepresentable {
     func updateUIView(_ textView: ComposerUITextView, context: Context) {
         if textView.text != text {
             textView.text = text
-            context.coordinator.refreshLayout(textView)
+            // Defer the height recompute off this update pass so it never
+            // mutates a binding synchronously (which would re-enter SwiftUI).
+            let coordinator = context.coordinator
+            DispatchQueue.main.async {
+                coordinator.refreshLayout(textView)
+            }
         }
         textView.textColor = textColor
         textView.tintColor = tintColor
@@ -67,7 +72,10 @@ struct ComposerTextView: UIViewRepresentable {
 
         if let command = insertCommand {
             insertCommand = nil
-            context.coordinator.applyInsertion(command, to: textView)
+            let coordinator = context.coordinator
+            DispatchQueue.main.async {
+                coordinator.applyInsertion(command, to: textView)
+            }
         }
 
         if isFocused.wrappedValue, !textView.isFirstResponder {
@@ -125,20 +133,26 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         /// Recompute the auto-grow height (composer mode) or force scrolling
-        /// (editor mode), and keep the placeholder in sync.
+        /// (editor mode), and keep the placeholder in sync. Only toggles
+        /// `isScrollEnabled` and the height binding when they actually change,
+        /// so repeated layout passes never spin a SwiftUI update loop.
         func refreshLayout(_ textView: UITextView) {
             (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !(textView.text.isEmpty)
             if alwaysScrolls {
-                textView.isScrollEnabled = true
+                if !textView.isScrollEnabled { textView.isScrollEnabled = true }
                 return
             }
+            let wasScrolling = textView.isScrollEnabled
             textView.isScrollEnabled = false
             let width = textView.bounds.width > 0 ? textView.bounds.width : 200
             let fit = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
             let minHeight = textView.font?.lineHeight ?? 20
             let maxHeight = minHeight * CGFloat(max(maxLines, 1))
             let clamped = min(max(fit.height, minHeight), maxHeight)
-            textView.isScrollEnabled = fit.height > maxHeight
+            let shouldScroll = fit.height > maxHeight
+            if wasScrolling != shouldScroll {
+                textView.isScrollEnabled = shouldScroll
+            }
             if abs(height.wrappedValue - clamped) > 0.5 {
                 DispatchQueue.main.async { self.height.wrappedValue = clamped }
             }

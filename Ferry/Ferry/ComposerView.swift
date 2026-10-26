@@ -20,7 +20,6 @@ struct ComposerView: View {
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?
-    @State private var catalog = CommandCatalogStore()
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
     var body: some View {
@@ -28,7 +27,7 @@ struct ComposerView: View {
             statusArea
             uploadQueue
             if mentionContext != nil {
-                MentionPickerView(targets: catalog.targets,
+                MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
                                   activeTarget: activeTarget,
                                   onSelectTarget: selectMentionTarget,
@@ -48,10 +47,13 @@ struct ComposerView: View {
             PlusPanel(onFile: { showFileImporter = true }, onCamera: { openCamera() })
         }
         .sheet(isPresented: $showEditor) {
-            ExpandEditorView(text: $model.draft) {
-                focused.wrappedValue = false
-                Task { await model.send() }
-            }
+            ExpandEditorView(text: $model.draft,
+                             catalog: model.catalog,
+                             refreshCatalog: { model.refreshCommandCatalog() },
+                             onSend: {
+                                 focused.wrappedValue = false
+                                 Task { await model.send() }
+                             })
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
@@ -199,6 +201,7 @@ struct ComposerView: View {
                              onMentionChange: { context in
                                  mentionContext = context
                                  activeTarget = nil
+                                 if context != nil { model.refreshCommandCatalog() }
                              },
                              accessibilityIdentifier: "composer-input")
                 .frame(height: textFieldHeight)
@@ -445,6 +448,8 @@ struct PlusPanel: View {
 /// with the caret at the end of the existing text.
 struct ExpandEditorView: View {
     @Binding var text: String
+    let catalog: CommandCatalogStore
+    let refreshCatalog: () -> Void
     let onSend: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -452,7 +457,6 @@ struct ExpandEditorView: View {
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?
-    @State private var catalog = CommandCatalogStore()
 
     var body: some View {
         NavigationStack {
@@ -469,6 +473,7 @@ struct ExpandEditorView: View {
                                  onMentionChange: { context in
                                      mentionContext = context
                                      activeTarget = nil
+                                     if context != nil { refreshCatalog() }
                                  },
                                  accessibilityIdentifier: "editor-input")
                     .padding(.horizontal, 12).padding(.vertical, 10)
