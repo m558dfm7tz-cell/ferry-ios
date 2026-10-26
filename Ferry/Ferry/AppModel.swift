@@ -221,8 +221,29 @@ final class AppModel {
 
     func send() async {
         let sentDraft = draft
-        guard await sendText(sentDraft) else { return }
+        guard await sendText(outgoingText(sentDraft)) else { return }
         if draft == sentDraft { draft = "" }
+    }
+
+    /// The text actually sent for a composer draft.
+    ///
+    /// On an assistant's page the assistant's wake tag is prepended — exactly
+    /// what typing `@总管` does. That is the whole "wake" contract: FerryHelper
+    /// matches a configured `wakeTag` at the very start of a **text** message
+    /// body and forwards it to that assistant, and the web timeline attributes
+    /// a message starting with "@name" to that assistant. A draft that already
+    /// starts with an "@…" mention is left alone, so an explicit mention (or
+    /// the mention picker's own insertion) is never double-tagged.
+    func outgoingText(_ draftText: String) -> String {
+        guard let selectedAssistantID,
+              let assistant = assistantStore.assistants.first(where: { $0.id == selectedAssistantID }) else {
+            return draftText
+        }
+        let body = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return draftText }
+        // An explicit leading mention already says where the message should go.
+        if body.hasPrefix("@") || body.hasPrefix("＠") { return draftText }
+        return catalog.wakeTag(forAssistantName: assistant.name) + " " + body
     }
 
     /// Send `text` as an ordinary outgoing message; true when the server
@@ -754,8 +775,11 @@ final class AppModel {
 
     /// A newly arrived assistant message is "unseen" only while a *different*
     /// assistant is being filtered. Viewing 全部 or that assistant itself
-    /// counts as seen, so no red dot is raised in those cases.
+    /// counts as seen, so no red dot is raised in those cases. Outgoing
+    /// messages never raise a dot — including the ones addressed to an
+    /// assistant with a wake tag.
     private func markUnreadIfNeeded(_ message: MessagePayload) {
+        guard !message.isCurrentDevice else { return }
         guard let assistantID = assistantStore.assistant(for: message)?.id else { return }
         if let selectedAssistantID, selectedAssistantID != assistantID {
             unreadAssistantIDs.insert(assistantID)

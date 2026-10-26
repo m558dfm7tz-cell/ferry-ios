@@ -445,10 +445,21 @@ struct ImageStillTransfer: Transferable {
 /// bytes plus a media type and file name.
 enum MediaLoader {
     static func isLivePhoto(_ item: PhotosPickerItem) -> Bool {
-        if item.supportedContentTypes.contains(where: { $0.conforms(to: .livePhoto) }) { return true }
-        // Some picker items report image+movie instead of .livePhoto; fall back
-        // to the photo-library asset's media subtype so a Live Photo is never
-        // mistaken for a plain movie (which would drop the still image).
+        let types = item.supportedContentTypes
+        if types.contains(where: { $0.conforms(to: .livePhoto) }) { return true }
+        // Some picker items report image+movie instead of .livePhoto. A plain
+        // movie never reports an image type, so "image + movie" is treated as a
+        // Live Photo here. Without this such an item fell through to the plain
+        // image path, whose `Data` payload is the paired movie — those bytes
+        // were then labelled "image/jpeg" and arrived as an undecodable photo,
+        // i.e. a file card with no thumbnail.
+        if types.contains(where: { $0.conforms(to: .image) }),
+           types.contains(where: { $0.conforms(to: .movie) }) {
+            return true
+        }
+        // Fall back to the photo-library asset's media subtype so a Live Photo
+        // is never mistaken for a plain movie (which would drop the still).
+        // Requires photo-library read access; without it the fetch is empty.
         guard let identifier = item.itemIdentifier else { return false }
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
         return assets.firstObject?.mediaSubtypes.contains(.photoLive) == true
@@ -458,11 +469,38 @@ enum MediaLoader {
         item.supportedContentTypes.contains { $0.conforms(to: .movie) }
     }
 
-    /// Still image (or the still frame of a Live Photo) from a picker item.
+    /// Still image from a picker item.
+    ///
+    /// The bytes are checked before they are labelled `image/*`, because a Live
+    /// Photo's `loadTransferable(type: Data.self)` can hand back the paired
+    /// movie instead of the still. Anything `UIImage` cannot open is either
+    /// that movie (retry through the explicit still-image representations) or
+    /// not an image at all — in which case nil is returned so the caller can
+    /// send it as a video instead of shipping movie bytes under an image mime.
     static func image(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
         guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
-        let mime = imageMime(from: data)
-        return (data, mime, generatedName(prefix: "照片", mime: mime))
+        if isUsableImage(data) {
+            let mime = imageMime(from: data)
+            return (data, mime, generatedName(prefix: "照片", mime: mime))
+        }
+        // Not an image at all: ask for the still frame explicitly rather than
+        // sending the paired movie under an image mime.
+        if let still = await stillImageData(from: item), isUsableImage(still) {
+            let mime = imageMime(from: still)
+            return (still, mime, generatedName(prefix: "照片", mime: mime))
+        }
+        return nil
+    }
+
+    /// Whether the bytes can be sent as an image: either a recognised image
+    /// container or something `UIImage` can open.
+    ///
+    /// This is the check the timeline performs when it renders a bubble
+    /// (`UIImage(data:)`), so anything failing it would have been drawn as a
+    /// file card with no thumbnail. The magic-byte sniff runs first so a huge
+    /// image that ImageIO refuses to decode is still sent as the image it is.
+    private static func isUsableImage(_ data: Data) -> Bool {
+        sniffedImageMime(from: data) != nil || UIImage(data: data) != nil
     }
 
     /// Original movie bytes copied to a temp file, without re-encoding.
@@ -507,14 +545,20 @@ enum MediaLoader {
     ///
     /// Preferred path: explicit still-image `Transferable` types (HEIC, then
     /// JPEG, then generic image). Falls back to reading the
-    /// `.fullSizePhoto`/`.photo` resource directly from the photo library.
+    /// `.fullSizePhoto`/`.photo` resource directly from the photo library, and
+    /// finally to the generic `Data` payload — but only when it really decodes
+    /// as an image, since for a Live Photo that payload is usually the movie.
     static func livePhotoStillImage(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
-        if let data = await stillImageData(from: item) {
+        if let data = await stillImageData(from: item), isUsableImage(data) {
             let mime = imageMime(from: data)
             return (data, mime, generatedName(prefix: "照片", mime: mime))
         }
-        if let result = await legacyLivePhotoStillImage(from: item) {
+        if let result = await legacyLivePhotoStillImage(from: item), isUsableImage(result.data) {
             return result
+        }
+        if let data = try? await item.loadTransferable(type: Data.self), isUsableImage(data) {
+            let mime = imageMime(from: data)
+            return (data, mime, generatedName(prefix: "照片", mime: mime))
         }
         return nil
     }
@@ -608,16 +652,28 @@ enum MediaLoader {
         }
     }
 
-    /// Detect the image container from magic bytes (avoids trusting the picker's
-    /// reported content type, which is unreliable for Live Photo stills).
-    static func imageMime(from data: Data) -> String {
+    /// Detect the image container from magic bytes; nil when the bytes are not
+    /// a known image container.
+    ///
+    /// Sniffing beats trusting the picker's reported content type, which is
+    /// unreliable for Live Photo stills. Note that a movie also starts with an
+    /// `ftyp` box, so only image brands count — a paired Live Photo movie must
+    /// not be mistaken for a HEIC.
+    static func sniffedImageMime(from data: Data) -> String? {
         if data.count >= 2, data[0] == 0xFF, data[1] == 0xD8 { return "image/jpeg" }
         if data.count >= 4, data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 { return "image/png" }
         if data.count >= 12, data[4] == 0x66, data[5] == 0x74, data[6] == 0x79, data[7] == 0x70 {
             let brand = String(bytes: data[8..<12], encoding: .ascii) ?? ""
             if ["heic", "heix", "hevc", "mif1", "heif"].contains(brand) { return "image/heic" }
         }
-        return "image/jpeg"
+        return nil
+    }
+
+    /// Image container for the upload. Containers ImageIO can open but that
+    /// have no magic-byte entry above (GIF/TIFF/WebP/…) fall back to JPEG,
+    /// which every Ferry client renders.
+    static func imageMime(from data: Data) -> String {
+        sniffedImageMime(from: data) ?? "image/jpeg"
     }
 
     /// File metadata only (mime + name) without reading the bytes, so the

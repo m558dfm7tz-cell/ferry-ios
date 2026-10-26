@@ -81,6 +81,16 @@ struct MentionTarget: Codable, Identifiable, Equatable {
         return commands.isEmpty ? "at" : "sparkles"
     }
 
+    /// Whether this catalog entry is the one published for the assistant named
+    /// `name` (exact, case-insensitive — title, alias or alias list).
+    func matchesAssistant(_ name: String) -> Bool {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return false }
+        if title.localizedCaseInsensitiveCompare(target) == .orderedSame { return true }
+        if let alias, alias.localizedCaseInsensitiveCompare(target) == .orderedSame { return true }
+        return aliases.contains { $0.localizedCaseInsensitiveCompare(target) == .orderedSame }
+    }
+
     /// Case-insensitive match against title, alias, aliases, subtitle, and
     /// each command's name/description/aliases.
     func matches(_ query: String) -> Bool {
@@ -311,6 +321,28 @@ final class CommandCatalogStore {
         self.provider = provider
         self.fetcher = RemoteCommandCatalogFetcher()
         self.targets = (try? provider.loadCatalog()) ?? []
+    }
+
+    /// The "@…" wake tag that addresses an assistant, e.g. "@总管".
+    ///
+    /// FerryHelper publishes it as the assistant group's "叫醒" pseudo-command
+    /// (`insert_text`), so the phone uses exactly the string the desktop shows.
+    /// Falls back to "@" + the assistant's name when the catalog has no entry
+    /// (FerryHelper unreachable, or a locally created assistant) — which is the
+    /// same shape FerryHelper's own default config uses.
+    func wakeTag(forAssistantName name: String) -> String {
+        if let target = targets.first(where: { $0.matchesAssistant(name) }),
+           let tag = Self.extractedWakeTag(from: target.insertText) {
+            return tag
+        }
+        return "@" + name
+    }
+
+    /// Extracts a leading "@tag" from a catalog `insert_text` ("@总管 ").
+    private static func extractedWakeTag(from insertText: String?) -> String? {
+        guard let text = insertText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              text.hasPrefix("@"), text.count > 1 else { return nil }
+        return text
     }
 
     /// Fetch the FerryHelper catalog for the configured server host (port 42830),

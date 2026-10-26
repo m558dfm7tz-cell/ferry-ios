@@ -104,12 +104,49 @@ final class AssistantStore {
     /// All assistants: fixed first, then custom.
     var assistants: [Assistant] { Self.builtIn + custom }
 
-    /// Resolve the assistant a message belongs to. The user's own messages
-    /// (`isCurrentDevice`) never belong to an assistant, so they keep the
-    /// existing right-aligned, no-avatar layout.
+    /// Resolve the assistant a message belongs to.
+    ///
+    /// 1. An incoming message belongs to the assistant whose keywords match the
+    ///    sender's device name (the web rule).
+    /// 2. A message this phone sent belongs to the assistant it *addresses*:
+    ///    the body starts with that assistant's wake tag ("@总管 …"). Same rule
+    ///    as the web timeline's `mentionTargetAssistant()`, so a reply sent
+    ///    from an assistant page groups identically on every device.
+    ///
+    /// Own messages without a tag stay unattributed: they keep the plain
+    /// right-aligned layout and are only listed under 全部.
     func assistant(for message: MessagePayload) -> Assistant? {
-        guard !message.isCurrentDevice else { return nil }
-        return matchingAssistant(senderName: message.senderName)
+        guard message.isCurrentDevice else { return matchingAssistant(senderName: message.senderName) }
+        return mentionedAssistant(inMessage: message)
+    }
+
+    /// The assistant a leading "@name" in a text body points at, or nil when
+    /// there is no such mention. Only text messages participate — a file
+    /// message has no body that could carry a tag.
+    func mentionedAssistant(inMessage message: MessagePayload) -> Assistant? {
+        guard message.kind == .text, let text = message.text else { return nil }
+        var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // FerryHelper normalises the full-width ＠ to "@"; match that here so
+        // both spellings group the same way.
+        if body.hasPrefix("＠") { body = "@" + String(body.dropFirst()) }
+        guard body.hasPrefix("@") else { return nil }
+        let name = body.dropFirst().prefix { !Self.mentionTerminators.contains($0) }
+        guard !name.isEmpty else { return nil }
+        return assistant(named: String(name))
+    }
+
+    /// Characters that end an "@name" mention: whitespace plus the punctuation
+    /// the web timeline stops at, so "@总管，帮我" still reads as 总管.
+    private static let mentionTerminators: Set<Character> = [
+        " ", "\t", "\n", "\r", "@", "＠",
+        "，", "。", "、", "！", "？", "：", "；", ",", ".", "!", "?", ":", ";"
+    ]
+
+    /// Exact (case-insensitive) lookup by assistant name.
+    func assistant(named name: String) -> Assistant? {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return nil }
+        return assistants.first { $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame }
     }
 
     func matchingAssistant(senderName: String) -> Assistant? {

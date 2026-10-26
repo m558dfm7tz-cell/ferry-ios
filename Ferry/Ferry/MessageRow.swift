@@ -138,8 +138,10 @@ struct MessageRow: View {
     private var metaRow: some View {
         HStack(spacing: 6) {
             // The avatar disc already identifies an assistant, so the small
-            // device-kind icon is hidden for assistant messages.
-            if assistant == nil {
+            // device-kind icon is hidden for assistant messages. It stays for
+            // this phone's own messages even when they are addressed to an
+            // assistant with a wake tag.
+            if assistant == nil || isCurrent {
                 Image(systemName: message.deviceIcon)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

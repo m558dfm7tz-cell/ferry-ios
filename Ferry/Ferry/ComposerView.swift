@@ -422,10 +422,14 @@ struct ComposerView: View {
             if let movie = await MediaLoader.movie(from: item) {
                 enqueueVideo(from: movie.url, mime: movie.mime, name: movie.name)
             }
-        } else {
-            if let image = await MediaLoader.image(from: item) {
-                enqueueData(image.data, name: image.name, mediaType: image.mime)
-            }
+        } else if let image = await MediaLoader.image(from: item) {
+            enqueueData(image.data, name: image.name, mediaType: image.mime)
+        } else if let movie = await MediaLoader.movie(from: item) {
+            // The item reported an image type but its bytes are a movie (a Live
+            // Photo the picker described as a plain image). Send it as a video
+            // so it renders as a playable bubble with a thumbnail rather than
+            // as a "photo" nobody can decode.
+            enqueueVideo(from: movie.url, mime: movie.mime, name: movie.name)
         }
     }
 
@@ -463,15 +467,18 @@ struct ComposerView: View {
         }
     }
 
-    /// Live Photo: send the still image plus the paired video as two messages.
-    /// The still frame is read from the photo-library resource (`.photo`/
-    /// `.fullSizePhoto`), and the video is transcoded to MP4 (or sent as the
-    /// original `.mov` when "发送原始视频" is on) so it always renders as a
-    /// playable video bubble. Falls back to still-only when the video cannot
-    /// be read.
+    /// Live Photo: send the still frame only, as an ordinary JPEG/HEIC image.
+    ///
+    /// The paired video is no longer sent as a second message — a Live Photo is
+    /// delivered as a plain picture, so it always shows up as an image bubble
+    /// with a thumbnail. The video is kept only as a last resort: if no still
+    /// frame can be read at all, sending the paired movie (transcoded to MP4,
+    /// or the original `.mov` when "发送原始视频" is on) is better than sending
+    /// nothing.
     private func enqueueLivePhoto(_ item: PhotosPickerItem) async {
         if let image = await MediaLoader.livePhotoStillImage(from: item) {
             enqueueData(image.data, name: image.name, mediaType: image.mime)
+            return
         }
         guard let videoURL = await MediaLoader.livePhotoVideoURL(from: item) else { return }
         if sendOriginalVideo {
