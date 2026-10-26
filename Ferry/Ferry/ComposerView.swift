@@ -333,7 +333,7 @@ struct ComposerView: View {
     private func selectMentionTarget(_ target: MentionTarget) {
         guard let context = mentionContext else { return }
         if let insertText = target.insertText {
-            insertCommand = TextInsertion(range: context.range, text: insertText)
+            insertCommand = TextInsertion(id: UUID(), range: context.range, text: insertText)
             mentionContext = nil
             activeTarget = nil
         } else if !target.commands.isEmpty {
@@ -343,7 +343,7 @@ struct ComposerView: View {
 
     private func selectCommand(_ command: CommandItem) {
         guard let context = mentionContext else { return }
-        insertCommand = TextInsertion(range: context.range, text: command.insertText)
+        insertCommand = TextInsertion(id: UUID(), range: context.range, text: command.insertText)
         mentionContext = nil
         activeTarget = nil
     }
@@ -580,7 +580,7 @@ struct ExpandEditorView: View {
     private func selectMentionTarget(_ target: MentionTarget) {
         guard let context = mentionContext else { return }
         if let insertText = target.insertText {
-            insertCommand = TextInsertion(range: context.range, text: insertText)
+            insertCommand = TextInsertion(id: UUID(), range: context.range, text: insertText)
             mentionContext = nil
             activeTarget = nil
         } else if !target.commands.isEmpty {
@@ -590,7 +590,7 @@ struct ExpandEditorView: View {
 
     private func selectCommand(_ command: CommandItem) {
         guard let context = mentionContext else { return }
-        insertCommand = TextInsertion(range: context.range, text: command.insertText)
+        insertCommand = TextInsertion(id: UUID(), range: context.range, text: command.insertText)
         mentionContext = nil
         activeTarget = nil
     }

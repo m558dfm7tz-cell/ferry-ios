@@ -77,10 +77,13 @@ struct ComposerTextView: UIViewRepresentable {
         textView.placeholderLabel.isHidden = !text.isEmpty
 
         if let command = insertCommand {
-            insertCommand = nil
+            // Apply on the next main-queue turn and clear the binding there
+            // (never synchronously inside updateUIView, which would mutate
+            // state during a view update and re-enter SwiftUI).
             let coordinator = context.coordinator
             DispatchQueue.main.async {
                 coordinator.applyInsertion(command, to: textView)
+                insertCommand = nil
             }
         }
 
@@ -99,6 +102,10 @@ struct ComposerTextView: UIViewRepresentable {
         /// first responder on an explicit transition (and never spuriously
         /// resigns a tap that just focused the text view).
         private var lastKnownFocus = false
+        /// ID of the last insertion already applied, so a command that is
+        /// dispatched more than once (before the parent clears the binding) is
+        /// applied exactly once instead of growing the text each pass.
+        private var lastAppliedInsertionID: UUID?
 
         init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
              maxLines: Int, alwaysScrolls: Bool, minHeight: CGFloat,
@@ -139,6 +146,8 @@ struct ComposerTextView: UIViewRepresentable {
         /// after the inserted text. `textViewDidChange` is not called for this
         /// programmatic change, so the SwiftUI binding is synced manually.
         func applyInsertion(_ command: TextInsertion, to textView: UITextView) {
+            guard command.id != lastAppliedInsertionID else { return }
+            lastAppliedInsertionID = command.id
             let ns = (textView.text as NSString)
             let range = command.range
             guard range.location <= ns.length, range.length <= ns.length - range.location else { return }

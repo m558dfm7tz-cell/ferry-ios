@@ -204,8 +204,11 @@ struct MentionContext: Equatable {
 
 /// An imperative "replace this range with this text" request passed from the
 /// SwiftUI picker down into the `UITextView` so the caret can be placed right
-/// after the inserted text.
+/// after the inserted text. `id` makes each request unique so the text view can
+/// apply it exactly once even if `updateUIView` runs several times before the
+/// parent clears the binding.
 struct TextInsertion: Equatable {
+    let id: UUID
     let range: NSRange
     let text: String
 }
