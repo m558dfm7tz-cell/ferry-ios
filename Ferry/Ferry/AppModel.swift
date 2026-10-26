@@ -209,6 +209,7 @@ final class AppModel {
             phase = .connected
             uploader.configure(endpoint: endpoint, token: claim.token)
             await loadInitial(generation: current)
+            await reconcile(generation: current)
             startPolling()
             refreshCommandCatalog()
         } catch { handle(error, generation: current) }
@@ -679,6 +680,7 @@ final class AppModel {
             activate(space: space(for: endpoint.origin))
             uploader.configure(endpoint: endpoint, token: token)
             await loadInitial(generation: current)
+            await reconcile(generation: current)
             startPolling()
             refreshCommandCatalog()
         } catch is CancellationError {
@@ -798,6 +800,144 @@ final class AppModel {
             }
         }
         knownServerAssistantNames = currentNames
+    }
+
+    /// One-time reconcile after launch/reconnect: pull the authoritative lists
+    /// (favorites, assistants) and prune local caches for anything another
+    /// device removed, then advance the deletion-log cursor past history.
+    private func reconcile(generation current: UUID) async {
+        guard current == generation, let endpoint, let token else { return }
+        if let payload = try? await client.favorites(endpoint: endpoint, token: token) {
+            await reconcileFavorites(payload.favorites)
+        }
+        if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
+            await adoptServerAssistants(state)
+        }
+        if let page = try? await client.changes(endpoint: endpoint, token: token, since: 0) {
+            changeCursor = max(changeCursor, page.revision)
+        }
+    }
+
+    /// Unify the phone's favorites with the shared server list. Phone-local
+    /// favorites the server doesn't know about are pushed first (so nothing is
+    /// lost), then the phone adopts the merged list: favorites removed on
+    /// another device disappear, and favorites starred elsewhere appear (their
+    /// media type is inferred from the server's file-kind; bytes are re-fetched
+    /// from the server when opened).
+    private func reconcileFavorites(_ serverFavorites: [ServerFavorite]) async {
+        let serverIDs = Set(serverFavorites.map(\.id))
+        for local in localStore.favorites where !serverIDs.contains(local.id) {
+            await pushFavorite(local)
+        }
+        guard let endpoint, let token,
+              let payload = try? await client.favorites(endpoint: endpoint, token: token) else { return }
+        let merged = payload.favorites
+        let mergedIDs = Set(merged.map(\.id))
+        for local in localStore.favorites where !mergedIDs.contains(local.id) {
+            localStore.removeFavorite(local.id)
+        }
+        let localIDs = Set(localStore.favorites.map(\.id))
+        for server in merged where !localIDs.contains(server.id) {
+            localStore.addFavorite(messagePayload(from: server), fileData: nil)
+        }
+    }
+
+    private func pushFavorite(_ local: FavoriteMessage) async {
+        guard let endpoint, let token else { return }
+        _ = try? await client.putFavorite(endpoint: endpoint, token: token,
+                                          messageID: local.id, record: favoriteRecord(from: local))
+    }
+
+    private func favoriteRecord(from local: FavoriteMessage) -> FavoriteRecord {
+        let message = local.message
+        let isFile = message.kind == .file
+        return FavoriteRecord(id: message.id,
+                              kind: isFile ? "file" : "text",
+                              fileKind: Self.fileKind(forMediaType: message.file?.mediaType ?? ""),
+                              fileName: message.file?.name ?? "",
+                              text: message.text ?? "",
+                              sender: message.senderName,
+                              senderKind: message.senderKind,
+                              createdAt: message.createdAt,
+                              favoritedAt: Int64(Date().timeIntervalSince1970 * 1000))
+    }
+
+    private func messagePayload(from server: ServerFavorite) -> MessagePayload {
+        let file: FileInfo?
+        if server.kind == "file" {
+            file = FileInfo(name: server.fileName,
+                            mediaType: Self.mediaType(forFileKind: server.fileKind),
+                            size: 0,
+                            downloadURL: "/api/v1/files/\(server.id)")
+        } else {
+            file = nil
+        }
+        return MessagePayload(id: server.id,
+                              sequence: 0,
+                              kind: server.kind == "file" ? .file : .text,
+                              senderName: server.sender,
+                              senderKind: server.senderKind,
+                              isCurrentDevice: false,
+                              createdAt: server.createdAt,
+                              text: server.kind == "text" ? server.text : nil,
+                              file: file)
+    }
+
+    private static func fileKind(forMediaType mediaType: String) -> String {
+        if mediaType.hasPrefix("image/") { return "image" }
+        if mediaType.hasPrefix("video/") { return "video" }
+        if mediaType == "application/pdf" { return "pdf" }
+        if mediaType.hasPrefix("text/") { return "text" }
+        return "file"
+    }
+
+    private static func mediaType(forFileKind kind: String) -> String {
+        switch kind {
+        case "image": return "image/jpeg"
+        case "video": return "video/mp4"
+        case "pdf": return "application/pdf"
+        case "text": return "text/plain"
+        default: return "application/octet-stream"
+        }
+    }
+
+    /// Make the phone's custom assistants server-authoritative: merge any
+    /// local-only assistant onto the server (so nothing is lost), then adopt
+    /// the server list — which drops assistants deleted on another device.
+    private func adoptServerAssistants(_ state: AssistantStatePayload) async {
+        let serverNames = Set(state.custom.map(\.name))
+        let localOnly = assistantStore.custom.filter { !serverNames.contains($0.name) }
+        var merged = state.custom
+        if !localOnly.isEmpty {
+            merged.append(contentsOf: localOnly.map {
+                ServerCustomAssistant(name: $0.name, avatarText: $0.avatarText, colorIndex: $0.colorIndex)
+            })
+            if let endpoint, let token {
+                let updated = AssistantStatePayload(selected: state.selected, reads: state.reads, custom: merged)
+                if let pushed = try? await client.putAssistantState(endpoint: endpoint, token: token, state: updated) {
+                    merged = pushed.custom
+                }
+            }
+        }
+        var byName: [String: Assistant] = [:]
+        for assistant in assistantStore.custom { byName[assistant.name] = assistant }
+        let adopted = merged.map { server -> Assistant in
+            if let existing = byName[server.name] { return existing }
+            return Assistant(id: "server-" + server.name, name: server.name,
+                             avatarText: server.avatarText ?? "",
+                             colorIndex: server.colorIndex ?? 0,
+                             isBuiltIn: false, matchKeywords: [server.name])
+        }
+        let adoptedNames = Set(merged.map(\.name))
+        for assistant in assistantStore.custom where !adoptedNames.contains(assistant.name) {
+            avatarStore.reset(for: assistant.id)
+        }
+        assistantStore.replaceCustom(with: adopted)
+        knownServerAssistantNames = Set(adopted.map(\.name))
+        if let selected = selectedAssistantID,
+           !assistantStore.assistants.contains(where: { $0.id == selected }) {
+            selectedAssistantID = nil
+        }
     }
 
     /// Initial (WeChat-style) load: fetch the newest page and, later, start

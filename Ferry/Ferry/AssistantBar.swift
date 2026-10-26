@@ -207,6 +207,13 @@ final class AssistantStore {
         return true
     }
 
+    /// Replace the whole custom list (server reconcile). Existing ids are kept
+    /// where names match, so avatar media / unread state stay attached.
+    func replaceCustom(with assistants: [Assistant]) {
+        custom = assistants
+        persist()
+    }
+
     private static func sanitizedAvatarText(_ text: String, fallbackName: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return String(trimmed.prefix(1)) }

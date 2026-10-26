@@ -311,6 +311,43 @@ struct DeletedCount: Decodable, Sendable {
     let deleted: Int
 }
 
+/// One shared favorite from `GET /api/v1/favorites` (a metadata snapshot; the
+/// server marks `missing` when the underlying message was deleted).
+struct ServerFavorite: Decodable, Sendable {
+    let id: String
+    let kind: String
+    let fileKind: String
+    let fileName: String
+    let text: String
+    let sender: String
+    let senderKind: String
+    let createdAt: String
+    let favoritedAt: Int64
+    let missing: Bool
+}
+
+struct FavoritesPayload: Decodable, Sendable {
+    let favorites: [ServerFavorite]
+}
+
+/// Body of `PUT /api/v1/favorites/{id}` (a favorite snapshot to star on).
+struct FavoriteRecord: Encodable, Sendable {
+    let id: String
+    let kind: String
+    let fileKind: String
+    let fileName: String
+    let text: String
+    let sender: String
+    let senderKind: String
+    let createdAt: String
+    let favoritedAt: Int64
+}
+
+struct PutFavoriteResponse: Decodable, Sendable {
+    let applied: Bool
+    let favorite: ServerFavorite
+}
+
 /// One deletion made on this phone that still needs to reach the server.
 /// Persisted per space and flushed in order when the phone is back online.
 struct PendingDeletion: Codable, Equatable, Identifiable, Sendable {

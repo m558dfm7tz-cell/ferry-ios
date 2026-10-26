@@ -15,6 +15,8 @@ protocol FerryServicing {
     func changes(endpoint: ServerEndpoint, token: String, since: Int64) async throws -> ChangesPage
     func assistantState(endpoint: ServerEndpoint, token: String) async throws -> AssistantStatePayload
     func putAssistantState(endpoint: ServerEndpoint, token: String, state: AssistantStatePayload) async throws -> AssistantStatePayload
+    func favorites(endpoint: ServerEndpoint, token: String) async throws -> FavoritesPayload
+    func putFavorite(endpoint: ServerEndpoint, token: String, messageID: String, record: FavoriteRecord) async throws -> PutFavoriteResponse
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
     func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
@@ -105,6 +107,16 @@ struct FerryClient: FerryServicing {
     func putAssistantState(endpoint: ServerEndpoint, token: String, state: AssistantStatePayload) async throws -> AssistantStatePayload {
         try await json(endpoint: endpoint, path: "/api/v1/assistant-state", method: "PUT", token: token,
                        body: try JSONEncoder().encode(state))
+    }
+
+    /// Shared favorites list (`GET /api/v1/favorites`).
+    func favorites(endpoint: ServerEndpoint, token: String) async throws -> FavoritesPayload {
+        try await json(endpoint: endpoint, path: "/api/v1/favorites", token: token)
+    }
+
+    func putFavorite(endpoint: ServerEndpoint, token: String, messageID: String, record: FavoriteRecord) async throws -> PutFavoriteResponse {
+        try await json(endpoint: endpoint, path: "/api/v1/favorites/\(messageID)", method: "PUT", token: token,
+                       body: try JSONEncoder().encode(record))
     }
 
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount {
