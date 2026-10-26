@@ -4,7 +4,7 @@ import UIKit
 
 // MARK: - Annotation model
 
-enum EditorAnnotationKind {
+enum EditorAnnotationKind: Equatable {
     case pen
     case arrow
     case mosaic
@@ -18,12 +18,18 @@ enum EditorAnnotationKind {
 /// full-resolution export. `thickness` is a fraction of the image **width** for
 /// pen/arrow/mosaic and a fraction of the image **height** for text (where it
 /// is the font size).
-struct EditorAnnotation {
+struct EditorAnnotation: Equatable {
     var kind: EditorAnnotationKind
     var points: [CGPoint]
     var text: String
     var colorIndex: Int
     var thickness: CGFloat
+    /// Text-only styling. `rotation` is radians; `isBold` / `whiteBackground`
+    /// toggle the bold weight and the white backing plate. Pen/arrow/mosaic
+    /// annotations leave these at their defaults.
+    var rotation: CGFloat = 0
+    var isBold: Bool = false
+    var whiteBackground: Bool = false
 }
 
 /// Fixed palette: indices are stored in annotations, so they stay `Equatable`
@@ -117,37 +123,51 @@ enum AnnotationPainter {
         triangle.fill()
     }
 
+    /// The attributes used to draw (and measure) a text annotation. Kept in one
+    /// place so the on-screen hit-testing, the selection outline, and the
+    /// full-resolution export all measure with the exact same font.
+    static func textAttributes(fontSize: CGFloat, isBold: Bool, colorIndex: Int) -> [NSAttributedString.Key: Any] {
+        let font = UIFont.systemFont(ofSize: fontSize, weight: isBold ? .bold : .semibold)
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        return [
+            .font: font,
+            .foregroundColor: EditorPalette.color(colorIndex),
+            .paragraphStyle: style
+        ]
+    }
+
+    /// Size of a text annotation's glyphs (no backing-plate padding) at the
+    /// given font size, using the same attributes as `paintText`.
+    static func textSize(_ text: String, fontSize: CGFloat, isBold: Bool, colorIndex: Int) -> CGSize {
+        (text as NSString).size(withAttributes: textAttributes(fontSize: fontSize, isBold: isBold, colorIndex: colorIndex))
+    }
+
     private static func paintText(_ item: EditorAnnotation, in size: CGSize) {
         guard let anchor = item.points.first else { return }
         let text = item.text
         guard !text.isEmpty else { return }
         let fontSize = max(10, item.thickness * size.height)
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
-        let fill = EditorPalette.color(item.colorIndex)
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 0
-        let luminance = fill.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-            ? 0.299 * red + 0.587 * green + 0.114 * blue
-            : 0
-        // Outline in the opposite brightness so text stays readable on any photo.
-        let outline: UIColor = luminance > 0.6 ? .black : .white
-        let style = NSMutableParagraphStyle()
-        style.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: fill,
-            .strokeColor: outline,
-            .strokeWidth: -3,
-            .paragraphStyle: style
-        ]
+        let attributes = textAttributes(fontSize: fontSize, isBold: item.isBold, colorIndex: item.colorIndex)
         let measured = (text as NSString).size(withAttributes: attributes)
-        var origin = CGPoint(x: anchor.x * size.width - measured.width / 2,
-                             y: anchor.y * size.height - measured.height / 2)
-        origin.x = min(max(0, origin.x), max(0, size.width - measured.width))
-        origin.y = min(max(0, origin.y), max(0, size.height - measured.height))
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let anchorPoint = CGPoint(x: anchor.x * size.width, y: anchor.y * size.height)
+        context.saveGState()
+        context.translateBy(x: anchorPoint.x, y: anchorPoint.y)
+        context.rotate(by: item.rotation)
+        if item.whiteBackground {
+            let padX = measured.width * 0.25
+            let padY = measured.height * 0.25
+            let plate = CGRect(x: -measured.width / 2 - padX,
+                               y: -measured.height / 2 - padY,
+                               width: measured.width + padX * 2,
+                               height: measured.height + padY * 2)
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: plate, cornerRadius: max(4, fontSize * 0.18)).fill()
+        }
+        let origin = CGPoint(x: -measured.width / 2, y: -measured.height / 2)
         (text as NSString).draw(at: origin, withAttributes: attributes)
+        context.restoreGState()
     }
 
     /// The poly-line (or dot) of an annotation, in the given pixel/point size.
@@ -343,6 +363,29 @@ final class ImageEditorModel {
         annotations.append(item)
     }
 
+    /// Snapshot one history entry at the start of a continuous text gesture
+    /// (drag / pinch / rotate) so the whole gesture undoes as a single step.
+    /// The actual mutation follows via `updateText` without pushing again.
+    func beginTextEdit() {
+        pushHistory()
+    }
+
+    /// Mutate one text annotation in place. `anchor` is normalized (0...1);
+    /// `rotation` is radians. Only text annotations are affected.
+    func updateText(at index: Int,
+                    anchor: CGPoint? = nil,
+                    thickness: CGFloat? = nil,
+                    rotation: CGFloat? = nil,
+                    isBold: Bool? = nil,
+                    whiteBackground: Bool? = nil) {
+        guard annotations.indices.contains(index), annotations[index].kind == .text else { return }
+        if let anchor { annotations[index].points = [anchor] }
+        if let thickness { annotations[index].thickness = thickness }
+        if let rotation { annotations[index].rotation = rotation }
+        if let isBold { annotations[index].isBold = isBold }
+        if let whiteBackground { annotations[index].whiteBackground = whiteBackground }
+    }
+
     func undo() {
         guard let last = history.popLast() else { return }
         base = last.base
@@ -416,19 +459,39 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
     private(set) var zoomScale: CGFloat = 1
     private(set) var panOffset: CGSize = .zero
 
+    /// Index (into `annotations`) of the text annotation currently being edited.
+    /// When set, pinch/rotation resize/rotate that text instead of the canvas,
+    /// and a dashed outline is drawn around it.
+    var selectedTextIndex: Int?
+
     /// Single-finger callbacks report **normalized** (0...1) image coordinates.
     var onStrokePoint: ((CGPoint) -> Void)?
     var onStrokeEnd: (() -> Void)?
     var onStrokeCancel: (() -> Void)?
     var onTextAnchor: ((CGPoint) -> Void)?
 
+    /// Text-editing callbacks. `onTextGestureBegan` fires once at the start of a
+    /// continuous gesture (move / pinch / rotate) so the model can snapshot one
+    /// history entry for the whole gesture; the other callbacks carry deltas.
+    var onTextSelect: ((Int?) -> Void)?
+    var onTextGestureBegan: (() -> Void)?
+    var onTextMove: ((Int, CGPoint) -> Void)?
+    var onTextScale: ((Int, CGFloat) -> Void)?
+    var onTextRotate: ((Int, CGFloat) -> Void)?
+
     private var pinch: UIPinchGestureRecognizer!
     private var twoFingerPan: UIPanGestureRecognizer!
     private var singleFingerPan: UIPanGestureRecognizer!
     private var singleTap: UITapGestureRecognizer!
+    private var rotation: UIRotationGestureRecognizer!
     private var pinchAnchor: CGPoint = .zero
     private var pinchStartZoom: CGFloat = 1
     private var touchStart: CGPoint = .zero
+    private var activeTextDragIndex: Int?
+    private var textDragStartAnchor: CGPoint = .zero
+    private var textDragStartFinger: CGPoint = .zero
+    private var lastTextPinchScale: CGFloat = 1
+    private var lastTextRotation: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -458,6 +521,10 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
         singleTap.require(toFail: singleFingerPan)
         singleTap.delegate = self
         addGestureRecognizer(singleTap)
+
+        rotation = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation(_:)))
+        rotation.delegate = self
+        addGestureRecognizer(rotation)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -500,6 +567,32 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
         context.translateBy(x: fitted.minX + panOffset.width, y: fitted.minY + panOffset.height)
         context.scaleBy(x: zoomScale, y: zoomScale)
         AnnotationPainter.paint(annotations, pixellated: pixellatedImage, in: fitted.size)
+        drawTextSelection(context: context, fitted: fitted)
+        context.restoreGState()
+    }
+
+    /// Dashed outline around the currently selected text, drawn in the same
+    /// transformed space as the annotation so it tracks rotation and zoom.
+    private func drawTextSelection(context: CGContext, fitted: CGRect) {
+        guard let index = selectedTextIndex, annotations.indices.contains(index),
+              annotations[index].kind == .text,
+              let anchor = annotations[index].points.first else { return }
+        let item = annotations[index]
+        let fontSize = max(10, item.thickness * fitted.height)
+        let measured = AnnotationPainter.textSize(item.text, fontSize: fontSize,
+                                                  isBold: item.isBold, colorIndex: item.colorIndex)
+        let a = CGPoint(x: anchor.x * fitted.width, y: anchor.y * fitted.height)
+        context.saveGState()
+        context.translateBy(x: a.x, y: a.y)
+        context.rotate(by: item.rotation)
+        let pad: CGFloat = 6
+        let rect = CGRect(x: -measured.width / 2 - pad, y: -measured.height / 2 - pad,
+                          width: measured.width + pad * 2, height: measured.height + pad * 2)
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: 5)
+        context.setLineDash(phase: 0, lengths: [4, 3])
+        UIColor.white.setStroke()
+        path.lineWidth = 1.5
+        path.stroke()
         context.restoreGState()
     }
 
@@ -527,6 +620,40 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
                        y: (p.y - f.minY - panOffset.height) / zoomScale)
     }
 
+    private func rotated(_ p: CGPoint, by angle: CGFloat) -> CGPoint {
+        let c = cos(angle)
+        let s = sin(angle)
+        return CGPoint(x: p.x * c - p.y * s, y: p.x * s + p.y * c)
+    }
+
+    /// The unrotated, centre-anchored hit rect of a text annotation (glyphs plus
+    /// a finger-slop margin), in fitted-image space.
+    private func textLocalRect(_ item: EditorAnnotation, fitted: CGRect) -> CGRect {
+        let fontSize = max(10, item.thickness * fitted.height)
+        let measured = AnnotationPainter.textSize(item.text, fontSize: fontSize,
+                                                  isBold: item.isBold, colorIndex: item.colorIndex)
+        let pad: CGFloat = 14
+        return CGRect(x: -measured.width / 2 - pad, y: -measured.height / 2 - pad,
+                      width: measured.width + pad * 2, height: measured.height + pad * 2)
+    }
+
+    /// Index of the text annotation under a screen point, topmost first.
+    private func textIndex(at screen: CGPoint) -> Int? {
+        let f = fittedRect()
+        guard f.width > 0, f.height > 0, zoomScale > 0 else { return nil }
+        let local = displayPoint(forScreen: screen)
+        for index in annotations.indices.reversed() {
+            let item = annotations[index]
+            guard item.kind == .text, let anchor = item.points.first else { continue }
+            let a = CGPoint(x: anchor.x * f.width, y: anchor.y * f.height)
+            let rel = CGPoint(x: local.x - a.x, y: local.y - a.y)
+            if textLocalRect(item, fitted: f).contains(rotated(rel, by: -item.rotation)) {
+                return index
+            }
+        }
+        return nil
+    }
+
     /// Keep the zoomed image overlapping the view (never dragged fully away).
     private func clampPan() {
         let f = fittedRect()
@@ -552,6 +679,16 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
     // MARK: Gestures
 
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
+        // In text mode with a selected text, pinch scales that text; otherwise
+        // it keeps zooming the whole canvas (drawing-tool navigation).
+        if singleFingerMode == .text, let index = selectedTextIndex {
+            handleTextPinch(g, index: index)
+        } else {
+            handleCanvasPinch(g)
+        }
+    }
+
+    private func handleCanvasPinch(_ g: UIPinchGestureRecognizer) {
         guard allowsZoomPan else { return }
         switch g.state {
         case .began:
@@ -570,8 +707,40 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
+    private func handleTextPinch(_ g: UIPinchGestureRecognizer, index: Int) {
+        switch g.state {
+        case .began:
+            lastTextPinchScale = 1
+            onTextGestureBegan?()
+        case .changed:
+            let factor = g.scale / lastTextPinchScale
+            lastTextPinchScale = g.scale
+            onTextScale?(index, factor)
+        default:
+            break
+        }
+    }
+
+    @objc private func handleRotation(_ g: UIRotationGestureRecognizer) {
+        guard singleFingerMode == .text, let index = selectedTextIndex else { return }
+        switch g.state {
+        case .began:
+            lastTextRotation = 0
+            onTextGestureBegan?()
+        case .changed:
+            let delta = g.rotation - lastTextRotation
+            lastTextRotation = g.rotation
+            onTextRotate?(index, delta)
+        default:
+            break
+        }
+    }
+
     @objc private func handleTwoFingerPan(_ g: UIPanGestureRecognizer) {
         guard allowsZoomPan else { return }
+        // While a text is selected, two-finger pan is suppressed so pinch/rotate
+        // edit that text without the canvas drifting underneath.
+        if singleFingerMode == .text && selectedTextIndex != nil { return }
         switch g.state {
         case .changed:
             let t = g.translation(in: self)
@@ -605,8 +774,33 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
             switch g.state {
             case .began:
                 touchStart = g.location(in: self)
+                if let index = textIndex(at: touchStart), annotations.indices.contains(index) {
+                    activeTextDragIndex = index
+                    textDragStartAnchor = annotations[index].points.first ?? .zero
+                    textDragStartFinger = normalizedPoint(forScreen: touchStart)
+                    onTextSelect?(index)
+                    onTextGestureBegan?()
+                } else {
+                    activeTextDragIndex = nil
+                }
+            case .changed:
+                if let index = activeTextDragIndex {
+                    let cur = normalizedPoint(forScreen: g.location(in: self))
+                    let anchor = CGPoint(
+                        x: min(max(textDragStartAnchor.x + cur.x - textDragStartFinger.x, 0), 1),
+                        y: min(max(textDragStartAnchor.y + cur.y - textDragStartFinger.y, 0), 1))
+                    onTextMove?(index, anchor)
+                }
             case .ended:
-                onTextAnchor?(normalizedPoint(forScreen: touchStart))
+                if activeTextDragIndex != nil {
+                    activeTextDragIndex = nil
+                } else {
+                    // A tap that drifted past the pan threshold on empty space:
+                    // treat it as placing new text, matching the old behaviour.
+                    onTextAnchor?(normalizedPoint(forScreen: touchStart))
+                }
+            case .cancelled, .failed:
+                activeTextDragIndex = nil
             default:
                 break
             }
@@ -622,7 +816,11 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
             onStrokePoint?(p)
             onStrokeEnd?()
         case .text:
-            onTextAnchor?(p)
+            if let index = textIndex(at: g.location(in: self)) {
+                onTextSelect?(index)
+            } else {
+                onTextAnchor?(p)
+            }
         case .none:
             break
         }
@@ -630,8 +828,12 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
 
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        // Pinch and two-finger pan work together (zoom while panning).
-        (g === pinch && other === twoFingerPan) || (g === twoFingerPan && other === pinch)
+        // Pinch, two-finger pan and rotation work together: on the canvas this is
+        // zoom-while-panning; on a selected text it is scale-while-rotating.
+        func isMultiTouch(_ recognizer: UIGestureRecognizer) -> Bool {
+            recognizer === pinch || recognizer === twoFingerPan || recognizer === rotation
+        }
+        return isMultiTouch(g) && isMultiTouch(other)
     }
 }
 
@@ -640,10 +842,16 @@ struct EditorCanvas: UIViewRepresentable {
     let annotations: [EditorAnnotation]
     let pixellated: UIImage?
     let singleFingerMode: EditorCanvasUIView.SingleFingerMode
+    let selectedTextIndex: Int?
     let onStrokePoint: (CGPoint) -> Void
     let onStrokeEnd: () -> Void
     let onStrokeCancel: () -> Void
     let onTextAnchor: (CGPoint) -> Void
+    let onTextSelect: (Int?) -> Void
+    let onTextGestureBegan: () -> Void
+    let onTextMove: (Int, CGPoint) -> Void
+    let onTextScale: (Int, CGFloat) -> Void
+    let onTextRotate: (Int, CGFloat) -> Void
 
     func makeUIView(context: Context) -> EditorCanvasUIView {
         EditorCanvasUIView()
@@ -662,10 +870,16 @@ struct EditorCanvas: UIViewRepresentable {
         }
         view.singleFingerMode = singleFingerMode
         view.allowsZoomPan = singleFingerMode != .none
+        view.selectedTextIndex = selectedTextIndex
         view.onStrokePoint = onStrokePoint
         view.onStrokeEnd = onStrokeEnd
         view.onStrokeCancel = onStrokeCancel
         view.onTextAnchor = onTextAnchor
+        view.onTextSelect = onTextSelect
+        view.onTextGestureBegan = onTextGestureBegan
+        view.onTextMove = onTextMove
+        view.onTextScale = onTextScale
+        view.onTextRotate = onTextRotate
     }
 }
 
@@ -864,6 +1078,9 @@ struct ImageEditorView: View {
     @State private var penThickness: CGFloat = 0.008
     @State private var mosaicThickness: CGFloat = 0.035
     @State private var textScale: CGFloat = 0.05
+    @State private var textBold = false
+    @State private var textWhiteBackground = false
+    @State private var selectedTextIndex: Int?
     @State private var draft: EditorAnnotation?
     @State private var textAnchor: CGPoint?
     @State private var textValue = ""
@@ -894,6 +1111,11 @@ struct ImageEditorView: View {
         .overlay { if showToast { toastView } }
         .overlay { if textAnchor != nil { textComposer } }
         .statusBarHidden()
+        .onChange(of: model.annotations) { _, newValue in
+            if let index = selectedTextIndex, !newValue.indices.contains(index) {
+                selectedTextIndex = nil
+            }
+        }
     }
 
     // MARK: Chrome
@@ -954,10 +1176,16 @@ struct ImageEditorView: View {
                          annotations: model.annotations + (draft.map { [$0] } ?? []),
                          pixellated: model.pixellated,
                          singleFingerMode: singleFingerMode,
+                         selectedTextIndex: selectedTextIndex,
                          onStrokePoint: handleStrokePoint,
                          onStrokeEnd: handleStrokeEnd,
                          onStrokeCancel: handleStrokeCancel,
-                         onTextAnchor: handleTextAnchor)
+                         onTextAnchor: handleTextAnchor,
+                         onTextSelect: handleTextSelect,
+                         onTextGestureBegan: handleTextGestureBegan,
+                         onTextMove: handleTextMove,
+                         onTextScale: handleTextScale,
+                         onTextRotate: handleTextRotate)
                 .frame(width: container.width, height: container.height)
             if isCropping {
                 CropOverlay(rect: $cropRect)
@@ -1021,10 +1249,22 @@ struct ImageEditorView: View {
             } else {
                 colorPicker
                 if tool == .text {
-                    HStack(spacing: 10) {
-                        Text("大小").font(.caption).foregroundStyle(.white.opacity(0.8))
-                        Slider(value: $textScale, in: 0.02...0.12)
+                    VStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            Text("大小").font(.caption).foregroundStyle(.white.opacity(0.8))
+                            Slider(value: textScaleBinding, in: 0.02...0.12,
+                                   onEditingChanged: { editing in
+                                       if editing, selectedTextIndex != nil {
+                                           model.beginTextEdit()
+                                       }
+                                   })
                             .tint(.white)
+                        }
+                        HStack(spacing: 8) {
+                            textToggle("加粗", systemImage: "bold", isOn: boldBinding)
+                            textToggle("白底", systemImage: "square.fill", isOn: whiteBackgroundBinding)
+                            Spacer(minLength: 0)
+                        }
                     }
                 } else {
                     HStack(spacing: 10) {
@@ -1097,6 +1337,21 @@ struct ImageEditorView: View {
         .buttonStyle(.plain)
     }
 
+    /// Small capsule toggle for the text tool's 加粗 / 白底 options.
+    private func textToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
+        Button { isOn.wrappedValue.toggle() } label: {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(isOn.wrappedValue ? Color.yellow : Color.white.opacity(0.12),
+                            in: Capsule())
+                .foregroundStyle(isOn.wrappedValue ? .black : .white)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
     private var textComposer: some View {
         ZStack {
             Color.black.opacity(0.55)
@@ -1154,7 +1409,66 @@ struct ImageEditorView: View {
         )
     }
 
+    /// When a text is selected the size slider edits that text's thickness;
+    /// otherwise it sets the default for the next text placed.
+    private var textScaleBinding: Binding<CGFloat> {
+        Binding(
+            get: {
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    return model.annotations[index].thickness
+                }
+                return textScale
+            },
+            set: { value in
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    model.updateText(at: index, thickness: value)
+                } else {
+                    textScale = value
+                }
+            }
+        )
+    }
+
+    private var boldBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    return model.annotations[index].isBold
+                }
+                return textBold
+            },
+            set: { value in
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    model.beginTextEdit()
+                    model.updateText(at: index, isBold: value)
+                } else {
+                    textBold = value
+                }
+            }
+        )
+    }
+
+    private var whiteBackgroundBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    return model.annotations[index].whiteBackground
+                }
+                return textWhiteBackground
+            },
+            set: { value in
+                if let index = selectedTextIndex, model.annotations.indices.contains(index) {
+                    model.beginTextEdit()
+                    model.updateText(at: index, whiteBackground: value)
+                } else {
+                    textWhiteBackground = value
+                }
+            }
+        )
+    }
+
     private func select(_ item: EditorTool) {
+        selectedTextIndex = nil
         if item == .crop {
             cropRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
             isCropping = true
@@ -1181,7 +1495,9 @@ struct ImageEditorView: View {
         let trimmed = textValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         model.add(EditorAnnotation(kind: .text, points: [anchor], text: trimmed,
-                                   colorIndex: colorIndex, thickness: textScale))
+                                   colorIndex: colorIndex, thickness: textScale,
+                                   rotation: 0, isBold: textBold,
+                                   whiteBackground: textWhiteBackground))
         textAnchor = nil
         textValue = ""
     }
@@ -1248,9 +1564,36 @@ struct ImageEditorView: View {
     }
 
     private func handleTextAnchor(_ point: CGPoint) {
+        selectedTextIndex = nil
         textAnchor = point
         textValue = ""
         textFocused = true
+    }
+
+    private func handleTextSelect(_ index: Int?) {
+        selectedTextIndex = index
+    }
+
+    private func handleTextGestureBegan() {
+        model.beginTextEdit()
+    }
+
+    private func handleTextMove(_ index: Int, _ anchor: CGPoint) {
+        model.updateText(at: index, anchor: anchor)
+    }
+
+    private func handleTextScale(_ index: Int, _ factor: CGFloat) {
+        guard model.annotations.indices.contains(index) else { return }
+        let current = model.annotations[index].thickness
+        model.updateText(at: index, thickness: min(max(current * factor, 0.01), 0.5))
+    }
+
+    private func handleTextRotate(_ index: Int, _ delta: CGFloat) {
+        guard model.annotations.indices.contains(index) else { return }
+        var rotation = model.annotations[index].rotation + delta
+        while rotation > .pi { rotation -= 2 * .pi }
+        while rotation < -.pi { rotation += 2 * .pi }
+        model.updateText(at: index, rotation: rotation)
     }
 
     private var currentThickness: CGFloat {
