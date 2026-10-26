@@ -91,30 +91,42 @@ struct OCRView: View {
     }
 
     private var actionBar: some View {
-        HStack(spacing: 12) {
-            Button { copyAll() } label: {
-                Label("复制全部", systemImage: "doc.on.doc")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .disabled(recognizedText.isEmpty)
+        HStack(spacing: 10) {
+            capsuleButton("复制全部", systemImage: "doc.on.doc",
+                          disabled: recognizedText.isEmpty) { copyAll() }
 
-            Button { startTranslation(.text) } label: {
-                Label("翻译", systemImage: "character.bubble")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .disabled(recognizedText.isEmpty)
+            capsuleButton("翻译", systemImage: "character.bubble",
+                          disabled: recognizedText.isEmpty) { startTranslation(.text) }
 
-            Button { startTranslation(.fullImage) } label: {
-                Label("翻译全图", systemImage: "photo")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(recognizedText.isEmpty)
+            capsuleButton("翻译全图", systemImage: "photo",
+                          isPrimary: true, disabled: recognizedText.isEmpty) { startTranslation(.fullImage) }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(.bar)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(.ultraThinMaterial)
+        .colorScheme(.dark)
+    }
+
+    /// Unified bottom-bar capsule button: icon + title in a capsule on a
+    /// frosted-glass bar. Same shape, spacing, and palette as the photo
+    /// editor's bottom bar so the two pages read as one design system.
+    /// Primary uses a solid yellow fill; secondary uses a subtle white tint.
+    private func capsuleButton(_ title: String,
+                                systemImage: String,
+                                isPrimary: Bool = false,
+                                disabled: Bool = false,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Capsule().fill(isPrimary ? Color.yellow : Color.white.opacity(0.14)))
+                .foregroundStyle(isPrimary ? .black : .white)
+                .opacity(disabled ? 0.4 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
     }
 
     private var toastView: some View {

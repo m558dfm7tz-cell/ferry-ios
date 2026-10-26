@@ -649,9 +649,9 @@ struct ImageEditorView: View {
                 topBar
                 canvasArea
                 toolBar
-                actionBar
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
         .overlay { if showToast { toastView } }
         .overlay { if textAnchor != nil { textComposer } }
         .statusBarHidden()
@@ -824,32 +824,41 @@ struct ImageEditorView: View {
     }
 
     private var actionBar: some View {
-        HStack(spacing: 12) {
-            Button { onCancel() } label: {
-                Label("取消", systemImage: "xmark")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("editor-cancel")
+        HStack(spacing: 10) {
+            capsuleButton("取消", systemImage: "xmark") { onCancel() }
+                .accessibilityIdentifier("editor-cancel")
 
-            Button { Task { await self.saveToAlbum() } } label: {
-                Label("保存到相册", systemImage: "square.and.arrow.down")
-                    .frame(maxWidth: .infinity)
+            capsuleButton("保存到相册", systemImage: "square.and.arrow.down") {
+                Task { await self.saveToAlbum() }
             }
-            .buttonStyle(.bordered)
             .accessibilityIdentifier("editor-save")
 
-            Button { finish() } label: {
-                Label(confirmTitle, systemImage: "arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.yellow)
-            .foregroundStyle(.black)
-            .accessibilityIdentifier("editor-confirm")
+            capsuleButton(confirmTitle, systemImage: "arrow.up", isPrimary: true) { finish() }
+                .accessibilityIdentifier("editor-confirm")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
         .padding(.bottom, 12)
+        .background(.ultraThinMaterial)
+        .colorScheme(.dark)
+    }
+
+    /// Unified bottom-bar capsule button: icon + title in a capsule on a
+    /// frosted-glass bar. Primary uses a solid yellow fill (matches the
+    /// editor's existing accent); secondary uses a subtle white tint that
+    /// reads as etched glass on the dark bar.
+    private func capsuleButton(_ title: String,
+                                systemImage: String,
+                                isPrimary: Bool = false,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Capsule().fill(isPrimary ? Color.yellow : Color.white.opacity(0.14)))
+                .foregroundStyle(isPrimary ? .black : .white)
+        }
+        .buttonStyle(.plain)
     }
 
     private var textComposer: some View {
