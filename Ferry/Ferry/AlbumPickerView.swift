@@ -16,12 +16,14 @@ import UIKit
 /// Full-screen 大图预览 (`AlbumPreviewView`): tap a thumbnail to open from that
 /// image and page left/right through the whole album; the 预览 button pages
 /// through only the selected assets. It shares selection / 原图 / edited-image
-/// state with the grid, and single-tap hides/shows the bars.
+/// / 实况 state with the grid, and single-tap hides/shows the bars. A 实况
+/// toggle appears next to 原图 when the current photo is a Live Photo.
 ///
 /// Sending reuses the existing `Uploader.enqueue` path for still images:
-/// original bytes when 原图 is checked, otherwise a downscaled JPEG. Videos
-/// (displayed with a duration badge) and the Live Photo switch are a later step
-/// and are deliberately not wired here.
+/// original bytes when 原图 is checked, otherwise a downscaled JPEG. A Live
+/// Photo with 实况 on additionally sends its paired video as a separate
+/// `video/mp4` message right after the still (extracted via the
+/// `.pairedVideo` resource, MOV transcoded by `AVAssetExportSession`).
 struct AlbumPickerView: View {
     let model: AppModel
 
@@ -44,6 +46,10 @@ struct AlbumPickerView: View {
     /// Edited replacements keyed by asset localIdentifier. When present for a
     /// selected asset, the edited image is sent instead of the original bytes.
     @State private var editedImages: [String: UIImage] = [:]
+    /// Live Photo 实况 switches keyed by asset localIdentifier. When true the
+    /// paired video is sent as a separate message right after the still.
+    /// Default off, set per-asset, auto-off when the photo is edited.
+    @State private var liveEnabled: [String: Bool] = [:]
 
     private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 1), count: 4)
 
@@ -56,6 +62,7 @@ struct AlbumPickerView: View {
                                  selected: $selected,
                                  sendOriginal: $sendOriginal,
                                  editedImages: $editedImages,
+                                 liveEnabled: $liveEnabled,
                                  imageManager: imageManager,
                                  onSend: send,
                                  onClose: { previewContext = nil })
@@ -434,10 +441,12 @@ struct AlbumPickerView: View {
         let picks = selected
         let original = sendOriginal
         let edited = editedImages
+        let live = liveEnabled
         Task { @MainActor in
             for asset in picks {
+                let id = asset.localIdentifier
                 let loaded: (data: Data, mime: String, name: String)?
-                if let editedImage = edited[asset.localIdentifier],
+                if let editedImage = edited[id],
                    let data = editedImage.jpegData(compressionQuality: 0.92) {
                     loaded = (data, "image/jpeg", MediaLoader.generatedName(prefix: "照片", mime: "image/jpeg"))
                 } else {
@@ -448,6 +457,18 @@ struct AlbumPickerView: View {
                     sendError = error
                     isSending = false
                     return
+                }
+                // Live Photo: with 实况 on (and the still not replaced by an
+                // edit), send the paired video as its own message right after.
+                if live[id] == true, edited[id] == nil,
+                   let mp4 = await loadLivePhotoVideoMP4(for: asset) {
+                    defer { try? FileManager.default.removeItem(at: mp4) }
+                    let name = MediaLoader.generatedName(prefix: "实况", mime: "video/mp4")
+                    if let error = model.uploader.enqueue(fileURL: mp4, name: name, mediaType: "video/mp4") {
+                        sendError = error
+                        isSending = false
+                        return
+                    }
                 }
             }
             dismiss()
@@ -587,14 +608,16 @@ private struct PickerPreviewContext {
 
 /// WeChat-style full-screen preview: paging through `displayAssets`, with a
 /// top bar (`<` back + numbered selection circle), a bottom bar
-/// (编辑 / 原图 / 发送(N)), and single-tap to hide/show the bars. Selection,
-/// 原图 and edited images are shared with the grid through bindings.
+/// (编辑 / 原图 / 实况(when Live Photo) / 发送(N)), and single-tap to hide/show
+/// the bars. Selection, 原图, edited images and 实况 are shared with the grid
+/// through bindings.
 private struct AlbumPreviewView: View {
     let displayAssets: [PHAsset]
     let startIndex: Int
     @Binding var selected: [PHAsset]
     @Binding var sendOriginal: Bool
     @Binding var editedImages: [String: UIImage]
+    @Binding var liveEnabled: [String: Bool]
     let imageManager: PHCachingImageManager
     let onSend: () -> Void
     let onClose: () -> Void
@@ -614,6 +637,7 @@ private struct AlbumPreviewView: View {
          selected: Binding<[PHAsset]>,
          sendOriginal: Binding<Bool>,
          editedImages: Binding<[String: UIImage]>,
+         liveEnabled: Binding<[String: Bool]>,
          imageManager: PHCachingImageManager,
          onSend: @escaping () -> Void,
          onClose: @escaping () -> Void) {
@@ -622,6 +646,7 @@ private struct AlbumPreviewView: View {
         self._selected = selected
         self._sendOriginal = sendOriginal
         self._editedImages = editedImages
+        self._liveEnabled = liveEnabled
         self.imageManager = imageManager
         self.onSend = onSend
         self.onClose = onClose
@@ -649,6 +674,9 @@ private struct AlbumPreviewView: View {
             ImageEditorView(image: input.image, confirmTitle: "完成",
                             onFinish: { edited in
                                 editedImages[input.asset.localIdentifier] = edited
+                                // Editing produces a static image, so the
+                                // paired video no longer matches: auto-off 实况.
+                                liveEnabled.removeValue(forKey: input.asset.localIdentifier)
                                 editorInput = nil
                             },
                             onCancel: { editorInput = nil })
@@ -727,6 +755,22 @@ private struct AlbumPreviewView: View {
             }
             .buttonStyle(.plain)
 
+            if let asset = currentAsset, isLivePhoto(asset) {
+                Button { toggleLive() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: isLiveOn(asset) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(isLiveOn(asset) ? pickerGreen : Color.white.opacity(0.8))
+                        Text("实况")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("实况")
+            }
+
             sendButton
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -780,6 +824,24 @@ private struct AlbumPreviewView: View {
             selected.remove(at: index)
         } else {
             selected.append(asset)
+        }
+    }
+
+    private func isLivePhoto(_ asset: PHAsset) -> Bool {
+        asset.mediaType == .image && asset.mediaSubtypes.contains(.photoLive)
+    }
+
+    private func isLiveOn(_ asset: PHAsset) -> Bool {
+        liveEnabled[asset.localIdentifier] ?? false
+    }
+
+    private func toggleLive() {
+        guard let asset = currentAsset, isLivePhoto(asset) else { return }
+        let id = asset.localIdentifier
+        if liveEnabled[id] == true {
+            liveEnabled.removeValue(forKey: id)
+        } else {
+            liveEnabled[id] = true
         }
     }
 
@@ -890,6 +952,41 @@ private func loadFullImage(for asset: PHAsset, manager: PHCachingImageManager) a
             continuation.resume(returning: image)
         }
     }
+}
+
+/// Extract the Live Photo paired video (a MOV) for `asset` and transcode it to
+/// MP4 via `AVAssetExportSession`. Returns the MP4 temp URL (caller removes it),
+/// or nil when the asset has no paired video or the export fails. The MOV is
+/// streamed to a temp file rather than loaded whole into memory.
+private func loadLivePhotoVideoMP4(for asset: PHAsset) async -> URL? {
+    let resources = PHAssetResource.assetResources(for: asset)
+    guard let video = resources.first(where: { $0.type == .pairedVideo }) else { return nil }
+    let ext = (video.originalFilename as NSString).pathExtension.lowercased()
+    let rawURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("live-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+
+    let written: Bool = await withCheckedContinuation { continuation in
+        FileManager.default.createFile(atPath: rawURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: rawURL) else {
+            continuation.resume(returning: false)
+            return
+        }
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().requestData(for: video, options: options) { chunk in
+            try? handle.write(contentsOf: chunk)
+        } completionHandler: { error in
+            try? handle.close()
+            continuation.resume(returning: error == nil)
+        }
+    }
+    guard written else {
+        try? FileManager.default.removeItem(at: rawURL)
+        return nil
+    }
+    let mp4 = await MediaLoader.transcodeToMP4(from: rawURL)
+    try? FileManager.default.removeItem(at: rawURL)
+    return mp4
 }
 
 private func compressToJPEG(_ image: UIImage, maxDimension: CGFloat) -> Data? {
