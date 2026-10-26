@@ -175,6 +175,9 @@ struct TimelineView: View {
                     clearJumpTarget()
                     scrollToBottomAnchor()
                 }
+                .onChange(of: model.scrollToBottomToken) { _, _ in
+                    scrollToBottomAnchor()
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { scrollToBottomAnchor() }
                 }

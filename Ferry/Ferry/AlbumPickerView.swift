@@ -39,6 +39,14 @@ struct AlbumPickerView: View {
     @State private var permission: PickerPermission = .loading
     @State private var isSending = false
     @State private var sendError: String?
+    /// Confirm dialog shown when closing with a non-empty selection.
+    @State private var showDiscardConfirm = false
+    /// Whether the grid's scroll view is at the very top (used to gate the
+    /// pull-down-to-close gesture so it never fights normal scrolling).
+    @State private var gridAtTop = true
+    /// Vertical translation of the whole grid page while it is being pulled
+    /// down to close.
+    @State private var dismissDrag: CGFloat = 0
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
     /// Full-screen preview state; nil shows the grid.
@@ -86,6 +94,12 @@ struct AlbumPickerView: View {
         } message: {
             Text(sendError ?? "")
         }
+        .alert("放弃已选的 \(selected.count) 项？", isPresented: $showDiscardConfirm) {
+            Button("放弃", role: .destructive) { dismiss() }
+            Button("继续选择", role: .cancel) {}
+        } message: {
+            Text("关闭后将不再发送这些照片。")
+        }
     }
 
     private var sendErrorBinding: Binding<Bool> {
@@ -101,11 +115,13 @@ struct AlbumPickerView: View {
             grid
             bottomBar
         }
+        // The whole page follows the finger down during a pull-down-to-close.
+        .offset(y: dismissDrag)
     }
 
     private var topBar: some View {
         HStack(spacing: 0) {
-            Button { dismiss() } label: {
+            Button { requestClose() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.white)
@@ -126,12 +142,12 @@ struct AlbumPickerView: View {
     }
 
     private var albumCapsule: some View {
-        Button { showAlbumList = true } label: {
+        Button { showAlbumList.toggle() } label: {
             HStack(spacing: 6) {
                 Text(currentAlbum?.title ?? "最近项目")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.white)
-                Image(systemName: "chevron.down")
+                Image(systemName: showAlbumList ? "chevron.up" : "chevron.down")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
             }
@@ -171,6 +187,36 @@ struct AlbumPickerView: View {
                 }
             }
         }
+        // Track the top edge so pull-to-close only engages at the very top;
+        // anywhere else a downward drag is ordinary scrolling.
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y <= 0
+        } action: { _, isAtTop in
+            gridAtTop = isAtTop
+        }
+        .simultaneousGesture(dismissDragGesture)
+    }
+
+    /// Pull-down-to-close: when the grid is at the top, a downward drag moves
+    /// the whole page with the finger; releasing past the threshold (or a fast
+    /// flick) closes it, otherwise it springs back. When the grid is not at the
+    /// top the gesture is a no-op so the scroll view scrolls normally.
+    private var dismissDragGesture: some Gesture {
+        // A small minimum distance keeps cell taps / circle buttons crisp (a
+        // tap is not a drag) while still tracking the pull the moment it moves.
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                guard gridAtTop, value.translation.height > 0 else {
+                    if dismissDrag != 0 { dismissDrag = 0 }
+                    return
+                }
+                dismissDrag = value.translation.height
+            }
+            .onEnded { value in
+                let shouldClose = dismissDrag > 140 || value.predictedEndTranslation.height > 240
+                withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
+                if shouldClose { requestClose() }
+            }
     }
 
     private var bottomBar: some View {
@@ -226,45 +272,67 @@ struct AlbumPickerView: View {
     // MARK: - Album list
 
     private var albumListOverlay: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             Color.black.opacity(0.4)
                 .ignoresSafeArea()
                 .onTapGesture { showAlbumList = false }
 
             VStack(spacing: 0) {
-                Text("选择相册")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                // The capsule stays above the dim so tapping it again collapses
+                // the list (its chevron flips up while open), instead of being
+                // buried under the scrim.
+                albumCapsule
+                    .padding(.top, 4)
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(albums) { album in
-                            Button { select(album) } label: {
-                                HStack(spacing: 10) {
-                                    Text(album.title)
-                                        .font(.system(size: 16))
-                                        .foregroundStyle(.white)
-                                    Spacer()
-                                    if album.id == currentAlbum?.id {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundStyle(pickerGreen)
+                Spacer()
+
+                VStack(spacing: 0) {
+                    Text("选择相册")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(albums) { album in
+                                Button { select(album) } label: {
+                                    HStack(spacing: 10) {
+                                        Text(album.title)
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        if album.id == currentAlbum?.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 14, weight: .semibold))
+                                                .foregroundStyle(pickerGreen)
+                                        }
                                     }
+                                    .padding(.horizontal, 20).padding(.vertical, 13)
+                                    .contentShape(Rectangle())
                                 }
-                                .padding(.horizontal, 20).padding(.vertical, 13)
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
+                    .frame(maxHeight: 380)
                 }
-                .frame(maxHeight: 380)
+                .frame(maxWidth: .infinity)
+                .background(Color(red: 0.13, green: 0.13, blue: 0.14))
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, topTrailingRadius: 14))
             }
-            .frame(maxWidth: .infinity)
-            .background(Color(red: 0.13, green: 0.13, blue: 0.14))
-            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, topTrailingRadius: 14))
+        }
+    }
+
+    // MARK: - Close
+
+    /// Close the picker, confirming first when there are selected photos.
+    /// Used by the × button and by the pull-down-to-close gesture.
+    private func requestClose() {
+        if selected.isEmpty {
+            dismiss()
+        } else {
+            showDiscardConfirm = true
         }
     }
 
@@ -471,6 +539,10 @@ struct AlbumPickerView: View {
                     }
                 }
             }
+            // Sending succeeded: close and tell the timeline to re-anchor to the
+            // newest message (the messages arrive asynchronously via the upload
+            // queue, so the scroll lands on them once they appear).
+            model.requestScrollToBottom()
             dismiss()
         }
     }
@@ -625,6 +697,13 @@ private struct AlbumPreviewView: View {
     @State private var currentID: String?
     @State private var chromeVisible = true
     @State private var editorInput: EditorInput?
+    /// Vertical translation of the preview while it is pulled down to shrink
+    /// back into the grid.
+    @State private var dismissDragY: CGFloat = 0
+    /// Asset the current edge-swipe gesture began on, so a page that settles
+    /// onto the first image mid-swipe cannot turn a normal page-back into a
+    /// close.
+    @State private var edgeSwipeStartAssetID: String?
 
     private struct EditorInput: Identifiable {
         let asset: PHAsset
@@ -669,6 +748,14 @@ private struct AlbumPreviewView: View {
             .allowsHitTesting(chromeVisible)
             .animation(.easeInOut(duration: 0.18), value: chromeVisible)
         }
+        // Pull-down-to-shrink: the whole preview follows the finger down and
+        // shrinks/fades, revealing the grid behind; past the threshold it pops
+        // back to the grid, otherwise it springs back.
+        .scaleEffect(dragScale)
+        .offset(y: dismissDragY)
+        .opacity(dragOpacity)
+        .simultaneousGesture(verticalDismissDrag)
+        .simultaneousGesture(edgeSwipeBackDrag)
         .statusBarHidden()
         .fullScreenCover(item: $editorInput) { input in
             ImageEditorView(image: input.image, confirmTitle: "完成",
@@ -794,6 +881,63 @@ private struct AlbumPreviewView: View {
     }
 
     // MARK: Preview helpers
+
+    /// Shrink factor while the preview is being pulled down.
+    private var dragScale: CGFloat {
+        guard dismissDragY > 0 else { return 1 }
+        return max(0.45, 1 - dismissDragY / (UIScreen.main.bounds.height * 1.6))
+    }
+
+    /// Fade-out while the preview is being pulled down (reveals the grid).
+    private var dragOpacity: Double {
+        guard dismissDragY > 0 else { return 1 }
+        let progress = dismissDragY / (UIScreen.main.bounds.height * 0.85)
+        return Double(max(0, 1 - progress))
+    }
+
+    /// Pull the image down to shrink it back into the grid, like the
+    /// `ImageViewer` drag-to-dismiss: the preview tracks the finger, and on
+    /// release past the threshold (or a fast flick) it returns to the grid.
+    private var verticalDismissDrag: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard value.translation.height > 0 else {
+                    if dismissDragY != 0 { dismissDragY = 0 }
+                    return
+                }
+                dismissDragY = value.translation.height
+            }
+            .onEnded { value in
+                let shouldClose = dismissDragY > 150 || value.predictedEndTranslation.height > 300
+                if shouldClose {
+                    dismissDragY = 0
+                    onClose()
+                } else {
+                    withAnimation(.easeOut(duration: 0.22)) { dismissDragY = 0 }
+                }
+            }
+    }
+
+    /// Swipe right from the screen's left edge to return to the grid. Only
+    /// fires when the gesture started on the first asset, so swiping back from
+    /// a later page keeps paging instead of closing.
+    private var edgeSwipeBackDrag: some Gesture {
+        // Minimum distance keeps button/tap handling crisp; a swipe is longer.
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                if edgeSwipeStartAssetID == nil {
+                    edgeSwipeStartAssetID = currentAsset?.localIdentifier
+                }
+            }
+            .onEnded { value in
+                defer { edgeSwipeStartAssetID = nil }
+                guard value.startLocation.x < 30 else { return }
+                guard value.translation.width > 70 || value.predictedEndTranslation.width > 160 else { return }
+                guard let startedID = edgeSwipeStartAssetID,
+                      displayAssets.first?.localIdentifier == startedID else { return }
+                onClose()
+            }
+    }
 
     private var currentAsset: PHAsset? {
         if let id = currentID, let asset = displayAssets.first(where: { $0.localIdentifier == id }) {

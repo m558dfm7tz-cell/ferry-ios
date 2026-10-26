@@ -35,6 +35,13 @@ final class AppModel {
     /// it is on screen (a cold start applies it as soon as it connects).
     private(set) var pendingRoute: NotificationRoute?
 
+    /// Re-anchor token bumped whenever something wants the timeline to scroll to
+    /// the newest message (e.g. the album picker finishing a send). The timeline
+    /// observes changes and re-anchors to the bottom, so the newest message is
+    /// shown even when the user had scrolled up before sending.
+    private(set) var scrollToBottomToken = UUID()
+    func requestScrollToBottom() { scrollToBottomToken = UUID() }
+
     /// Number of messages that arrived while their conversation was not on
     /// screen — the app icon badge value.
     var unreadCount: Int { unreadMessageIDs.count }
