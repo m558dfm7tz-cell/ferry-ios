@@ -1075,8 +1075,8 @@ struct ImageEditorView: View {
     @State private var isCropping = false
     @State private var cropRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
     @State private var colorIndex = 2
-    @State private var penThickness: CGFloat = 0.008
-    @State private var mosaicThickness: CGFloat = 0.035
+    @State private var penThickness: CGFloat = 0.016
+    @State private var mosaicThickness: CGFloat = 0.07
     @State private var textScale: CGFloat = 0.05
     @State private var textBold = false
     @State private var textWhiteBackground = false
@@ -1269,7 +1269,7 @@ struct ImageEditorView: View {
                 } else {
                     HStack(spacing: 10) {
                         Text("粗细").font(.caption).foregroundStyle(.white.opacity(0.8))
-                        Slider(value: thicknessBinding, in: 0.004...0.06)
+                        Slider(value: thicknessBinding, in: 0.004...0.12)
                             .tint(.white)
                     }
                 }
