@@ -993,7 +993,14 @@ private struct AlbumPreviewView: View {
         guard let asset = currentAsset, isSelectable(asset) else { return }
         let base = editedImages[asset.localIdentifier]
         Task { @MainActor in
-            let image = base ?? await loadFullImage(for: asset, manager: imageManager)
+            // `?? await …` is not allowed (the `??` autoclosure is not async),
+            // so resolve the edited/loaded image in two explicit branches.
+            let image: UIImage?
+            if let base {
+                image = base
+            } else {
+                image = await loadFullImage(for: asset, manager: imageManager)
+            }
             guard let image else { return }
             editorInput = EditorInput(asset: asset, image: image)
         }
