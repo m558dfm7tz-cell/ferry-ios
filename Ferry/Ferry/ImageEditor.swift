@@ -757,8 +757,8 @@ final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
         switch g.state {
         case .changed:
             let t = g.translation(in: self)
-            panOffset.width += t.width
-            panOffset.height += t.height
+            panOffset.width += t.x
+            panOffset.height += t.y
             g.setTranslation(.zero, in: self)
             clampPan()
             setNeedsDisplay()
