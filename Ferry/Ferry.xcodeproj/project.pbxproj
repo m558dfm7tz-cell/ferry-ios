@@ -51,6 +51,7 @@
 		1A0000000000000000000112 /* ReviewParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000111 /* ReviewParser.swift */; };
 		1A0000000000000000000122 /* ReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000121 /* ReviewStore.swift */; };
 		1A0000000000000000000132 /* ReviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000131 /* ReviewViews.swift */; };
+		1A0000000000000000000142 /* AlbumPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000141 /* AlbumPickerView.swift */; };
 		1A0000000000000000000063 /* FerryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000061 /* FerryUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -101,6 +102,7 @@
 		1A0000000000000000000111 /* ReviewParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewParser.swift; sourceTree = "<group>"; };
 		1A0000000000000000000121 /* ReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewStore.swift; sourceTree = "<group>"; };
 		1A0000000000000000000131 /* ReviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewViews.swift; sourceTree = "<group>"; };
+		1A0000000000000000000141 /* AlbumPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumPickerView.swift; sourceTree = "<group>"; };
 		1A0000000000000000000060 /* FerryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FerryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000061 /* FerryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -194,6 +196,7 @@
 				1A0000000000000000000111 /* ReviewParser.swift */,
 				1A0000000000000000000121 /* ReviewStore.swift */,
 				1A0000000000000000000131 /* ReviewViews.swift */,
+				1A0000000000000000000141 /* AlbumPickerView.swift */,
 				1A0000000000000000000008 /* Assets.xcassets */,
 				1A0000000000000000000020 /* Info.plist */,
 				1A0000000000000000000036 /* InfoPlist.strings */,
@@ -344,6 +347,7 @@
 				1A0000000000000000000112 /* ReviewParser.swift in Sources */,
 				1A0000000000000000000122 /* ReviewStore.swift in Sources */,
 				1A0000000000000000000132 /* ReviewViews.swift in Sources */,
+				1A0000000000000000000142 /* AlbumPickerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

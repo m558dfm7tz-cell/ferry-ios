@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 
@@ -9,7 +8,7 @@ struct ComposerView: View {
     @Bindable var model: AppModel
     var focused: FocusState<Bool>.Binding
 
-    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var showImagePicker = false
     @State private var showPlus = false
     @State private var showFileImporter = false
     @State private var showCamera = false
@@ -54,12 +53,6 @@ struct ComposerView: View {
             inputBar
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
-        .onChange(of: photoItems) { _, items in
-            guard !items.isEmpty else { return }
-            let picked = items
-            photoItems = []
-            Task { await loadAndEnqueue(picked) }
-        }
         .onAppear { refreshPasteAvailability() }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
@@ -94,6 +87,9 @@ struct ComposerView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
             handleFiles(result)
+        }
+        .fullScreenCover(isPresented: $showImagePicker) {
+            AlbumPickerView(model: model)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { result in
@@ -224,13 +220,15 @@ struct ComposerView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos, .livePhotos])) {
+            Button { showImagePicker = true } label: {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 24, weight: .light))
                     .foregroundStyle(.white)
                     .frame(width: barButtonSize, height: barButtonSize)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("相册")
+            .accessibilityIdentifier("composer-album")
 
             Button { pasteFromClipboard() } label: {
                 Image(systemName: "doc.on.clipboard")
@@ -409,36 +407,6 @@ struct ComposerView: View {
         activeTarget = nil
     }
 
-    private func loadAndEnqueue(_ items: [PhotosPickerItem]) async {
-        for item in items {
-            await loadAndEnqueueOne(item)
-        }
-    }
-
-    private func loadAndEnqueueOne(_ item: PhotosPickerItem) async {
-        if MediaLoader.isLivePhoto(item) {
-            await enqueueLivePhoto(item)
-        } else if MediaLoader.isMovie(item) {
-            if let movie = await MediaLoader.movie(from: item) {
-                enqueueVideo(from: movie.url, mime: movie.mime, name: movie.name)
-            }
-        } else if let image = await MediaLoader.image(from: item) {
-            enqueueData(image.data, name: image.name, mediaType: image.mime)
-        } else if let movie = await MediaLoader.movie(from: item) {
-            // The item reported an image type but its bytes are a movie (a Live
-            // Photo the picker described as a plain image). Send it as a video
-            // so it renders as a playable bubble with a thumbnail rather than
-            // as a "photo" nobody can decode.
-            enqueueVideo(from: movie.url, mime: movie.mime, name: movie.name)
-        }
-    }
-
-    private func enqueueData(_ data: Data, name: String, mediaType: String) {
-        if let error = model.uploader.enqueue(data: data, name: name, mediaType: mediaType) {
-            errorMessage = error
-        }
-    }
-
     // MARK: - Image editing before send
 
     /// Open a still-pending image in the editor. The queued item keeps its place
@@ -464,29 +432,6 @@ struct ComposerView: View {
         model.uploader.remove(target.id)
         if let error = model.uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime) {
             errorMessage = error
-        }
-    }
-
-    /// Live Photo: send the still frame only, as an ordinary JPEG/HEIC image.
-    ///
-    /// The paired video is no longer sent as a second message — a Live Photo is
-    /// delivered as a plain picture, so it always shows up as an image bubble
-    /// with a thumbnail. The video is kept only as a last resort: if no still
-    /// frame can be read at all, sending the paired movie (transcoded to MP4,
-    /// or the original `.mov` when "发送原始视频" is on) is better than sending
-    /// nothing.
-    private func enqueueLivePhoto(_ item: PhotosPickerItem) async {
-        if let image = await MediaLoader.livePhotoStillImage(from: item) {
-            enqueueData(image.data, name: image.name, mediaType: image.mime)
-            return
-        }
-        guard let videoURL = await MediaLoader.livePhotoVideoURL(from: item) else { return }
-        if sendOriginalVideo {
-            let name = MediaLoader.generatedName(prefix: "实况照片", mime: "video/quicktime")
-            enqueueVideo(from: videoURL, mime: "video/quicktime", name: name)
-        } else {
-            let name = MediaLoader.generatedName(prefix: "实况照片", mime: "video/mp4")
-            enqueueVideo(from: videoURL, mime: "video/mp4", name: name)
         }
     }
 
