@@ -168,8 +168,9 @@ struct ComposerTextView: UIViewRepresentable {
                 if !textView.isScrollEnabled { textView.isScrollEnabled = true }
                 return
             }
-            let wasScrolling = textView.isScrollEnabled
-            textView.isScrollEnabled = false
+            // Measure with scrolling off so `sizeThatFits` reports the full text
+            // height instead of the visible bounds.
+            if textView.isScrollEnabled { textView.isScrollEnabled = false }
             let width = textView.bounds.width > 0 ? textView.bounds.width : 200
             let lineHeight = textView.font?.lineHeight ?? 20
             // Content height excluding the current insets, so the calculation
@@ -180,7 +181,13 @@ struct ComposerTextView: UIViewRepresentable {
             let maxHeight = max(minHeight, lineHeight * CGFloat(max(maxLines, 1)))
             let clamped = min(max(contentHeight, minHeight), maxHeight)
             let shouldScroll = contentHeight > maxHeight
-            if wasScrolling != shouldScroll {
+            // Restore against the *post-measure* value, not the pre-measure one.
+            // Comparing with the pre-measure flag left `isScrollEnabled` stuck at
+            // false on every pass after the first overflow, so the view silently
+            // stopped scrolling and reported its full content height as its
+            // intrinsic size — which let it grow past the SwiftUI frame and spill
+            // text out of the input capsule.
+            if textView.isScrollEnabled != shouldScroll {
                 textView.isScrollEnabled = shouldScroll
             }
             // Vertically center the text within the taller single-line bar.

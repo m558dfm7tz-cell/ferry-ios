@@ -24,6 +24,10 @@ struct TimelineView: View {
     @State private var highlightedID: String?
     @State private var toastText = ""
     @State private var showToast = false
+    /// The in-flight keyboard-follow scroll, so a second `keyboardWillShow`
+    /// (which also fires when the keyboard only *changes*) cannot stack two
+    /// overlapping re-anchors on top of each other.
+    @State private var keyboardFollowTask: Task<Void, Never>?
 
     private static let bottomAnchorID = "timeline-bottom"
 
@@ -157,10 +161,18 @@ struct TimelineView: View {
                             >= geometry.contentSize.height - 120,
                         nearTop: geometry.contentOffset.y < 60
                     )
-                } action: { _, state in
-                    atBottom = state.atBottom
-                    if state.atBottom { showNewPill = false }
-                    if state.nearTop { onReachTop() }
+                } action: { old, state in
+                    // The transform above runs on every frame of any scroll and
+                    // of the keyboard animation (the visible height changes), so
+                    // only write when a value actually flips: an unconditional
+                    // @State write re-evaluated the whole body every frame.
+                    if state.atBottom != old.atBottom {
+                        atBottom = state.atBottom
+                        if state.atBottom { showNewPill = false }
+                    }
+                    // `onReachTop()` used to fire on every frame spent near the
+                    // top, spawning a load task each time.
+                    if state.nearTop, !old.nearTop { onReachTop() }
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden)
@@ -381,9 +393,15 @@ struct TimelineView: View {
     private func followKeyboard(_ note: Notification) {
         guard atBottom else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
-        Task { @MainActor in
+        keyboardFollowTask?.cancel()
+        keyboardFollowTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(max(duration, 0.1)))
-            scrollToBottomAnchor()
+            guard !Task.isCancelled else { return }
+            // A single re-anchor on purpose. `scrollToBottomAnchor()` repeats
+            // itself 120ms later to catch LazyVStack height changes; during the
+            // keyboard animation that second scroll lands while the new layout
+            // is still settling and was the main source of the dropped frames.
+            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
 

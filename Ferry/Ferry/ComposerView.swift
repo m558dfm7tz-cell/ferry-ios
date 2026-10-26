@@ -24,6 +24,12 @@ struct ComposerView: View {
     @State private var editTarget: ImageEditTarget?
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
+    /// The attachment destination the plus panel asked for. It is opened only
+    /// after the panel has finished dismissing — see the `.sheet` below.
+    private enum PendingAttachment { case file, camera }
+    @State private var pendingAttachment: PendingAttachment?
+    @State private var didWarmUpAttachments = false
+
     /// A queued image opened in the editor. `id` is the upload item it will
     /// replace when the edit is confirmed.
     private struct ImageEditTarget: Identifiable {
@@ -61,8 +67,20 @@ struct ComposerView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshPasteAvailability()
         }
-        .sheet(isPresented: $showPlus) {
-            PlusPanel(onFile: { showFileImporter = true }, onCamera: { openCamera() })
+        // Previously the panel called `dismiss()` and then presented the file
+        // importer / camera in the same run-loop turn. UIKit drops or defers a
+        // presentation that arrives while another dismissal is still animating,
+        // which is what made the next screen appear "a beat late". Record the
+        // choice instead and open it from `onDismiss`, i.e. once the panel is
+        // really gone.
+        .sheet(isPresented: $showPlus, onDismiss: { openPendingAttachment() }) {
+            PlusPanel(onFile: { pendingAttachment = .file },
+                      onCamera: { pendingAttachment = .camera })
+        }
+        .onChange(of: showPlus) { _, isShown in
+            guard isShown, !didWarmUpAttachments else { return }
+            didWarmUpAttachments = true
+            AttachmentWarmup.prepare()
         }
         .sheet(isPresented: $showEditor) {
             ExpandEditorView(text: $model.draft,
@@ -231,7 +249,9 @@ struct ComposerView: View {
                              insertCommand: $insertCommand,
                              placeholder: "输入消息...",
                              isFocused: focused,
-                             maxLines: 5,
+                             // Six lines of body text, then the text view scrolls
+                             // inside the capsule instead of growing further.
+                             maxLines: 6,
                              textColor: .white,
                              tintColor: .white,
                              alwaysScrolls: false,
@@ -243,6 +263,10 @@ struct ComposerView: View {
                              },
                              accessibilityIdentifier: "composer-input")
                 .frame(height: textFieldHeight)
+                // Hard guarantee that long text can never be painted outside
+                // the capsule: the text view is sized by `textFieldHeight`, and
+                // clipping keeps a stale intermediate height from overflowing.
+                .clipped()
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
@@ -297,6 +321,17 @@ struct ComposerView: View {
     /// Web-style send button: filled near-white circle with a dark up arrow.
     private var sendButtonFill: Color {
         Color(red: 0.93, green: 0.94, blue: 0.96)
+    }
+
+    /// Opens whatever the plus panel picked. Runs from the sheet's `onDismiss`,
+    /// so the panel is fully gone before the next presentation starts.
+    private func openPendingAttachment() {
+        guard let pending = pendingAttachment else { return }
+        pendingAttachment = nil
+        switch pending {
+        case .file: showFileImporter = true
+        case .camera: openCamera()
+        }
     }
 
     private func openCamera() {
@@ -513,6 +548,24 @@ struct ComposerView: View {
     }
 }
 
+/// One-off warm-up for the attachment pickers.
+///
+/// The 文件 sheet is slow the first time because building a
+/// `UIDocumentPickerViewController` loads the file-provider extensions. Doing
+/// that once while the plus panel is already on screen moves the cost off the
+/// user's tap. The camera is deliberately *not* warmed up: an
+/// `UIImagePickerController(.camera)` starts a capture session as soon as its
+/// view loads, so pre-creating one would turn the camera on (and light the
+/// privacy indicator) before the user asked for it.
+private enum AttachmentWarmup {
+    /// Load the document picker's view once, off the panel's own animation.
+    static func prepare() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            _ = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true).view
+        }
+    }
+}
+
 /// WeChat-style attachment panel with only 文件 and 拍摄 slots.
 struct PlusPanel: View {
     let onFile: () -> Void
@@ -521,11 +574,13 @@ struct PlusPanel: View {
 
     var body: some View {
         HStack(spacing: 16) {
+            // Record the choice first, then dismiss: the parent opens the real
+            // picker once this panel has finished animating away.
             panelButton("文件", systemImage: "folder") {
-                dismiss(); onFile()
+                onFile(); dismiss()
             }
             panelButton("拍摄", systemImage: "camera") {
-                dismiss(); onCamera()
+                onCamera(); dismiss()
             }
         }
         .padding(24)

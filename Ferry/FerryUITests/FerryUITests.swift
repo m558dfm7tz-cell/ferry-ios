@@ -47,7 +47,8 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(connectionStatus.waitForExistence(timeout: 8), "connection-status button should exist")
         tap(connectionStatus)
 
-        let currentBadge = app.descendants(matching: .any)["current-device-badge"]
+        // `.firstMatch` so an ambiguous query can never make `exists` false.
+        let currentBadge = app.descendants(matching: .any)["current-device-badge"].firstMatch
         XCTAssertTrue(currentBadge.waitForExistence(timeout: 5), "current-device badge should exist")
 
         let pcRow = app.staticTexts["Windows PC"]

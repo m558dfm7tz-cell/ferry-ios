@@ -105,7 +105,15 @@ final class DeviceAdminModel {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-uiTestMock") {
             isMock = true
-            service = MockDeviceAdminService()
+            let mock = MockDeviceAdminService()
+            service = mock
+            // Seed synchronously. With `-uiTestMock` the device list used to
+            // appear only after `.task { await admin.load() }` had run to
+            // completion, which made the 当前设备 badge a race: if the sheet's
+            // first render beat the load, the badge — and the whole row — was
+            // simply not in the accessibility tree yet.
+            devices = mock.seedDevices
+            currentDeviceID = mock.currentDeviceID
         } else {
             isMock = false
             service = FerryClient()
@@ -122,7 +130,10 @@ final class DeviceAdminModel {
         if isMock {
             self.endpoint = try? ServerEndpoint("http://ui-test-mock.local:42819")
             self.token = "ui-test-mock-token"
-            self.currentDeviceID = currentDeviceID ?? "mock-self"
+            // Deliberately ignore the passed id in mock mode: the mock device
+            // list always contains "mock-self", so keeping that id guarantees
+            // the 当前设备 badge is rendered.
+            self.currentDeviceID = "mock-self"
         } else {
             self.endpoint = endpoint
             self.token = token
@@ -219,7 +230,11 @@ final class MockDeviceAdminService: DeviceAdminServicing {
         Device(id: "mock-ipad", name: "客厅 iPad", kind: "ipad", createdAt: "2026-10-04T11:00:00Z"),
     ]
     private var passwordRequired = false
-    private let currentDeviceID = "mock-self"
+    let currentDeviceID = "mock-self"
+
+    /// Synchronous snapshot used to seed `DeviceAdminModel` before its first
+    /// render, so a UI test never depends on the async `load()` finishing first.
+    var seedDevices: [Device] { devices }
 
     func devices(endpoint: ServerEndpoint, token: String) async throws -> [Device] {
         devices
