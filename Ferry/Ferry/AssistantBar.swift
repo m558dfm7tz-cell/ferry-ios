@@ -167,6 +167,30 @@ final class AssistantStore {
         return assistant
     }
 
+    /// Apply edits made in the long-press menu (name / avatar letter / colour).
+    /// Built-in assistants are ignored — only custom ones can be edited.
+    func update(_ assistant: Assistant) {
+        guard !assistant.isBuiltIn,
+              let index = custom.firstIndex(where: { $0.id == assistant.id }) else { return }
+        let trimmedName = assistant.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let letter = Self.sanitizedAvatarText(assistant.avatarText, fallbackName: trimmedName)
+        custom[index] = Assistant(id: assistant.id, name: trimmedName, avatarText: letter,
+                                  colorIndex: assistant.colorIndex, isBuiltIn: false,
+                                  matchKeywords: [trimmedName])
+        persist()
+    }
+
+    /// Drop a custom assistant. Messages are untouched: they simply fall back
+    /// to 全部. Returns whether something was removed.
+    @discardableResult
+    func removeCustom(id: String) -> Bool {
+        guard custom.contains(where: { $0.id == id }) else { return false }
+        custom.removeAll { $0.id == id }
+        persist()
+        return true
+    }
+
     private static func sanitizedAvatarText(_ text: String, fallbackName: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return String(trimmed.prefix(1)) }
@@ -239,8 +263,15 @@ struct AssistantBarView: View {
     let avatarStore: AssistantAvatarStore
     let onSelect: (String?) -> Void
     let onAdd: () -> Void
+    /// Save edits made to a custom assistant (name / avatar letter / colour).
+    let onUpdate: (Assistant) -> Void
+    /// Delete a custom assistant (confirmation happens here, before the call).
+    let onDelete: (String) -> Void
 
     @State private var editingAssistant: Assistant?
+    @State private var renamingAssistant: Assistant?
+    @State private var pendingDelete: Assistant?
+    @Environment(\.colorScheme) private var colorScheme
 
     private let avatarSize: CGFloat = 40
 
@@ -270,6 +301,31 @@ struct AssistantBarView: View {
                     }
             }
         }
+        .sheet(item: $renamingAssistant) { assistant in
+            NavigationStack {
+                EditAssistantSheet(assistant: assistant,
+                                   onSave: { edited in
+                                       onUpdate(edited)
+                                       renamingAssistant = nil
+                                   },
+                                   onCancel: { renamingAssistant = nil })
+            }
+        }
+        .alert("删除助手", isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
+            Button("删除", role: .destructive) {
+                let id = assistant.id
+                pendingDelete = nil
+                onDelete(id)
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { assistant in
+            Text("确定删除「\(assistant.name)」吗？只删除这个助手分类，消息不会被删除，会回到“全部”里。")
+        }
+    }
+
+    private var deleteAlertBinding: Binding<Bool> {
+        Binding(get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } })
     }
 
     private func avatarButton(title: String, text: String, color: Color,
@@ -291,11 +347,7 @@ struct AssistantBarView: View {
                             .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 2))
                     }
                 }
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .lineLimit(1)
-                    .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
+                assistantName(title, selected: selected)
             }
             .frame(width: 56)
         }
@@ -310,8 +362,48 @@ struct AssistantBarView: View {
                 } label: {
                     Label("更换头像", systemImage: "photo")
                 }
+                // Only custom assistants can be renamed or deleted; the four
+                // built-in ones keep their existing single-item menu.
+                if !assistant.isBuiltIn {
+                    Button {
+                        renamingAssistant = assistant
+                    } label: {
+                        Label("改名字", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        pendingDelete = assistant
+                    } label: {
+                        Label("删除助手", systemImage: "trash")
+                    }
+                }
             }
         }
+    }
+
+    /// The name under the avatar. The bar has no background of its own — the
+    /// transcript, its bubbles and its photos scroll right underneath — so the
+    /// label carries its own contrast: a soft blurred wash behind it plus a halo
+    /// around the glyphs. Both are the opposite brightness of the label itself
+    /// (the label follows `.primary`/`.secondary`, i.e. light text in dark mode
+    /// and dark text in light mode), which is what keeps it readable over any
+    /// background. Dark mode gets the dark shadow/晕染.
+    private func assistantName(_ title: String, selected: Bool) -> some View {
+        let darkMode = colorScheme == .dark
+        let wash = darkMode ? Color.black.opacity(0.5) : Color.white.opacity(0.72)
+        let halo = darkMode ? Color.black.opacity(0.8) : Color.white.opacity(0.85)
+        return Text(title)
+            .font(.caption2)
+            .foregroundStyle(selected ? .primary : .secondary)
+            .lineLimit(1)
+            .shadow(color: halo, radius: 3, x: 0, y: 1)
+            .shadow(color: halo.opacity(0.7), radius: 7, x: 0, y: 0)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background {
+                // 晕染: a blurred capsule that spreads past the glyphs.
+                Capsule()
+                    .fill(wash)
+                    .blur(radius: 5)
+            }
     }
 
     /// The avatar disc itself: custom image/video when set, otherwise the
@@ -439,6 +531,15 @@ struct NewAssistantSheet: View {
     }
 
     private var colorPicker: some View {
+        AssistantColorPicker(colorIndex: $colorIndex)
+    }
+}
+
+/// Shared 4-column colour grid used by the new- and edit-assistant sheets.
+private struct AssistantColorPicker: View {
+    @Binding var colorIndex: Int
+
+    var body: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
             ForEach(Array(AssistantPalette.colors.enumerated()), id: \.offset) { index, color in
                 Button {
@@ -465,5 +566,99 @@ struct NewAssistantSheet: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Edit-assistant sheet
+
+/// Sheet opened from a custom assistant's long-press menu (改名字): rename it
+/// and change its avatar letter / colour. Its avatar image or looping video is
+/// changed from the 更换头像 item of the same menu.
+struct EditAssistantSheet: View {
+    let assistant: Assistant
+    let onSave: (Assistant) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String
+    @State private var avatarText: String
+    @State private var colorIndex: Int
+
+    init(assistant: Assistant, onSave: @escaping (Assistant) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.assistant = assistant
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _name = State(initialValue: assistant.name)
+        _avatarText = State(initialValue: assistant.avatarText)
+        _colorIndex = State(initialValue: assistant.colorIndex)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("名字", text: $name)
+                        .accessibilityIdentifier("assistant-edit-name")
+                    TextField("头像字（1 个字或字母）", text: $avatarText)
+                        .accessibilityIdentifier("assistant-edit-avatar-text")
+                } header: {
+                    Text("助手信息")
+                } footer: {
+                    Text("名字同时作为消息归类的匹配关键字。头像图片/视频请用长按菜单里的“更换头像”。")
+                }
+
+                Section("头像颜色") {
+                    AssistantColorPicker(colorIndex: $colorIndex)
+                }
+
+                Section("预览") {
+                    HStack {
+                        Spacer()
+                        AssistantAvatarView(assistant: previewAssistant, size: 44)
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("编辑助手")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { onSave(edited) }
+                        .disabled(trimmedName.isEmpty)
+                }
+            }
+        }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The edited copy handed back to the store (same id, so custom avatar
+    /// media and everything else keyed by id stays attached).
+    private var edited: Assistant {
+        Assistant(id: assistant.id, name: trimmedName,
+                  avatarText: avatarText.trimmingCharacters(in: .whitespacesAndNewlines),
+                  colorIndex: colorIndex, isBuiltIn: assistant.isBuiltIn,
+                  matchKeywords: [trimmedName])
+    }
+
+    private var previewAssistant: Assistant {
+        let letter: String
+        let t = avatarText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty {
+            letter = String(t.prefix(1))
+        } else if let first = trimmedName.first {
+            letter = String(first)
+        } else {
+            letter = "?"
+        }
+        return Assistant(id: assistant.id, name: trimmedName.isEmpty ? "新助手" : trimmedName,
+                         avatarText: letter, colorIndex: colorIndex,
+                         isBuiltIn: false, matchKeywords: [])
     }
 }

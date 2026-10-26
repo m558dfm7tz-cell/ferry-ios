@@ -2,10 +2,33 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Chat bubbles are capped at ~75% of the screen width so there is always
-/// blank space beside them to tap (for keyboard dismissal).
-private var maxChatBubbleWidth: CGFloat {
-    UIScreen.main.bounds.width * 0.75
+/// Bubble width metrics.
+///
+/// A bubble hugs its text, and a long one stops at about 75% of the screen so
+/// there is always blank space beside it to tap (for keyboard dismissal). The
+/// 75% alone is not enough though: the timeline lays rows out with horizontal
+/// padding and an incoming message also carries a 32pt avatar, so a 75%-wide
+/// bubble ended up almost touching the opposite edge. The cap therefore also
+/// subtracts that chrome plus `oppositeGap`, which keeps the far side visibly
+/// clear when the text runs onto several lines.
+private enum BubbleMetrics {
+    /// Keep in sync with the transcript's horizontal padding in `TimelineView`.
+    static let rowPadding: CGFloat = 18
+    /// Avatar disc (32) + the row HStack's gap (12).
+    static let avatarAllowance: CGFloat = 44
+    /// Selection circle (22) + the row HStack's gap (12).
+    static let selectionAllowance: CGFloat = 34
+    /// Free space kept on the side opposite the bubble.
+    static let oppositeGap: CGFloat = 32
+    static let minWidth: CGFloat = 120
+
+    static func maxWidth(screen: CGFloat, hasAvatar: Bool, selectionMode: Bool) -> CGFloat {
+        let row = max(screen - 2 * rowPadding, minWidth)
+        var cap = row - oppositeGap
+        if hasAvatar { cap -= avatarAllowance }
+        if selectionMode { cap -= selectionAllowance }
+        return max(min(screen * 0.75, cap), minWidth)
+    }
 }
 
 struct MessageRow: View {
@@ -27,6 +50,8 @@ struct MessageRow: View {
     let selectionMode: Bool
     let isSelected: Bool
     let isHighlighted: Bool
+    /// Bright phase of the jump-to-message flash (see `TimelineView`).
+    let highlightOn: Bool
     let onToggleSelection: () -> Void
     let assistant: Assistant?
     /// Custom avatar media for that assistant (nil = default letter disc).
@@ -40,6 +65,14 @@ struct MessageRow: View {
     @State private var previewItem: MessagePreview?
     @State private var showToast = false
     @State private var toastText = ""
+
+    /// Widest this row's bubble may become: ~75% of the screen, minus the row
+    /// chrome, so the opposite side always keeps a gap.
+    private var bubbleMaxWidth: CGFloat {
+        BubbleMetrics.maxWidth(screen: UIScreen.main.bounds.width,
+                               hasAvatar: assistant != nil && !isCurrent,
+                               selectionMode: selectionMode)
+    }
 
     private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
     private var isVideo: Bool {
@@ -82,8 +115,11 @@ struct MessageRow: View {
         .overlay { if showToast { toastView } }
         .background {
             if isHighlighted {
+                // Jump-to-message flash: pulses between a faint and a bright
+                // wash a few times, then fades out (driven by `highlightOn`).
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.yellow.opacity(0.25))
+                    .fill(Color.yellow.opacity(highlightOn ? 0.42 : 0.10))
+                    .animation(.easeInOut(duration: 0.2), value: highlightOn)
             }
         }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: fileContentType,
@@ -182,7 +218,7 @@ struct MessageRow: View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
-                .frame(maxWidth: maxChatBubbleWidth, alignment: .leading)
+                .frame(maxWidth: bubbleMaxWidth, alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -194,7 +230,8 @@ struct MessageRow: View {
             case .some(.some(let decoded)):
                 imageBubble(decoded, file: file)
             case .some(.none):
-                FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
+                FileCard(file: file, maxWidth: bubbleMaxWidth, isCurrent: isCurrent,
+                         isFavorite: isFavorite, saved: saved,
                          onOpen: openFile,
                          onSave: { Task { await save() } },
                          onShare: { Task { await share() } },
@@ -221,7 +258,8 @@ struct MessageRow: View {
                     .task { await loadVideoThumbnail() }
             }
         } else if let file = message.file {
-            FileCard(file: file, isCurrent: isCurrent, isFavorite: isFavorite, saved: saved,
+            FileCard(file: file, maxWidth: bubbleMaxWidth, isCurrent: isCurrent,
+                     isFavorite: isFavorite, saved: saved,
                      onOpen: openFile,
                      onSave: { Task { await save() } },
                      onShare: { Task { await share() } },
@@ -430,6 +468,8 @@ struct MessageRow: View {
 
 private struct FileCard: View {
     let file: FileInfo
+    /// Widest the card may become (see `BubbleMetrics`).
+    let maxWidth: CGFloat
     let isCurrent: Bool
     let isFavorite: Bool
     let saved: Bool
@@ -482,7 +522,7 @@ private struct FileCard: View {
             .padding(.trailing, 14)
             .animation(.easeInOut(duration: 0.15), value: saved)
         }
-        .frame(maxWidth: maxChatBubbleWidth, alignment: .leading)
+        .frame(maxWidth: maxWidth, alignment: .leading)
         .overlay { if showToast { toastView } }
         .contextMenu {
             Button(action: onSave) {

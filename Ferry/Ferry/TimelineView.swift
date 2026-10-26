@@ -21,13 +21,19 @@ struct TimelineView: View {
     @State private var pendingScroll: PendingScroll?
     @State private var didInitialScroll = false
     @State private var showNewPill = false
-    @State private var highlightedID: String?
+    /// Message a date/search jump landed on. It keeps a top gap (see
+    /// `jumpTopInset`) so the row sits below the floating bar, and it is the
+    /// row the highlight flash is drawn on.
+    @State private var jumpTargetID: String?
+    /// Bright phase of the jump-to-message flash.
+    @State private var highlightOn = false
     @State private var toastText = ""
     @State private var showToast = false
     /// The in-flight keyboard-follow scroll, so a second `keyboardWillShow`
     /// (which also fires when the keyboard only *changes*) cannot stack two
     /// overlapping re-anchors on top of each other.
     @State private var keyboardFollowTask: Task<Void, Never>?
+    @State private var jumpTask: Task<Void, Never>?
 
     private static let bottomAnchorID = "timeline-bottom"
 
@@ -42,6 +48,16 @@ struct TimelineView: View {
         let id: String
         let anchor: UnitPoint
         let nonce = UUID()
+    }
+
+    /// Room the floating avatar bar — and, when it is showing, the pinned
+    /// 待查看 row underneath it — takes at the top of the transcript. A message
+    /// jumped to from the calendar or from search reserves exactly this much
+    /// above itself so it stops *below* the bar instead of behind it.
+    private var jumpTopInset: CGFloat {
+        AssistantBarMetrics.height
+            + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0)
+            + 12
     }
 
     private enum SelectionAlert: String, Identifiable {
@@ -100,10 +116,16 @@ struct TimelineView: View {
                                            onSendEditedImage: { image in sendEditedImage(image) },
                                            selectionMode: selectionMode,
                                            isSelected: selectedIDs.contains(message.id),
-                                           isHighlighted: highlightedID == message.id,
+                                           isHighlighted: jumpTargetID == message.id,
+                                           highlightOn: highlightOn,
                                            onToggleSelection: { toggleSelection(message.id) },
                                            assistant: model.assistantStore.assistant(for: message),
                                            assistantMedia: avatarMedia(for: message))
+                                    // Reserve the floating bar's height above
+                                    // the row a jump landed on, so anchoring
+                                    // the row to the top of the scroll view
+                                    // leaves it just below the bar.
+                                    .padding(.top, message.id == jumpTargetID ? jumpTopInset : 0)
                                     .contentShape(Rectangle())
                                     .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
@@ -150,6 +172,7 @@ struct TimelineView: View {
                     }
                 }
                 .onChange(of: model.selectedAssistantID) { _, _ in
+                    clearJumpTarget()
                     scrollToBottomAnchor()
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -209,7 +232,9 @@ struct TimelineView: View {
                                      unreadIDs: model.unreadAssistantIDs,
                                      avatarStore: model.avatarStore,
                                      onSelect: { model.selectAssistant($0) },
-                                     onAdd: { showNewAssistant = true })
+                                     onAdd: { showNewAssistant = true },
+                                     onUpdate: { model.assistantStore.update($0) },
+                                     onDelete: { model.deleteAssistant(id: $0) })
                     if model.showsReviewEntry {
                         ReviewEntryRow(count: model.reviewStore.unseenCount) {
                             showReviewList = true
@@ -476,15 +501,64 @@ struct TimelineView: View {
         }
     }
 
+    /// Scroll a message jumped to from the calendar or from search to just
+    /// below the floating avatar bar, then flash it.
+    ///
+    /// Why the gap: `scrollTo(_:anchor: .top)` aligns the row with the top of
+    /// the scroll view's *visible* area, which is exactly where the floating
+    /// avatar bar (and the pinned 待查看 row) sits — the row used to land
+    /// behind them. Reserving `jumpTopInset` above that one row makes the same
+    /// `.top` anchor leave the row below the bar. The gap stays until the next
+    /// jump (or a filter change) so the transcript never jumps afterwards.
     private func jumpToMessage(_ id: String) {
-        Task { @MainActor in
+        // A message the active assistant filter hides would silently scroll
+        // nowhere (search happily finds messages of every assistant), so move
+        // to the page it belongs to — or 全部 when it belongs to none — first.
+        let expectedFilter = jumpFilter(for: id)
+        if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
+        jumpTask?.cancel()
+        jumpTask = Task { @MainActor in
             // Let the date-jump sheet finish dismissing before scrolling.
             try? await Task.sleep(for: .milliseconds(320))
-            highlightedID = id
+            guard !Task.isCancelled else { return }
+            // The user picked another assistant meanwhile: drop the jump.
+            guard model.selectedAssistantID == expectedFilter else { return }
+            jumpTargetID = id
+            highlightOn = true
+            // One layout pass for the reserved gap before anchoring to it.
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled else { return }
             pendingScroll = PendingScroll(id: id, anchor: .top)
-            try? await Task.sleep(for: .seconds(1.6))
-            withAnimation { highlightedID = nil }
+            // Flash: three pulses, then fade out.
+            for _ in 0..<3 {
+                try? await Task.sleep(for: .milliseconds(200))
+                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = false }
+                try? await Task.sleep(for: .milliseconds(200))
+                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = true }
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+            withAnimation(.easeOut(duration: 0.45)) { highlightOn = false }
         }
+    }
+
+    /// The assistant page a jump has to end up on for `id` to be visible: the
+    /// current one when the message is already on screen, otherwise the page it
+    /// belongs to — or 全部 (nil) when it belongs to no assistant.
+    private func jumpFilter(for id: String) -> String? {
+        guard !model.visibleMessages.contains(where: { $0.id == id }),
+              let message = model.messages.first(where: { $0.id == id }) else {
+            return model.selectedAssistantID
+        }
+        return model.assistantStore.assistant(for: message)?.id
+    }
+
+    /// Forget the row a jump reserved space above (used when the transcript is
+    /// rebuilt for another assistant filter). The in-flight jump is left alone
+    /// on purpose: it checks the filter itself and bails out, so a filter
+    /// change made *by* the jump is not cancelled by its own side effect.
+    private func clearJumpTarget() {
+        jumpTargetID = nil
+        highlightOn = false
     }
 
     private func flashToastAfterDismiss(_ text: String) {

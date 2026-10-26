@@ -317,6 +317,20 @@ final class AppModel {
         }
     }
 
+    /// Delete a custom assistant (long-press menu on its avatar).
+    ///
+    /// Only the local grouping goes away — messages are never deleted, they
+    /// simply show under 全部 again. Its unread dot and badge count are dropped
+    /// while the assistant still resolves, and its custom avatar media is
+    /// removed from disk. Falls back to 全部 when it was the active filter.
+    func deleteAssistant(id: String) {
+        clearUnread(forAssistant: id)
+        unreadAssistantIDs.remove(id)
+        avatarStore.reset(for: id)
+        assistantStore.removeCustom(id: id)
+        if selectedAssistantID == id { selectAssistant(nil) }
+    }
+
     func setActive(_ active: Bool) {
         isActive = active
         if active {
