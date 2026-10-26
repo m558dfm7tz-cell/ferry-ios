@@ -27,9 +27,14 @@ final class AppModel {
     private(set) var isLoadingInitial = false
     private(set) var dayCounts: [String: Int] = [:]
 
+    /// The assistant currently being filtered on (nil = 全部, no filter).
+    var selectedAssistantID: String?
+    private(set) var unreadAssistantIDs: Set<String> = []
+
     let uploader = Uploader()
     let localStore: LocalDataStore
     let catalog = CommandCatalogStore()
+    let assistantStore = AssistantStore()
 
     private let client: any FerryServicing
     private let credentials: CredentialStoring
@@ -76,11 +81,18 @@ final class AppModel {
         }
     }
 
+    /// Messages shown in the timeline, after applying the active assistant
+    /// filter (nil = 全部, everything).
+    var visibleMessages: [MessagePayload] {
+        guard let selectedAssistantID else { return messages }
+        return messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+    }
+
     var daySections: [DaySection] {
         var sections: [DaySection] = []
         var current: [MessagePayload] = []
         var currentDay: String?
-        for message in messages {
+        for message in visibleMessages {
             let day = TimestampFormat.dayLabel(from: message.createdAt)
             if day != currentDay {
                 if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
@@ -223,6 +235,17 @@ final class AppModel {
         statusMessage = removalError
     }
 
+    /// Select an assistant filter (nil = 全部). Selecting an assistant marks
+    /// its unseen messages as seen; selecting 全部 marks everything as seen.
+    func selectAssistant(_ id: String?) {
+        selectedAssistantID = id
+        if let id {
+            unreadAssistantIDs.remove(id)
+        } else {
+            unreadAssistantIDs.removeAll()
+        }
+    }
+
     func setActive(_ active: Bool) {
         isActive = active
         if active {
@@ -351,6 +374,8 @@ final class AppModel {
         dayCounts = [:]
         dayIndexStarted = false
         countedMessageIDs = []
+        selectedAssistantID = nil
+        unreadAssistantIDs = []
         draft = ""
         isSending = false
         statusMessage = nil
@@ -619,6 +644,17 @@ final class AppModel {
         messages.sort { $0.sequence < $1.sequence }
         cursor = max(cursor, message.sequence)
         countDays([message])
+        markUnreadIfNeeded(message)
+    }
+
+    /// A newly arrived assistant message is "unseen" only while a *different*
+    /// assistant is being filtered. Viewing 全部 or that assistant itself
+    /// counts as seen, so no red dot is raised in those cases.
+    private func markUnreadIfNeeded(_ message: MessagePayload) {
+        guard let assistantID = assistantStore.assistant(for: message)?.id else { return }
+        if let selectedAssistantID, selectedAssistantID != assistantID {
+            unreadAssistantIDs.insert(assistantID)
+        }
     }
 
     private func handleUnauthorized() {

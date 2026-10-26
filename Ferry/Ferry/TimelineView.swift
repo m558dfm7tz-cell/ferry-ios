@@ -11,6 +11,7 @@ struct TimelineView: View {
     @State private var showSearch = false
     @State private var showDeviceManagement = false
     @State private var showMediaGallery = false
+    @State private var showNewAssistant = false
     @State private var galleryInitialID: String?
     @State private var atBottom = true
     @State private var selectionMode = false
@@ -50,18 +51,27 @@ struct TimelineView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 18) {
-                        // Reserved empty row under the nav bar for a future
-                        // avatar bar (not implemented).
-                        Color.clear.frame(height: 44).id("avatarBarPlaceholder")
-                        if !model.messages.isEmpty { topLoader }
-                        if model.messages.isEmpty {
-                            ContentUnavailableView("等待传输", systemImage: "shippingbox",
-                                                   description: Text("来自电脑的消息和文件会显示在这里。"))
-                                .padding(.top, 100)
-                        }
+            VStack(spacing: 0) {
+                AssistantBarView(assistants: model.assistantStore.assistants,
+                                 selectedID: $model.selectedAssistantID,
+                                 unreadIDs: model.unreadAssistantIDs,
+                                 onSelect: { model.selectAssistant($0) },
+                                 onAdd: { showNewAssistant = true })
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 18) {
+                            if !model.visibleMessages.isEmpty { topLoader }
+                            if model.visibleMessages.isEmpty {
+                                if model.selectedAssistantID != nil {
+                                    ContentUnavailableView("该助手暂无消息", systemImage: "person.crop.circle.badge.questionmark",
+                                                           description: Text("这位助手还没有发过消息。"))
+                                        .padding(.top, 100)
+                                } else {
+                                    ContentUnavailableView("等待传输", systemImage: "shippingbox",
+                                                           description: Text("来自电脑的消息和文件会显示在这里。"))
+                                        .padding(.top, 100)
+                                }
+                            }
                         ForEach(model.daySections) { section in
                             Text(section.dayLabel)
                                 .font(.caption2)
@@ -85,7 +95,8 @@ struct TimelineView: View {
                                            selectionMode: selectionMode,
                                            isSelected: selectedIDs.contains(message.id),
                                            isHighlighted: highlightedID == message.id,
-                                           onToggleSelection: { toggleSelection(message.id) })
+                                           onToggleSelection: { toggleSelection(message.id) },
+                                           assistant: model.assistantStore.assistant(for: message))
                                     .contentShape(Rectangle())
                                     .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
@@ -110,7 +121,7 @@ struct TimelineView: View {
                     guard didInitialScroll, let oldFirst, oldFirst != newFirst else { return }
                     pendingScroll = PendingScroll(id: oldFirst, anchor: .top)
                 }
-                .onChange(of: model.messages.last?.id) { _, newLast in
+                .onChange(of: model.visibleMessages.last?.id) { _, newLast in
                     guard newLast != nil else { return }
                     if !didInitialScroll {
                         didInitialScroll = true
@@ -122,6 +133,9 @@ struct TimelineView: View {
                     } else {
                         withAnimation { showNewPill = true }
                     }
+                }
+                .onChange(of: model.selectedAssistantID) { _, _ in
+                    scrollToBottomAnchor()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { scrollToBottomAnchor() }
@@ -162,6 +176,7 @@ struct TimelineView: View {
                     }
                 }
             }
+            }
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom) {
                 if selectionMode {
@@ -195,6 +210,11 @@ struct TimelineView: View {
         }
         .sheet(isPresented: $showMediaGallery) {
             MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+        }
+        .sheet(isPresented: $showNewAssistant) {
+            NewAssistantSheet { name, avatarText, colorIndex in
+                model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+            }
         }
         .alert(selectionAlert?.title ?? "", isPresented: selectionAlertBinding, presenting: selectionAlert) { alert in
             switch alert {

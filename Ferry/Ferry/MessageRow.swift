@@ -26,6 +26,7 @@ struct MessageRow: View {
     let isSelected: Bool
     let isHighlighted: Bool
     let onToggleSelection: () -> Void
+    let assistant: Assistant?
 
     @State private var copied = false
     @State private var saved = false
@@ -59,8 +60,12 @@ struct MessageRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .bottom, spacing: 12) {
             if selectionMode { selectionIndicator }
+            if let assistant, !isCurrent {
+                AssistantAvatarView(assistant: assistant, size: 32)
+                    .padding(.bottom, 1)
+            }
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
                 metaRow
                 content
@@ -126,9 +131,13 @@ struct MessageRow: View {
 
     private var metaRow: some View {
         HStack(spacing: 6) {
-            Image(systemName: message.deviceIcon)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            // The avatar disc already identifies an assistant, so the small
+            // device-kind icon is hidden for assistant messages.
+            if assistant == nil {
+                Image(systemName: message.deviceIcon)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Text(message.displayDeviceName)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
