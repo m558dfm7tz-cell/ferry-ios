@@ -2,6 +2,12 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// Chat bubbles are capped at ~75% of the screen width so there is always
+/// blank space beside them to tap (for keyboard dismissal).
+private var maxChatBubbleWidth: CGFloat {
+    UIScreen.main.bounds.width * 0.75
+}
+
 struct MessageRow: View {
     let message: MessagePayload
     let image: UIImage??
@@ -10,10 +16,12 @@ struct MessageRow: View {
     let loadImage: () async -> Void
     let loadVideoThumbnail: () async -> Void
     let loadFile: () async -> Data?
+    let loadFileURL: () async -> URL?
     let isCurrent: Bool
     let isFavorite: Bool
     let onToggleFavorite: () async -> Void
     let copyTemporaryLink: () async -> String?
+    let onOpenGallery: () -> Void
     let selectionMode: Bool
     let isSelected: Bool
     let isHighlighted: Bool
@@ -56,7 +64,7 @@ struct MessageRow: View {
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
                 metaRow
                 content
-                if isImage, message.file != nil, imageLoaded {
+                if (isImage && imageLoaded) || isVideo {
                     mediaActionRow
                 }
             }
@@ -157,6 +165,7 @@ struct MessageRow: View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
+                .frame(maxWidth: maxChatBubbleWidth, alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -270,6 +279,8 @@ struct MessageRow: View {
                               background: Color(.systemFill)) { Task { await save() } }
             RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
                               background: Color(.systemFill)) { Task { await share() } }
+            RoundActionButton(systemName: "square.grid.2x2", label: "媒体",
+                              background: Color(.systemFill)) { onOpenGallery() }
         }
         .animation(.easeInOut(duration: 0.15), value: saved)
     }
@@ -305,19 +316,19 @@ struct MessageRow: View {
     private func openFilePreview() async {
         guard let file = message.file else { return }
         let mediaType = file.mediaType
-        guard let data = await loadFile() else { return }
 
         if PreviewRouter.isVideo(mediaType, name: file.name) {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            guard let url = await loadFileURL() else { return }
             previewItem = MessagePreview(kind: .video, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isAudio(mediaType) {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            guard let url = await loadFileURL() else { return }
             previewItem = MessagePreview(kind: .audio, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isPlainText(file) {
+            guard let data = await loadFile() else { return }
             let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) ?? "无法解码文本。"
             previewItem = MessagePreview(kind: .text, name: file.name, mediaType: mediaType, text: text)
         } else {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return }
+            guard let url = await loadFileURL() else { return }
             previewItem = MessagePreview(kind: .document, name: file.name, mediaType: mediaType, url: url)
         }
     }
@@ -403,12 +414,12 @@ private struct FileCard: View {
         ZStack(alignment: .trailing) {
             Button(action: onOpen) {
                 HStack(spacing: 12) {
-                    Image(systemName: isVideo ? "film.fill" : "doc.fill")
-                        .foregroundStyle(isCurrent ? .white : .cyan)
+                    FileTypeIconView(file: file)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(file.name)
                             .font(.body.weight(.medium))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                             .foregroundStyle(isCurrent ? .white : .primary)
                         Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
                             .font(.caption)
@@ -417,7 +428,7 @@ private struct FileCard: View {
                     Spacer(minLength: 0)
                 }
                 .padding(14)
-                .padding(.trailing, 84)
+                .padding(.trailing, 96)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
@@ -437,6 +448,7 @@ private struct FileCard: View {
             .padding(.trailing, 14)
             .animation(.easeInOut(duration: 0.15), value: saved)
         }
+        .frame(maxWidth: maxChatBubbleWidth, alignment: .leading)
         .overlay { if showToast { toastView } }
         .contextMenu {
             Button(action: onSave) {
@@ -492,6 +504,8 @@ private struct RoundActionButton: View {
                 .frame(width: 36, height: 36)
                 .background(background, in: Circle())
                 .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

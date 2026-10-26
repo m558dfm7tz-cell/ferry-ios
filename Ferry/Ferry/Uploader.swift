@@ -11,9 +11,10 @@ import UniformTypeIdentifiers
 /// Sequential upload queue for `POST /api/v1/messages/file`.
 ///
 /// The Go server accepts exactly one multipart part per request:
-/// `name="file"; filename="<name>"` with a `Content-Type` part header, bounded
-/// by `MaxFileBytes = 64 MiB` (see `internal/ferry/model.go` and `server.go`).
-/// Files larger than that are rejected here before any network traffic.
+/// `name="file"; filename="<name>"` with a `Content-Type` part header. The
+/// client no longer imposes its own size cap; files are streamed into a
+/// multipart body temp file (1 MB chunks) and uploaded with
+/// `uploadTask(with:fromFile:)` so the whole file never has to live in memory.
 @MainActor @Observable
 final class Uploader {
     struct Item: Identifiable, Equatable {
@@ -29,8 +30,6 @@ final class Uploader {
 
         enum Phase: Equatable { case waiting, uploading, transcoding, done, failed }
     }
-
-    static let maxBytes: Int64 = 64 << 20
 
     private(set) var items: [Item] = []
     private(set) var isUploading = false
@@ -69,13 +68,9 @@ final class Uploader {
         activeItemID = nil
     }
 
-    /// Enqueue one file. Returns a Chinese error message when the file cannot
-    /// be sent (too large or unreadable), otherwise nil.
+    /// Enqueue one in-memory payload (small images). No client-side size cap.
     @discardableResult
     func enqueue(data: Data, name: String, mediaType: String) -> String? {
-        guard data.count <= Self.maxBytes else {
-            return "「\(name)」超过 64 MB，无法发送。"
-        }
         let safeName = Self.safeFilename(name)
         let safeMime = Self.safeMediaType(mediaType)
         let boundary = "Ferry-" + UUID().uuidString
@@ -83,6 +78,25 @@ final class Uploader {
             return "「\(name)」无法准备上传。"
         }
         items.append(Item(id: UUID(), name: safeName, mediaType: safeMime, size: Int64(data.count),
+                          boundary: boundary, bodyURL: bodyURL))
+        pump()
+        return nil
+    }
+
+    /// Enqueue a file by streaming it into a multipart body temp file (never
+    /// reads the whole file into memory). No client-side size cap.
+    @discardableResult
+    func enqueue(fileURL: URL, name: String, mediaType: String) -> String? {
+        let safeName = Self.safeFilename(name)
+        let safeMime = Self.safeMediaType(mediaType)
+        let boundary = "Ferry-" + UUID().uuidString
+        let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        guard let bodyURL = try? Self.writeBodyStreaming(sourceURL: fileURL, filename: safeName,
+                                                         mediaType: safeMime, boundary: boundary) else {
+            return "「\(name)」无法准备上传。"
+        }
+        items.append(Item(id: UUID(), name: safeName, mediaType: safeMime, size: size,
                           boundary: boundary, bodyURL: bodyURL))
         pump()
         return nil
@@ -119,26 +133,25 @@ final class Uploader {
         return id
     }
 
-    /// Replace a transcoding item's placeholder body with the finished bytes
-    /// and start uploading it. Returns a Chinese error message on failure.
+    /// Replace a transcoding item's placeholder body with the finished file
+    /// (streamed from `fileURL`) and start uploading it. Returns a Chinese
+    /// error message on failure.
     @discardableResult
-    func completeTranscode(_ id: UUID, data: Data, name: String, mediaType: String) -> String? {
+    func completeTranscode(_ id: UUID, fileURL: URL, name: String, mediaType: String) -> String? {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
-        guard data.count <= Self.maxBytes else {
-            failTranscode(id, error: "「\(name)」超过 64 MB，无法发送。")
-            return "「\(name)」超过 64 MB，无法发送。"
-        }
         let safeName = Self.safeFilename(name)
         let safeMime = Self.safeMediaType(mediaType)
-        guard let bodyURL = try? Self.writeBody(data: data, filename: safeName, mediaType: safeMime,
-                                                boundary: items[index].boundary) else {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        guard let bodyURL = try? Self.writeBodyStreaming(sourceURL: fileURL, filename: safeName,
+                                                         mediaType: safeMime, boundary: items[index].boundary) else {
             failTranscode(id, error: "「\(name)」无法准备上传。")
             return "「\(name)」无法准备上传。"
         }
         try? FileManager.default.removeItem(at: items[index].bodyURL)
         items[index].name = safeName
         items[index].mediaType = safeMime
-        items[index].size = Int64(data.count)
+        items[index].size = size
         items[index].bodyURL = bodyURL
         items[index].progress = 0
         items[index].phase = .waiting
@@ -168,7 +181,12 @@ final class Uploader {
             self?.finish(data: data, response: response, error: error)
         }
         delegate = d
-        session = URLSession(configuration: .default, delegate: d, delegateQueue: .main)
+        // Transfer session with generous timeouts for large files; JSON API
+        // calls keep the default timeouts.
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 24 * 3600
+        session = URLSession(configuration: config, delegate: d, delegateQueue: .main)
     }
 
     private func pump() {
@@ -232,10 +250,9 @@ final class Uploader {
             items[index].phase = .failed
             items[index].error = "当前设备已断开连接。"
             onUnauthorized?()
-        } else if http.statusCode == 413 {
-            items[index].phase = .failed
-            items[index].error = "文件超过 64 MB，无法发送。"
         } else {
+            // 413 (too large, server-side cap) and 507 (insufficient storage)
+            // both carry a Chinese message in the JSON error body.
             let message = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data ?? Data()))?.error.message
             items[index].phase = .failed
             items[index].error = message ?? "发送失败（HTTP \(http.statusCode)）。"
@@ -258,6 +275,34 @@ final class Uploader {
             throw error
         }
         try handle.close()
+        return url
+    }
+
+    /// Build a multipart body temp file by streaming `sourceURL` in 1 MB chunks
+    /// (so large files never live in memory): boundary headers, then the file
+    /// bytes, then the closing boundary.
+    private static func writeBodyStreaming(sourceURL: URL, filename: String, mediaType: String, boundary: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".multipart")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let output = try FileHandle(forWritingTo: url)
+        let input = try FileHandle(forReadingFrom: sourceURL)
+        do {
+            try output.write(contentsOf: Data("--\(boundary)\r\n".utf8))
+            try output.write(contentsOf: Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8))
+            try output.write(contentsOf: Data("Content-Type: \(mediaType)\r\n\r\n".utf8))
+            while true {
+                let chunk = try input.read(upToCount: 1 << 20)
+                guard let chunk, !chunk.isEmpty else { break }
+                try output.write(contentsOf: chunk)
+            }
+            try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+        } catch {
+            try? output.close()
+            try? input.close()
+            throw error
+        }
+        try output.close()
+        try input.close()
         return url
     }
 
@@ -379,6 +424,23 @@ enum MediaLoader {
         return (base.isEmpty ? "视频" : base) + ".mp4"
     }
 
+    /// The Live Photo still frame (`.fullSizePhoto` / `.photo` resource) as its
+    /// original bytes. This must NOT use `item.loadTransferable(type: Data.self)`,
+    /// which for a Live Photo can return the paired movie bytes instead of the
+    /// still image; those bytes are then mislabeled as a photo and render as a
+    /// broken "file" on the receiving device.
+    static func livePhotoStillImage(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
+        guard let identifier = item.itemIdentifier else { return nil }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard let asset = assets.firstObject else { return nil }
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let photoResource = resources.first(where: { $0.type == .fullSizePhoto })
+            ?? resources.first(where: { $0.type == .photo }) else { return nil }
+        guard let data = await resourceData(for: photoResource) else { return nil }
+        let mime = imageMime(from: data)
+        return (data, mime, generatedName(prefix: "照片", mime: mime))
+    }
+
     /// Extract the paired video of a Live Photo from the photo library. Falls
     /// back to nil (still-only) when the asset/resource is unavailable.
     static func livePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
@@ -390,27 +452,33 @@ enum MediaLoader {
         let ext = (videoResource.originalFilename as NSString).pathExtension.lowercased()
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("live-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+        guard let data = await resourceData(for: videoResource) else { return nil }
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
+    /// Read a `PHAssetResource` into memory asynchronously.
+    private static func resourceData(for resource: PHAssetResource) async -> Data? {
         let buffer = NSMutableData()
         do {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                PHAssetResourceManager.default().requestData(for: videoResource, options: nil) { chunk in
+                PHAssetResourceManager.default().requestData(for: resource, options: nil) { chunk in
                     buffer.append(chunk)
                 } completionHandler: { error in
                     if let error {
                         continuation.resume(throwing: error)
                     } else {
-                        do {
-                            try Data(referencing: buffer).write(to: url, options: .atomic)
-                            continuation.resume()
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
+                        continuation.resume()
                     }
                 }
             }
-            return url
+            return Data(referencing: buffer)
         } catch {
-            try? FileManager.default.removeItem(at: url)
             return nil
         }
     }
@@ -427,10 +495,9 @@ enum MediaLoader {
         return "image/jpeg"
     }
 
-    static func file(from url: URL) -> (data: Data, mime: String, name: String)? {
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    /// File metadata only (mime + name) without reading the bytes, so the
+    /// uploader can stream the file instead of loading it into memory.
+    static func fileInfo(from url: URL) -> (mime: String, name: String)? {
         let mime: String
         if let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType,
            let preferred = contentType.preferredMIMEType {
@@ -439,7 +506,7 @@ enum MediaLoader {
             mime = "application/octet-stream"
         }
         let name = url.lastPathComponent.isEmpty ? "文件" : url.lastPathComponent
-        return (data, mime, name)
+        return (mime, name)
     }
 
     static func capturedImage(_ image: UIImage) -> (data: Data, mime: String, name: String)? {

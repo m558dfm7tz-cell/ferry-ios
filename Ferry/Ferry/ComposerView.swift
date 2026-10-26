@@ -16,13 +16,25 @@ struct ComposerView: View {
     @State private var showEditor = false
     @State private var pasted = false
     @State private var errorMessage: String?
-    @State private var textFieldHeight: CGFloat = 0
+    @State private var textFieldHeight: CGFloat = 36
+    @State private var mentionContext: MentionContext?
+    @State private var activeTarget: MentionTarget?
+    @State private var insertCommand: TextInsertion?
+    @State private var catalog = CommandCatalogStore()
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
     var body: some View {
         VStack(spacing: 8) {
             statusArea
             uploadQueue
+            if mentionContext != nil {
+                MentionPickerView(targets: catalog.targets,
+                                  query: mentionContext?.query ?? "",
+                                  activeTarget: activeTarget,
+                                  onSelectTarget: selectMentionTarget,
+                                  onSelectCommand: selectCommand)
+                    .frame(maxWidth: 320, alignment: .leading)
+            }
             inputBar
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
@@ -175,17 +187,22 @@ struct ComposerView: View {
             .frame(width: barButtonSize, height: barButtonSize)
             .accessibilityLabel("粘贴")
 
-            TextField("输入消息...", text: $model.draft, axis: .vertical)
-                .lineLimit(1...5)
-                .focused(focused)
-                .foregroundStyle(.white)
-                .tint(.white)
+            ComposerTextView(text: $model.draft,
+                             height: $textFieldHeight,
+                             insertCommand: $insertCommand,
+                             placeholder: "输入消息...",
+                             isFocused: focused,
+                             maxLines: 5,
+                             textColor: .white,
+                             tintColor: .white,
+                             alwaysScrolls: false,
+                             onMentionChange: { context in
+                                 mentionContext = context
+                                 activeTarget = nil
+                             },
+                             accessibilityIdentifier: "composer-input")
+                .frame(height: textFieldHeight)
                 .padding(.horizontal, 4)
-                .onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.size.height
-                } action: { newHeight in
-                    textFieldHeight = newHeight
-                }
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
                         Button { showEditor = true } label: {
@@ -257,6 +274,26 @@ struct ComposerView: View {
         }
     }
 
+    // MARK: - Mention / command picker
+
+    private func selectMentionTarget(_ target: MentionTarget) {
+        guard let context = mentionContext else { return }
+        if let insertText = target.insertText {
+            insertCommand = TextInsertion(range: context.range, text: insertText)
+            mentionContext = nil
+            activeTarget = nil
+        } else if !target.commands.isEmpty {
+            activeTarget = target
+        }
+    }
+
+    private func selectCommand(_ command: CommandItem) {
+        guard let context = mentionContext else { return }
+        insertCommand = TextInsertion(range: context.range, text: command.insertText)
+        mentionContext = nil
+        activeTarget = nil
+    }
+
     private func loadAndEnqueue(_ items: [PhotosPickerItem]) async {
         for item in items {
             await loadAndEnqueueOne(item)
@@ -284,45 +321,53 @@ struct ComposerView: View {
     }
 
     /// Live Photo: send the still image plus the paired video as two messages.
-    /// Falls back to still-only when the paired video cannot be read.
+    /// The still frame is read from the photo-library resource (`.photo`/
+    /// `.fullSizePhoto`), and the video is transcoded to MP4 (or sent as the
+    /// original `.mov` when "发送原始视频" is on) so it always renders as a
+    /// playable video bubble. Falls back to still-only when the video cannot
+    /// be read.
     private func enqueueLivePhoto(_ item: PhotosPickerItem) async {
-        if let image = await MediaLoader.image(from: item) {
+        if let image = await MediaLoader.livePhotoStillImage(from: item) {
             enqueueData(image.data, name: image.name, mediaType: image.mime)
         }
         guard let videoURL = await MediaLoader.livePhotoVideoURL(from: item) else { return }
-        let base = MediaLoader.generatedName(prefix: "实况照片", mime: "video/mp4")
-        let liveName = ((base as NSString).deletingPathExtension) + "_live.mp4"
-        enqueueVideo(from: videoURL, mime: "video/quicktime", name: liveName)
+        if sendOriginalVideo {
+            let name = MediaLoader.generatedName(prefix: "实况照片", mime: "video/quicktime")
+            enqueueVideo(from: videoURL, mime: "video/quicktime", name: name)
+        } else {
+            let name = MediaLoader.generatedName(prefix: "实况照片", mime: "video/mp4")
+            enqueueVideo(from: videoURL, mime: "video/mp4", name: name)
+        }
     }
 
     /// Enqueue a source video URL: transcodes to MP4 by default (showing
     /// "转码中…" in the queue), or sends the original container when the
-    /// "发送原始视频" setting is enabled — or when transcoding fails.
+    /// "发送原始视频" setting is enabled — or when transcoding fails. The file
+    /// is always streamed into the multipart body, never loaded whole into memory.
     private func enqueueVideo(from url: URL, mime: String, name: String) {
         if sendOriginalVideo {
-            guard let data = try? Data(contentsOf: url) else { return }
-            try? FileManager.default.removeItem(at: url)
-            enqueueData(data, name: name, mediaType: mime)
+            if let error = model.uploader.enqueue(fileURL: url, name: name, mediaType: mime) {
+                errorMessage = error
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
             return
         }
-        let originalData = try? Data(contentsOf: url)
         let mp4Name = MediaLoader.mp4Name(from: name)
         let id = model.uploader.enqueueTranscoding(name: mp4Name)
         Task { @MainActor in
             let output = await MediaLoader.transcodeToMP4(from: url)
-            try? FileManager.default.removeItem(at: url)
-            if let output, let data = try? Data(contentsOf: output) {
+            if let output {
+                if let error = model.uploader.completeTranscode(id, fileURL: output, name: mp4Name, mediaType: "video/mp4") {
+                    errorMessage = error
+                }
                 try? FileManager.default.removeItem(at: output)
-                if let error = model.uploader.completeTranscode(id, data: data, name: mp4Name, mediaType: "video/mp4") {
-                    errorMessage = error
-                }
-            } else if let originalData {
-                if let error = model.uploader.completeTranscode(id, data: originalData, name: name, mediaType: mime) {
-                    errorMessage = error
-                }
             } else {
-                model.uploader.failTranscode(id, error: "视频转码失败")
+                if let error = model.uploader.completeTranscode(id, fileURL: url, name: name, mediaType: mime) {
+                    errorMessage = error
+                }
             }
+            try? FileManager.default.removeItem(at: url)
         }
     }
 
@@ -330,8 +375,10 @@ struct ComposerView: View {
         switch result {
         case .success(let urls):
             for url in urls {
-                if let loaded = MediaLoader.file(from: url) {
-                    if let error = model.uploader.enqueue(data: loaded.data, name: loaded.name, mediaType: loaded.mime) {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                if let info = MediaLoader.fileInfo(from: url) {
+                    if let error = model.uploader.enqueue(fileURL: url, name: info.name, mediaType: info.mime) {
                         errorMessage = error
                     }
                 }
@@ -402,16 +449,40 @@ struct ExpandEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
+    @State private var mentionContext: MentionContext?
+    @State private var activeTarget: MentionTarget?
+    @State private var insertCommand: TextInsertion?
+    @State private var catalog = CommandCatalogStore()
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                TextField("输入消息...", text: $text, axis: .vertical)
-                    .lineLimit(1...50)
-                    .focused($focused)
-                    .foregroundStyle(.primary)
+                ComposerTextView(text: $text,
+                                 height: .constant(0),
+                                 insertCommand: $insertCommand,
+                                 placeholder: "输入消息...",
+                                 isFocused: $focused,
+                                 maxLines: 50,
+                                 textColor: .label,
+                                 tintColor: .systemBlue,
+                                 alwaysScrolls: true,
+                                 onMentionChange: { context in
+                                     mentionContext = context
+                                     activeTarget = nil
+                                 },
+                                 accessibilityIdentifier: "editor-input")
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                if mentionContext != nil {
+                    MentionPickerView(targets: catalog.targets,
+                                      query: mentionContext?.query ?? "",
+                                      activeTarget: activeTarget,
+                                      onSelectTarget: selectMentionTarget,
+                                      onSelectCommand: selectCommand)
+                        .frame(maxWidth: 320, alignment: .leading)
+                        .padding(.horizontal, 12)
+                }
 
                 HStack {
                     Spacer()
@@ -448,5 +519,23 @@ struct ExpandEditorView: View {
     private func send() {
         dismiss()
         onSend()
+    }
+
+    private func selectMentionTarget(_ target: MentionTarget) {
+        guard let context = mentionContext else { return }
+        if let insertText = target.insertText {
+            insertCommand = TextInsertion(range: context.range, text: insertText)
+            mentionContext = nil
+            activeTarget = nil
+        } else if !target.commands.isEmpty {
+            activeTarget = target
+        }
+    }
+
+    private func selectCommand(_ command: CommandItem) {
+        guard let context = mentionContext else { return }
+        insertCommand = TextInsertion(range: context.range, text: command.insertText)
+        mentionContext = nil
+        activeTarget = nil
     }
 }

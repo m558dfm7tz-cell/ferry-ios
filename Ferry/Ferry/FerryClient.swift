@@ -10,6 +10,7 @@ protocol FerryServicing {
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload
     func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data
+    func attachmentFile(endpoint: ServerEndpoint, token: String, path: String, filename: String?) async throws -> URL
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
 }
 
@@ -29,7 +30,16 @@ struct FerryClient: FerryServicing {
     }
 
     let session: URLSession
-    init(session: URLSession = .shared) { self.session = session }
+    let transferSession: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+        // Transfers get generous timeouts; JSON API calls keep the defaults.
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 24 * 3600
+        self.transferSession = URLSession(configuration: config)
+    }
 
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool {
         let payload: AccessStatusPayload = try await json(endpoint: endpoint, path: "/api/v1/access", token: nil)
@@ -76,21 +86,42 @@ struct FerryClient: FerryServicing {
 
     /// Attachment bytes, not JSON: `download_url` is a server-supplied path and
     /// the endpoint owns the origin, so a message cannot point the app at a
-    /// different host.
-    func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data {
+    /// different host. Streams to a cache file first so large files do not
+    /// buffer in memory during download.
+    func attachmentFile(endpoint: ServerEndpoint, token: String, path: String, filename: String?) async throws -> URL {
         var request = URLRequest(url: endpoint.url(path: path, queryItems: []))
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
+        let (temporaryURL, response) = try await transferSession.download(for: request)
         guard let response = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401 { throw ClientError.unauthorized }
             throw ClientError.invalidResponse
         }
-        return data
+        let destination = Self.cacheURL(for: path, filename: filename)
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
     }
 
-    private func json<T: Decodable>(endpoint: ServerEndpoint, path: String, method: String = "GET", token: String?,
+    /// Convenience Data wrapper for small payloads (image decoding).
+    func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data {
+        let url = try await attachmentFile(endpoint: endpoint, token: token, path: path, filename: nil)
+        return try Data(contentsOf: url)
+    }
+
+    private static func cacheURL(for path: String, filename: String?) -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FerryAttachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        var leaf = path.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        if leaf.isEmpty { leaf = "attachment" }
+        let ext = (filename as NSString?)?.pathExtension.lowercased()
+        if let ext, !ext.isEmpty { leaf += ".\(ext)" }
+        return base.appendingPathComponent(leaf)
+    }
+
+    func json<T: Decodable>(endpoint: ServerEndpoint, path: String, method: String = "GET", token: String?,
                                     query: [URLQueryItem] = [], body: Data? = nil,
                                     contentType: String = "application/json",
                                     deviceKind: String? = nil) async throws -> T {

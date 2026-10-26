@@ -223,6 +223,8 @@ private struct FavoriteRow: View {
             Image(systemName: "waveform").font(.title2).foregroundStyle(.secondary)
         } else if message.text != nil {
             Image(systemName: "text.alignleft").font(.title2).foregroundStyle(.secondary)
+        } else if let file = message.file {
+            FileTypeIconView(file: file)
         } else {
             Image(systemName: "doc.fill").font(.title2).foregroundStyle(.secondary)
         }

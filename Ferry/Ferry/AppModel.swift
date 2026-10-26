@@ -33,8 +33,8 @@ final class AppModel {
     private let client: any FerryServicing
     private let credentials: CredentialStoring
     private let defaults: UserDefaults
-    private var endpoint: ServerEndpoint?
-    private var token: String?
+    private(set) var endpoint: ServerEndpoint?
+    private(set) var token: String?
     private var cursor: Int64 = 0
     private var generation = UUID()
     private var loadingImages: Set<String> = []
@@ -65,6 +65,14 @@ final class AppModel {
 
     var imageMessages: [MessagePayload] {
         messages.filter { $0.file?.mediaType.hasPrefix("image/") == true }
+    }
+
+    /// Every loaded image + video message (non-hidden), for the media gallery.
+    var mediaMessages: [MessagePayload] {
+        messages.filter {
+            guard let file = $0.file else { return false }
+            return PreviewRouter.isImage(file.mediaType) || PreviewRouter.isVideo(file)
+        }
     }
 
     var daySections: [DaySection] {
@@ -254,10 +262,9 @@ final class AppModel {
         loadingThumbnails.insert(message.id)
         defer { loadingThumbnails.remove(message.id) }
         do {
-            let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
+            let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
             guard current == generation else { return }
-            let ext = PreviewRouter.fileExtension(name: file.name, mediaType: file.mediaType)
-            let poster = await VideoThumbnailCache.generate(from: data, id: message.id, fileExtension: ext)
+            let poster = await VideoThumbnailCache.generate(fromFileURL: url, id: message.id)
             guard current == generation else { return }
             videoThumbnails[message.id] = poster.image
             videoDurations[message.id] = poster.duration
@@ -289,12 +296,20 @@ final class AppModel {
     }
 
     func fileData(for message: MessagePayload) async -> Data? {
+        guard let url = await fileURL(for: message) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    /// Download an attachment to a local file URL (streamed to disk, never
+    /// buffered in memory). Callers that can use a file URL (video player,
+    /// QuickLook) should prefer this over `fileData`.
+    func fileURL(for message: MessagePayload) async -> URL? {
         guard let file = message.file, let endpoint, let token else { return nil }
         let current = generation
         do {
-            let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
+            let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
             guard current == generation else { return nil }
-            return data
+            return url
         } catch {
             guard current == generation else { return nil }
             if error as? FerryClient.ClientError == .unauthorized {
@@ -536,6 +551,36 @@ final class AppModel {
         return DayKey.string(from: Calendar.current.startOfDay(for: date))
     }
 
+    /// Client-side keyword search over loaded messages, paging older history in
+    /// the background up to `maxPages` (≈2000 messages) — the same paging used
+    /// by the date-jump feature. The query matches the text body or file name
+    /// (case-insensitive, Chinese OK). `messages` already excludes locally
+    /// hidden/cleared messages, so results respect those too.
+    func searchMessages(query: String, filter: SearchFilter, maxPages: Int = Self.maxHistoryPages) async -> [MessagePayload] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        var results: [MessagePayload] = []
+        var seen: Set<String> = []
+
+        func scan(_ batch: [MessagePayload]) {
+            for message in batch where !seen.contains(message.id) {
+                seen.insert(message.id)
+                if SearchFilter.matches(message, query: query, filter: filter) {
+                    results.append(message)
+                }
+            }
+        }
+
+        scan(messages)
+        var pages = 0
+        while pages < maxPages, !Task.isCancelled, hasOlder {
+            guard await loadOlder() else { break }
+            pages += 1
+            scan(messages)
+        }
+        return results
+    }
+
     /// Copy the ≈90 s temporary download link for a file message to the
     /// pasteboard. Returns nil on success or a Chinese error message.
     @discardableResult
@@ -570,6 +615,13 @@ final class AppModel {
         statusMessage = "当前设备已断开连接，请重新连接。"
     }
 
+    /// The current device was revoked from the device-management page (or its
+    /// token invalidated); clear the local credential and return to pairing.
+    func deviceWasRevoked() {
+        handleUnauthorized()
+        statusMessage = "当前设备已被移除，请重新连接。"
+    }
+
     #if DEBUG
     /// UI-test stub: with "-uiTestMock" the app skips pairing/network entirely
     /// and injects one text, one image and one video message so the timeline
@@ -598,6 +650,7 @@ final class AppModel {
         videoThumbnails["mock-video"] = makeMockImage()
         videoDurations["mock-video"] = 5.0
         countDays([text, image, video])
+        currentDevice = Device(id: "mock-self", name: "我的 iPhone", kind: "iphone", createdAt: createdAt)
     }
 
     private func makeMockImage() -> UIImage {

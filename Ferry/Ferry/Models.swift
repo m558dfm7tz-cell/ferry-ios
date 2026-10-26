@@ -1,11 +1,27 @@
 import Foundation
 
-struct Device: Codable, Equatable, Sendable {
+struct Device: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let name: String
+    let kind: String
     let createdAt: String
 
-    enum CodingKeys: String, CodingKey { case id, name, createdAt = "created_at" }
+    enum CodingKeys: String, CodingKey { case id, name, kind, createdAt = "created_at" }
+
+    init(id: String, name: String, kind: String, createdAt: String) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "unknown"
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
 }
 
 struct FileInfo: Codable, Equatable, Sendable {
@@ -131,7 +147,40 @@ extension MessagePayload {
     }
 }
 
+extension Device {
+    /// SF Symbol for the device kind as shown in the device-management list.
+    var iconName: String {
+        switch kind {
+        case "iphone": return "iphone"
+        case "ipad": return "ipad"
+        case "mac": return "laptopcomputer"
+        case "android": return "candybarphone"
+        case "windows": return "pc"
+        case "browser": return "globe"
+        default: return "questionmark.circle"
+        }
+    }
+
+    /// Client-side heuristic only: the server has no "assistant" device kind,
+    /// so a device is shown with an 助手 badge when its name hints at it.
+    var isHelper: Bool {
+        name.localizedCaseInsensitiveContains("助手")
+            || name.localizedCaseInsensitiveContains("Helper")
+            || name.localizedCaseInsensitiveContains("AI")
+    }
+
+    /// 加入于 … — the server exposes only `created_at`, not a last-active time.
+    var joinedText: String {
+        guard let date = TimestampFormat.date(from: createdAt) else { return "时间未知" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
 struct AccessClaim: Decodable, Sendable { let device: Device; let token: String }
+struct DevicesPayload: Decodable, Sendable { let devices: [Device] }
 struct SessionPayload: Decodable, Sendable { let device: Device }
 struct AccessStatusPayload: Decodable, Sendable {
     let passwordRequired: Bool

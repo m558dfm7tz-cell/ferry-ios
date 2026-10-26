@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// App settings. Currently only the video-send behavior toggle: by default
-/// videos are transcoded to MP4 before upload; enable "发送原始视频" to send
-/// the original container unchanged.
+/// App settings: the video-send behavior toggle and the device-management page.
+/// By default videos are transcoded to MP4 before upload; enable "发送原始视频"
+/// to send the original container unchanged.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
+    let model: AppModel
 
     var body: some View {
         NavigationStack {
@@ -16,6 +17,17 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: {
                     Text("视频发送")
+                }
+
+                Section {
+                    NavigationLink {
+                        DeviceManagementView(model: model)
+                    } label: {
+                        Label("设备管理", systemImage: "iphone.gen3")
+                    }
+                    .accessibilityIdentifier("device-management-link")
+                } header: {
+                    Text("设备")
                 }
             }
             .navigationTitle("设置")

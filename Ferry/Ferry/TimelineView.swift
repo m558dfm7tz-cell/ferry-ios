@@ -1,13 +1,17 @@
 import SwiftUI
+import UIKit
 
 struct TimelineView: View {
     @Bindable var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var composerFocused: Bool
-    @State private var showImageGrid = false
     @State private var showFavorites = false
     @State private var showDateJump = false
     @State private var showSettings = false
+    @State private var showSearch = false
+    @State private var showDeviceManagement = false
+    @State private var showMediaGallery = false
+    @State private var galleryInitialID: String?
     @State private var atBottom = true
     @State private var selectionMode = false
     @State private var selectedIDs: Set<String> = []
@@ -49,6 +53,9 @@ struct TimelineView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 18) {
+                        // Reserved empty row under the nav bar for a future
+                        // avatar bar (not implemented).
+                        Color.clear.frame(height: 44).id("avatarBarPlaceholder")
                         if !model.messages.isEmpty { topLoader }
                         if model.messages.isEmpty {
                             ContentUnavailableView("等待传输", systemImage: "shippingbox",
@@ -69,14 +76,18 @@ struct TimelineView: View {
                                            loadImage: { await model.loadImage(for: message) },
                                            loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
                                            loadFile: { await model.fileData(for: message) },
+                                           loadFileURL: { await model.fileURL(for: message) },
                                            isCurrent: message.isCurrentDevice,
                                            isFavorite: model.localStore.isFavorite(message.id),
                                            onToggleFavorite: { await model.toggleFavorite(message) },
                                            copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
+                                           onOpenGallery: { openMediaGallery(message.id) },
                                            selectionMode: selectionMode,
                                            isSelected: selectedIDs.contains(message.id),
                                            isHighlighted: highlightedID == message.id,
                                            onToggleSelection: { toggleSelection(message.id) })
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
                             }
                         }
@@ -85,6 +96,8 @@ struct TimelineView: View {
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
                     .padding(.horizontal, 18).padding(.vertical, 20)
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismissKeyboard() }
                 }
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: pendingScroll) { _, request in
@@ -149,49 +162,17 @@ struct TimelineView: View {
                     }
                 }
             }
-            .navigationTitle("Ferry")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if selectionMode {
-                        Button("取消") { exitSelection() }
-                    } else {
-                        Label(model.currentDevice?.name ?? "设备", systemImage: "iphone")
-                            .font(.subheadline.weight(.semibold))
-                            .accessibilityIdentifier("current-device")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if !selectionMode {
-                        HStack(spacing: 14) {
-                            Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                                .accessibilityLabel("设置")
-                            Button { showDateJump = true } label: { Image(systemName: "calendar") }
-                                .accessibilityLabel("跳转到日期")
-                            Button { showFavorites = true } label: { Image(systemName: "star") }
-                                .accessibilityLabel("收藏")
-                            Button { showImageGrid = true } label: { Image(systemName: "square.grid.2x2") }
-                                .accessibilityLabel("图片")
-                            Button { enterSelection() } label: { Text("选择") }
-                                .accessibilityLabel("选择")
-                        }
-                    }
-                }
-            }
+            .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom) {
                 if selectionMode {
-                    SelectionBar(selectedCount: selectedIDs.count,
-                                 onDelete: { selectionAlert = .delete },
-                                 onClearAll: { selectionAlert = .clearAll })
+                    SelectionBar(onClearAll: { selectionAlert = .clearAll })
                 } else {
                     ComposerView(model: model, focused: $composerFocused)
                 }
             }
         }
-        .sheet(isPresented: $showImageGrid) {
-            ImageGridView(messages: model.imageMessages,
-                          images: model.images,
-                          loadImage: { m in await model.loadImage(for: m) },
-                          loadFile: { m in await model.fileData(for: m) })
+        .sheet(isPresented: $showSearch) {
+            SearchView(model: model, onSelect: { id in jumpToMessage(id) })
         }
         .sheet(isPresented: $showFavorites) {
             FavoritesView(model: model)
@@ -202,7 +183,18 @@ struct TimelineView: View {
                           onEmpty: { flashToastAfterDismiss("当天没有消息") })
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView(model: model)
+        }
+        .sheet(isPresented: $showDeviceManagement) {
+            NavigationStack {
+                DeviceManagementView(model: model)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) { Button("关闭") { showDeviceManagement = false } }
+                    }
+            }
+        }
+        .sheet(isPresented: $showMediaGallery) {
+            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
         }
         .alert(selectionAlert?.title ?? "", isPresented: selectionAlertBinding, presenting: selectionAlert) { alert in
             switch alert {
@@ -228,6 +220,86 @@ struct TimelineView: View {
             }
         }
         .overlay { if showToast { toastView } }
+    }
+
+    /// Connection status icon for the top bar leading slot (tap opens device
+    /// management). Green = connected, orange = connecting/offline, red = setup.
+    private var connectionIcon: (symbol: String, color: Color) {
+        switch model.phase {
+        case .connected: return ("wifi", .green)
+        case .connecting: return ("dot.radiowaves.left.and.right", .orange)
+        case .offline: return ("wifi.exclamationmark", .orange)
+        case .setup: return ("wifi.slash", .red)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if selectionMode {
+                Button("取消") { exitSelection() }
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            } else {
+                Button { showDeviceManagement = true } label: {
+                    Image(systemName: connectionIcon.symbol)
+                        .foregroundStyle(connectionIcon.color)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("连接状态")
+                .accessibilityIdentifier("connection-status")
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            Text(selectionMode ? "已选 \(selectedIDs.count) 项" : "Ferry")
+                .font(.headline)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if selectionMode {
+                Button("删除", role: .destructive) { selectionAlert = .delete }
+                    .disabled(selectedIDs.isEmpty)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .accessibilityIdentifier("delete-selected")
+            } else {
+                HStack(spacing: 4) {
+                    Button { showSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("搜索")
+                    .accessibilityIdentifier("search-button")
+
+                    Menu {
+                        Button { showDateJump = true } label: { Label("跳转到日期", systemImage: "calendar") }
+                        Button { showFavorites = true } label: { Label("收藏", systemImage: "star") }
+                        Button { enterSelection() } label: { Label("选择", systemImage: "checkmark.circle") }
+                        Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("更多")
+                    .accessibilityIdentifier("more-menu")
+                }
+            }
+        }
+    }
+
+    private func openMediaGallery(_ messageID: String) {
+        galleryInitialID = messageID
+        showMediaGallery = true
+    }
+
+    /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
+    /// UITextView (not a SwiftUI TextField), so clear the focus binding and also
+    /// resign the first responder directly via the responder chain.
+    private func dismissKeyboard() {
+        composerFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                         to: nil, from: nil, for: nil)
     }
 
     private var topLoader: some View {
@@ -327,11 +399,10 @@ private struct ScrollState: Hashable {
     let nearTop: Bool
 }
 
-/// Bottom bar shown while in select mode: 清空全部 on the left, 删除(N) on the
-/// right. Confirmation happens in the parent via alerts.
+/// Bottom bar shown while in select mode. 删除 now lives in the top bar, so
+/// this keeps only the 清空全部 access (so it is not lost). Confirmation
+/// happens in the parent via alerts.
 private struct SelectionBar: View {
-    let selectedCount: Int
-    let onDelete: () -> Void
     let onClearAll: () -> Void
 
     var body: some View {
@@ -340,14 +411,6 @@ private struct SelectionBar: View {
                 .buttonStyle(.bordered)
                 .tint(.red)
             Spacer()
-            Button {
-                onDelete()
-            } label: {
-                Text(selectedCount > 0 ? "删除(\(selectedCount))" : "删除")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(selectedCount == 0)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(.bar)

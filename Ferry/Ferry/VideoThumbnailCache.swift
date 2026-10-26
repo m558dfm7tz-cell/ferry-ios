@@ -41,8 +41,13 @@ enum VideoThumbnailCache {
             return (nil, 0)
         }
         defer { try? FileManager.default.removeItem(at: temp) }
+        return await generate(fromFileURL: temp, id: id)
+    }
 
-        let asset = AVURLAsset(url: temp)
+    /// Generate a poster frame directly from a local file URL (no in-memory
+    /// Data roundtrip) — the preferred path for large downloaded videos.
+    static func generate(fromFileURL url: URL, id: String) async -> (image: UIImage?, duration: Double) {
+        let asset = AVURLAsset(url: url)
         var duration: Double = 0
         if let cmTime = try? await asset.load(.duration) {
             let seconds = cmTime.seconds
