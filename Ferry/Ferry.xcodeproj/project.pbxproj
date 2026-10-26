@@ -47,6 +47,10 @@
 		1A00000000000000000000D2 /* ImageEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000D1 /* ImageEditor.swift */; };
 		1A00000000000000000000E2 /* NotificationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000E1 /* NotificationSettings.swift */; };
 		1A00000000000000000000F2 /* MessageNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000F1 /* MessageNotifier.swift */; };
+		1A0000000000000000000102 /* ReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000101 /* ReviewModels.swift */; };
+		1A0000000000000000000112 /* ReviewParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000111 /* ReviewParser.swift */; };
+		1A0000000000000000000122 /* ReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000121 /* ReviewStore.swift */; };
+		1A0000000000000000000132 /* ReviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000131 /* ReviewViews.swift */; };
 		1A0000000000000000000063 /* FerryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000061 /* FerryUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -93,6 +97,10 @@
 		1A00000000000000000000D1 /* ImageEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditor.swift; sourceTree = "<group>"; };
 		1A00000000000000000000E1 /* NotificationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSettings.swift; sourceTree = "<group>"; };
 		1A00000000000000000000F1 /* MessageNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageNotifier.swift; sourceTree = "<group>"; };
+		1A0000000000000000000101 /* ReviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewModels.swift; sourceTree = "<group>"; };
+		1A0000000000000000000111 /* ReviewParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewParser.swift; sourceTree = "<group>"; };
+		1A0000000000000000000121 /* ReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewStore.swift; sourceTree = "<group>"; };
+		1A0000000000000000000131 /* ReviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewViews.swift; sourceTree = "<group>"; };
 		1A0000000000000000000060 /* FerryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FerryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000061 /* FerryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -182,6 +190,10 @@
 				1A00000000000000000000D1 /* ImageEditor.swift */,
 				1A00000000000000000000E1 /* NotificationSettings.swift */,
 				1A00000000000000000000F1 /* MessageNotifier.swift */,
+				1A0000000000000000000101 /* ReviewModels.swift */,
+				1A0000000000000000000111 /* ReviewParser.swift */,
+				1A0000000000000000000121 /* ReviewStore.swift */,
+				1A0000000000000000000131 /* ReviewViews.swift */,
 				1A0000000000000000000008 /* Assets.xcassets */,
 				1A0000000000000000000020 /* Info.plist */,
 				1A0000000000000000000036 /* InfoPlist.strings */,
@@ -328,6 +340,10 @@
 				1A00000000000000000000D2 /* ImageEditor.swift in Sources */,
 				1A00000000000000000000E2 /* NotificationSettings.swift in Sources */,
 				1A00000000000000000000F2 /* MessageNotifier.swift in Sources */,
+				1A0000000000000000000102 /* ReviewModels.swift in Sources */,
+				1A0000000000000000000112 /* ReviewParser.swift in Sources */,
+				1A0000000000000000000122 /* ReviewStore.swift in Sources */,
+				1A0000000000000000000132 /* ReviewViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -496,7 +512,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -526,7 +542,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -554,7 +570,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;
@@ -570,7 +586,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;

@@ -45,6 +45,8 @@ final class AppModel {
     let assistantStore = AssistantStore()
     let avatarStore = AssistantAvatarStore()
     let notificationSettings = NotificationSettings.shared
+    /// 待查看 (T9): items parsed out of incoming messages + local 已看 state.
+    let reviewStore: ReviewStore
 
     private let notifier = MessageNotifier.shared
     private let client: any FerryServicing
@@ -77,6 +79,7 @@ final class AppModel {
         serverAddress = defaults.string(forKey: Self.serverKey) ?? ""
         deviceName = UIDevice.current.name
         localStore = LocalDataStore(defaults: defaults)
+        reviewStore = ReviewStore(defaults: defaults)
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
         notifier.onRoute = { [weak self] route in self?.apply(notificationRoute: route) }
@@ -103,6 +106,12 @@ final class AppModel {
     var visibleMessages: [MessagePayload] {
         guard let selectedAssistantID else { return messages }
         return messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+    }
+
+    /// The pinned 待查看 row belongs to the 总管 page and disappears once
+    /// everything in it has been marked 已看.
+    var showsReviewEntry: Bool {
+        selectedAssistantID == ReviewPlacement.chiefAssistantID && reviewStore.unseenCount > 0
     }
 
     var daySections: [DaySection] {
@@ -211,31 +220,53 @@ final class AppModel {
     }
 
     func send() async {
-        guard let endpoint, let token, canSend else { return }
-        let current = generation
         let sentDraft = draft
+        guard await sendText(sentDraft) else { return }
+        if draft == sentDraft { draft = "" }
+    }
+
+    /// Send `text` as an ordinary outgoing message; true when the server
+    /// accepted it. Shared by the composer (which then clears the draft) and by
+    /// the 待查看 reply sheet. On failure `statusMessage` is set, as before.
+    @discardableResult
+    func sendText(_ text: String) async -> Bool {
+        guard let endpoint, let token, !isSending else { return false }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let current = generation
         isSending = true
         defer {
             if current == generation { isSending = false }
         }
         do {
-            let message = try await client.sendText(endpoint: endpoint, token: token, text: sentDraft)
-            guard current == generation else { return }
+            let message = try await client.sendText(endpoint: endpoint, token: token, text: text)
+            guard current == generation else { return false }
             append(message)
-            if draft == sentDraft { draft = "" }
+            return true
         } catch is CancellationError {
-            return
+            return false
         } catch let error as URLError where error.code == .cancelled {
-            return
+            return false
         } catch {
-            guard current == generation else { return }
+            guard current == generation else { return false }
             if error as? FerryClient.ClientError == .unauthorized {
                 handle(error, generation: current)
             } else {
                 statusMessage = error.localizedDescription
                 if error is URLError || error as? FerryClient.ClientError == .invalidResponse { phase = .offline }
             }
+            return false
         }
+    }
+
+    /// Reply to a 待查看 item: an ordinary message quoting it (see
+    /// `ReviewReplyFormatter`). A delivered reply implies the item was read,
+    /// so it is marked 已看 here.
+    @discardableResult
+    func sendReviewReply(_ text: String, for item: ReviewItem) async -> Bool {
+        let body = ReviewReplyFormatter.body(for: item, text: text)
+        guard await sendText(body) else { return false }
+        reviewStore.markSeen(item.id)
+        return true
     }
 
     func disconnect() {
@@ -355,12 +386,14 @@ final class AppModel {
     func deleteSelected(_ ids: Set<String>) {
         localStore.hide(ids)
         messages.removeAll { ids.contains($0.id) }
+        reviewStore.rebuild(from: messages)
     }
 
     func clearAllMessages() {
         let maxSequence = messages.map(\.sequence).max() ?? 0
         localStore.clearAll(upTo: maxSequence)
         messages.removeAll()
+        reviewStore.rebuild(from: messages)
     }
 
     func toggleFavorite(_ message: MessagePayload) async {
@@ -436,6 +469,9 @@ final class AppModel {
         selectedAssistantID = nil
         unreadAssistantIDs = []
         unreadMessageIDs = []
+        // 已看 state is phone-local and keyed by item id, so it survives a
+        // reconnect; only the derived list is dropped.
+        reviewStore.rebuild(from: [])
         draft = ""
         isSending = false
         statusMessage = nil
@@ -523,6 +559,7 @@ final class AppModel {
         dayCounts = [:]
         countedMessageIDs = []
         countDays(messages)
+        reviewStore.rebuild(from: messages)
     }
 
     /// Load one older page and prepend it, preserving the caller's scroll
@@ -558,6 +595,7 @@ final class AppModel {
         messages.insert(contentsOf: visible, at: 0)
         messages.sort { $0.sequence < $1.sequence }
         countDays(visible)
+        reviewStore.rebuild(from: messages)
         cursor = max(cursor, visible.map(\.sequence).max() ?? cursor)
     }
 
@@ -709,6 +747,7 @@ final class AppModel {
         messages.sort { $0.sequence < $1.sequence }
         cursor = max(cursor, message.sequence)
         countDays([message])
+        reviewStore.ingest(message: message)
         markUnreadIfNeeded(message)
         registerIncoming(message)
     }
@@ -829,11 +868,30 @@ final class AppModel {
                                    senderName: "测试", senderKind: "iphone",
                                    isCurrentDevice: false, createdAt: createdAt,
                                    text: nil, file: videoFile)
-        messages = [text, image, video]
+        // Two 待查看 samples — one per wire format — so the T9 list can be
+        // exercised without a server (launch with "-uiTestMock").
+        let reviewJSON = """
+        {"review":{"id":"mock-review-package","kind":"package","title":"Ferry iOS build 13 待测","summary":"装上去过一遍待查看区","detail":"1. 打开总管页\\n2. 点开待查看\\n3. 标已看 / 回复"}}
+        """
+        let reviewJSONMessage = MessagePayload(id: "mock-review-json", sequence: 4, kind: .text,
+                                               senderName: "总管", senderKind: "mac",
+                                               isCurrentDevice: false, createdAt: createdAt,
+                                               text: reviewJSON, file: nil)
+        let reviewText = """
+        [待查看:daily] 今日日报
+        今天完成 2 项，等你确认 1 项。
+        明细：待查看区已上线（mock 数据）。
+        """
+        let reviewTextMessage = MessagePayload(id: "mock-review-text", sequence: 5, kind: .text,
+                                               senderName: "总管", senderKind: "mac",
+                                               isCurrentDevice: false, createdAt: createdAt,
+                                               text: reviewText, file: nil)
+        messages = [text, image, video, reviewJSONMessage, reviewTextMessage]
         images["mock-image"] = makeMockImage()
         videoThumbnails["mock-video"] = makeMockImage()
         videoDurations["mock-video"] = 5.0
-        countDays([text, image, video])
+        countDays(messages)
+        reviewStore.rebuild(from: messages)
         currentDevice = Device(id: "mock-self", name: "我的 iPhone", kind: "iphone", createdAt: createdAt)
     }
 

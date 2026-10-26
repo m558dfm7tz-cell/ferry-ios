@@ -12,6 +12,7 @@ struct TimelineView: View {
     @State private var showDeviceManagement = false
     @State private var showMediaGallery = false
     @State private var showNewAssistant = false
+    @State private var showReviewList = false
     @State private var galleryInitialID: String?
     @State private var atBottom = true
     @State private var selectionMode = false
@@ -113,7 +114,10 @@ struct TimelineView: View {
                     // it, instead of being permanently hidden behind it.
                     .padding(.horizontal, 18)
                     .padding(.bottom, 20)
-                    .padding(.top, 20 + AssistantBarMetrics.height)
+                    // Reserve room for the floating avatar bar and, when it is
+                    // showing, the pinned 待查看 row underneath it.
+                    .padding(.top, 20 + AssistantBarMetrics.height
+                             + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
                     .contentShape(Rectangle())
                     .onTapGesture { dismissKeyboard() }
                 }
@@ -187,12 +191,19 @@ struct TimelineView: View {
                     }
                 }
             }
-                AssistantBarView(assistants: model.assistantStore.assistants,
-                                 selectedID: $model.selectedAssistantID,
-                                 unreadIDs: model.unreadAssistantIDs,
-                                 avatarStore: model.avatarStore,
-                                 onSelect: { model.selectAssistant($0) },
-                                 onAdd: { showNewAssistant = true })
+                VStack(spacing: 0) {
+                    AssistantBarView(assistants: model.assistantStore.assistants,
+                                     selectedID: $model.selectedAssistantID,
+                                     unreadIDs: model.unreadAssistantIDs,
+                                     avatarStore: model.avatarStore,
+                                     onSelect: { model.selectAssistant($0) },
+                                     onAdd: { showNewAssistant = true })
+                    if model.showsReviewEntry {
+                        ReviewEntryRow(count: model.reviewStore.unseenCount) {
+                            showReviewList = true
+                        }
+                    }
+                }
             }
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom) {
@@ -232,6 +243,9 @@ struct TimelineView: View {
             NewAssistantSheet { name, avatarText, colorIndex in
                 model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
             }
+        }
+        .sheet(isPresented: $showReviewList) {
+            ReviewListView(model: model)
         }
         .onAppear { applyPendingRoute() }
         .onChange(of: model.pendingRoute) { _, route in
