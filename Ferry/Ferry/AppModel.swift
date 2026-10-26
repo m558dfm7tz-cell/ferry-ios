@@ -31,12 +31,22 @@ final class AppModel {
     var selectedAssistantID: String?
     private(set) var unreadAssistantIDs: Set<String> = []
 
+    /// Route requested by a tapped notification; consumed by the timeline once
+    /// it is on screen (a cold start applies it as soon as it connects).
+    private(set) var pendingRoute: NotificationRoute?
+
+    /// Number of messages that arrived while their conversation was not on
+    /// screen — the app icon badge value.
+    var unreadCount: Int { unreadMessageIDs.count }
+
     let uploader = Uploader()
     let localStore: LocalDataStore
     let catalog = CommandCatalogStore()
     let assistantStore = AssistantStore()
     let avatarStore = AssistantAvatarStore()
+    let notificationSettings = NotificationSettings.shared
 
+    private let notifier = MessageNotifier.shared
     private let client: any FerryServicing
     private let credentials: CredentialStoring
     private let defaults: UserDefaults
@@ -50,6 +60,11 @@ final class AppModel {
     private var isActive = true
     private var dayIndexStarted = false
     private var countedMessageIDs: Set<String> = []
+    /// Message ids counted as unread (badge). Cleared as the user reads them.
+    private var unreadMessageIDs: Set<String> = []
+    private var lastBadgeCount = 0
+    /// Background grace window that keeps polling alive after leaving the app.
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private static let serverKey = "ferry.server.origin"
     private static let pageSize = 50
     private static let maxHistoryPages = 40
@@ -64,6 +79,7 @@ final class AppModel {
         localStore = LocalDataStore(defaults: defaults)
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
+        notifier.onRoute = { [weak self] route in self?.apply(notificationRoute: route) }
     }
 
     var canSend: Bool {
@@ -242,22 +258,50 @@ final class AppModel {
         selectedAssistantID = id
         if let id {
             unreadAssistantIDs.remove(id)
+            clearUnread(forAssistant: id)
         } else {
             unreadAssistantIDs.removeAll()
+            clearAllUnread()
         }
     }
 
     func setActive(_ active: Bool) {
         isActive = active
         if active {
+            endBackgroundGrace()
             refreshCommandCatalog()
+            // Returning to the app counts as reading whatever is on screen.
+            markVisibleAsRead()
             if phase == .connected || phase == .offline { startPolling() }
             else { Task { await start() } }
         } else {
-            pollTask?.cancel()
-            pollTask = nil
+            // Keep the existing poll loop alive for the short background grace
+            // window iOS grants, so messages that arrive right after leaving
+            // Ferry can still raise a local notification. When the window
+            // expires the app is suspended and nothing can wake it (no APNs),
+            // which is the limitation documented in the T8 report.
+            beginBackgroundGrace()
         }
     }
+
+    // MARK: - Notifications
+
+    /// Called after the user flips the 通知 switch in 设置.
+    func notificationSettingsDidChange() {
+        if notificationSettings.isEnabled {
+            Task { await notifier.requestAuthorization() }
+            updateBadge()
+        } else {
+            unreadMessageIDs.removeAll()
+            lastBadgeCount = 0
+            Task { await notifier.clearAll() }
+        }
+    }
+
+    /// Drop the pending notification route once the timeline has applied it.
+    func consumeNotificationRoute() { pendingRoute = nil }
+
+    private func apply(notificationRoute route: NotificationRoute) { pendingRoute = route }
 
     /// Trigger a (throttled) FerryHelper command-catalog fetch for the current
     /// server host. Silently no-ops when there is no endpoint yet (and never
@@ -391,11 +435,17 @@ final class AppModel {
         countedMessageIDs = []
         selectedAssistantID = nil
         unreadAssistantIDs = []
+        unreadMessageIDs = []
         draft = ""
         isSending = false
         statusMessage = nil
         credentialWarning = nil
+        endBackgroundGrace()
         uploader.teardown()
+        // Force the badge to be republished: iOS keeps showing the previous
+        // session's count until something writes a new one.
+        lastBadgeCount = -1
+        updateBadge()
         return generation
     }
 
@@ -660,6 +710,7 @@ final class AppModel {
         cursor = max(cursor, message.sequence)
         countDays([message])
         markUnreadIfNeeded(message)
+        registerIncoming(message)
     }
 
     /// A newly arrived assistant message is "unseen" only while a *different*
@@ -670,6 +721,74 @@ final class AppModel {
         if let selectedAssistantID, selectedAssistantID != assistantID {
             unreadAssistantIDs.insert(assistantID)
         }
+    }
+
+    /// Count + announce a message that just arrived. Only messages whose
+    /// conversation the user is *not* looking at produce a notification, so
+    /// the current conversation never pops a duplicate banner.
+    private func registerIncoming(_ message: MessagePayload) {
+        guard !message.isCurrentDevice else { return }
+        guard notificationSettings.isEnabled else { return }
+        let assistant = assistantStore.assistant(for: message)
+        guard !isConversationVisible(assistant) else { return }
+        guard message.sequence > notificationSettings.lastNotifiedSequence else { return }
+        notificationSettings.lastNotifiedSequence = message.sequence
+        unreadMessageIDs.insert(message.id)
+        updateBadge()
+        Task { await notifier.notify(message: message, assistant: assistant) }
+    }
+
+    /// Whether the message's conversation is on screen right now.
+    private func isConversationVisible(_ assistant: Assistant?) -> Bool {
+        // `.offline` counts as visible too: a message that arrives while a
+        // transient error is being repaired is still on screen.
+        guard isActive, phase == .connected || phase == .offline else { return false }
+        guard let selectedAssistantID else { return true } // 全部 shows everything
+        return assistant?.id == selectedAssistantID
+    }
+
+    private func markVisibleAsRead() {
+        if let selectedAssistantID { clearUnread(forAssistant: selectedAssistantID) }
+        else { clearAllUnread() }
+    }
+
+    private func clearUnread(forAssistant id: String) {
+        guard !unreadMessageIDs.isEmpty else { return }
+        unreadMessageIDs = unreadMessageIDs.filter { messageID in
+            guard let message = messages.first(where: { $0.id == messageID }) else { return true }
+            return assistantStore.assistant(for: message)?.id != id
+        }
+        updateBadge()
+    }
+
+    private func clearAllUnread() {
+        guard !unreadMessageIDs.isEmpty else { return }
+        unreadMessageIDs.removeAll()
+        updateBadge()
+    }
+
+    private func updateBadge() {
+        let count = unreadMessageIDs.count
+        guard count != lastBadgeCount else { return }
+        lastBadgeCount = count
+        Task { await notifier.setBadge(count) }
+    }
+
+    /// Ask iOS for a little extra background time when Ferry leaves the
+    /// foreground so the existing poll loop can keep running briefly.
+    private func beginBackgroundGrace() {
+        guard backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "Ferry.backgroundPoll") { [weak self] in
+            Task { @MainActor in self?.endBackgroundGrace() }
+        }
+    }
+
+    private func endBackgroundGrace() {
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
+        pollTask?.cancel()
+        pollTask = nil
     }
 
     private func handleUnauthorized() {

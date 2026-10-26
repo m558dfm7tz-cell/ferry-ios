@@ -233,6 +233,11 @@ struct TimelineView: View {
                 model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
             }
         }
+        .onAppear { applyPendingRoute() }
+        .onChange(of: model.pendingRoute) { _, route in
+            guard route != nil else { return }
+            applyPendingRoute()
+        }
         .alert(selectionAlert?.title ?? "", isPresented: selectionAlertBinding, presenting: selectionAlert) { alert in
             switch alert {
             case .delete:
@@ -421,6 +426,21 @@ struct TimelineView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(120))
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+        }
+    }
+
+    /// Open the conversation a tapped notification points at: select the
+    /// assistant (which also clears its unread badge) and scroll to the message.
+    /// Falls back to the newest message when that one is not loaded yet.
+    private func applyPendingRoute() {
+        guard let route = model.pendingRoute else { return }
+        model.consumeNotificationRoute()
+        model.selectAssistant(route.assistantID)
+        if let messageID = route.messageID,
+           model.visibleMessages.contains(where: { $0.id == messageID }) {
+            jumpToMessage(messageID)
+        } else {
+            scrollToBottomAnchor()
         }
     }
 
