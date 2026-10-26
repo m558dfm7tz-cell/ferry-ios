@@ -92,6 +92,7 @@ struct TimelineView: View {
                                            onToggleFavorite: { await model.toggleFavorite(message) },
                                            copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
                                            onOpenGallery: { openMediaGallery(message.id) },
+                                           onSendEditedImage: { image in sendEditedImage(image) },
                                            selectionMode: selectionMode,
                                            isSelected: selectedIDs.contains(message.id),
                                            isHighlighted: highlightedID == message.id,
@@ -327,6 +328,15 @@ struct TimelineView: View {
     private func openMediaGallery(_ messageID: String) {
         galleryInitialID = messageID
         showMediaGallery = true
+    }
+
+    /// Enqueue an image edited from a preview as a new outgoing message.
+    private func sendEditedImage(_ image: UIImage) {
+        if let error = model.sendEditedImage(image, originalName: nil) {
+            flashToast(error)
+        } else {
+            flashToast("已发送编辑后的图片")
+        }
     }
 
     /// Custom avatar media (image / looping video) for the assistant a message

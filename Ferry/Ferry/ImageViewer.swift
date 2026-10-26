@@ -13,11 +13,15 @@ struct ImageViewer: View {
     /// Opens the grid of every image and video in this chat. Nil hides the
     /// entry (e.g. when the viewer is already opened from that grid).
     var onOpenGallery: (() -> Void)? = nil
+    /// Called with the edited copy when the user finishes editing from the
+    /// viewer. Nil hides the 编辑 entry.
+    var onEditFinished: ((UIImage) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var showToast = false
     @State private var toastText = ""
     @State private var showOCR = false
+    @State private var showEditor = false
 
     var body: some View {
         ZStack {
@@ -35,20 +39,43 @@ struct ImageViewer: View {
                 .padding(20)
         }
         .overlay(alignment: .bottomLeading) {
-            Button { showOCR = true } label: {
-                Image(systemName: "text.viewfinder")
-                    .font(.system(size: 22, weight: .medium))
-                    .frame(width: 52, height: 52)
-                    .background(Color.white.opacity(0.15), in: Circle())
-                    .foregroundStyle(.white)
+            HStack(spacing: 14) {
+                if onEditFinished != nil {
+                    Button { showEditor = true } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 22, weight: .medium))
+                            .frame(width: 52, height: 52)
+                            .background(Color.white.opacity(0.15), in: Circle())
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("编辑")
+                    .accessibilityIdentifier("viewer-edit")
+                }
+                Button { showOCR = true } label: {
+                    Image(systemName: "text.viewfinder")
+                        .font(.system(size: 22, weight: .medium))
+                        .frame(width: 52, height: 52)
+                        .background(Color.white.opacity(0.15), in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("识别文字")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("识别文字")
             .padding(20)
         }
         .overlay { if showToast { toastView } }
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
+        }
+        .fullScreenCover(isPresented: $showEditor) {
+            ImageEditorView(image: image, confirmTitle: "发送",
+                            onFinish: { edited in
+                                showEditor = false
+                                onEditFinished?(edited)
+                                dismiss()
+                            },
+                            onCancel: { showEditor = false })
         }
         .statusBarHidden()
     }

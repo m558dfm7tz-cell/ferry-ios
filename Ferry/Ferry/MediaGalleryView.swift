@@ -108,6 +108,8 @@ private struct MediaPagerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
     @State private var videoURLs: [String: URL] = [:]
+    @State private var showToast = false
+    @State private var toastText = ""
 
     init(messages: [MessagePayload], startID: String, model: AppModel) {
         self.messages = messages
@@ -139,7 +141,41 @@ private struct MediaPagerView: View {
             .accessibilityLabel("返回网格")
             .padding(.top, 4)
         }
+        .overlay { if showToast { toastView } }
         .statusBarHidden()
+    }
+
+    private var toastView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(toastText).foregroundStyle(.white).font(.footnote.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.black.opacity(0.85), in: Capsule())
+        .transition(.opacity)
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        withAnimation(.easeIn(duration: 0.15)) { showToast = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation(.easeOut(duration: 0.15)) { showToast = false }
+        }
+    }
+
+    /// The editor produced a copy: send it as a new message, then leave the
+    /// pager after a moment so the toast is readable.
+    private func sendEdited(_ image: UIImage, originalName: String) {
+        if let error = model.sendEditedImage(image, originalName: originalName) {
+            flashToast(error)
+            return
+        }
+        flashToast("已发送编辑后的图片")
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            dismiss()
+        }
     }
 
     @ViewBuilder private func page(for message: MessagePayload) -> some View {
@@ -149,7 +185,8 @@ private struct MediaPagerView: View {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
                             load: { await model.fileData(for: message) },
-                            onOpenGallery: { dismiss() })
+                            onOpenGallery: { dismiss() },
+                            onEditFinished: { edited in sendEdited(edited, originalName: name) })
             } else {
                 Color.black.overlay { ProgressView() }
                     .task { await model.loadImage(for: message) }

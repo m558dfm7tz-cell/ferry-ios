@@ -21,7 +21,17 @@ struct ComposerView: View {
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?
     @State private var pasteAvailable = false
+    @State private var editTarget: ImageEditTarget?
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
+
+    /// A queued image opened in the editor. `id` is the upload item it will
+    /// replace when the edit is confirmed.
+    private struct ImageEditTarget: Identifiable {
+        let id: UUID
+        let image: UIImage
+        let name: String
+        let mediaType: String
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -77,6 +87,14 @@ struct ComposerView: View {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+        .fullScreenCover(item: $editTarget) { target in
+            ImageEditorView(image: target.image, confirmTitle: "发送",
+                            onFinish: { edited in
+                                applyEdited(edited, to: target)
+                                editTarget = nil
+                            },
+                            onCancel: { editTarget = nil })
         }
         .alert("发送失败", isPresented: errorBinding) {
             Button("好", role: .cancel) {}
@@ -159,6 +177,14 @@ struct ComposerView: View {
                     Text("转码中…").font(.caption2).foregroundStyle(.secondary)
                 } else {
                     Text("\(Int(item.progress * 100))%").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                if item.sourceURL != nil, item.mediaType.hasPrefix("image/") {
+                    Button { openEditor(for: item) } label: {
+                        Image(systemName: "pencil").font(.caption2)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .accessibilityLabel("编辑")
+                    .accessibilityIdentifier("composer-edit-image")
                 }
                 Button { model.uploader.remove(item.id) } label: {
                     Image(systemName: "xmark").font(.caption2)
@@ -370,6 +396,34 @@ struct ComposerView: View {
 
     private func enqueueData(_ data: Data, name: String, mediaType: String) {
         if let error = model.uploader.enqueue(data: data, name: name, mediaType: mediaType) {
+            errorMessage = error
+        }
+    }
+
+    // MARK: - Image editing before send
+
+    /// Open a still-pending image in the editor. The queued item keeps its place
+    /// in the queue; only confirming the edit replaces it.
+    private func openEditor(for item: Uploader.Item) {
+        guard let url = item.sourceURL,
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            errorMessage = "「\(item.name)」无法读取，不能编辑。"
+            return
+        }
+        editTarget = ImageEditTarget(id: item.id, image: image, name: item.name, mediaType: item.mediaType)
+    }
+
+    /// Replace the queued original with the edited copy. The original is never
+    /// touched — the editor always produces a new image.
+    private func applyEdited(_ image: UIImage, to target: ImageEditTarget) {
+        guard let encoded = EditedImageExport.encode(image, originalMediaType: target.mediaType) else {
+            errorMessage = "「\(target.name)」编辑后无法导出。"
+            return
+        }
+        let name = EditedImageExport.name(for: target.name, mime: encoded.mime)
+        model.uploader.remove(target.id)
+        if let error = model.uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime) {
             errorMessage = error
         }
     }

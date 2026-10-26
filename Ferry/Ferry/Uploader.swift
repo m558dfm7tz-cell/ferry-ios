@@ -24,6 +24,10 @@ final class Uploader {
         var size: Int64
         let boundary: String
         var bodyURL: URL
+        /// The original bytes, kept on disk for images so the image editor can
+        /// re-open them (edit before send) without parsing the multipart body.
+        /// Nil for streamed file uploads.
+        var sourceURL: URL? = nil
         var progress: Double = 0
         var phase: Phase = .waiting
         var error: String?
@@ -61,7 +65,10 @@ final class Uploader {
         session?.invalidateAndCancel()
         session = nil
         delegate = nil
-        for item in items { try? FileManager.default.removeItem(at: item.bodyURL) }
+        for item in items {
+            try? FileManager.default.removeItem(at: item.bodyURL)
+            if let source = item.sourceURL { try? FileManager.default.removeItem(at: source) }
+        }
         items.removeAll()
         isUploading = false
         activeTask = nil
@@ -77,8 +84,11 @@ final class Uploader {
         guard let bodyURL = try? Self.writeBody(data: data, filename: safeName, mediaType: safeMime, boundary: boundary) else {
             return "「\(name)」无法准备上传。"
         }
+        // Images keep a plain copy of their bytes so they can be re-opened in
+        // the image editor before they are sent.
+        let sourceURL: URL? = safeMime.hasPrefix("image/") ? (try? Self.writeSource(data, filename: safeName)) : nil
         items.append(Item(id: UUID(), name: safeName, mediaType: safeMime, size: Int64(data.count),
-                          boundary: boundary, bodyURL: bodyURL))
+                          boundary: boundary, bodyURL: bodyURL, sourceURL: sourceURL))
         pump()
         return nil
     }
@@ -106,6 +116,7 @@ final class Uploader {
         if activeItemID == id { activeTask?.cancel() }
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         try? FileManager.default.removeItem(at: items[index].bodyURL)
+        if let source = items[index].sourceURL { try? FileManager.default.removeItem(at: source) }
         items.remove(at: index)
     }
 
@@ -217,7 +228,14 @@ final class Uploader {
             pump()
             return
         }
-        defer { try? FileManager.default.removeItem(at: items[index].bodyURL) }
+        defer {
+            try? FileManager.default.removeItem(at: items[index].bodyURL)
+            // The editable copy is only needed while the item is still pending.
+            if let source = items[index].sourceURL {
+                try? FileManager.default.removeItem(at: source)
+                items[index].sourceURL = nil
+            }
+        }
 
         if let error = error {
             let ns = error as NSError
@@ -258,6 +276,16 @@ final class Uploader {
             items[index].error = message ?? "发送失败（HTTP \(http.statusCode)）。"
         }
         pump()
+    }
+
+    /// Write the raw payload to its own temp file (kept only for images, so the
+    /// editor can re-open it before the upload starts).
+    private static func writeSource(_ data: Data, filename: String) throws -> URL {
+        let ext = (filename as NSString).pathExtension
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("src-\(UUID().uuidString).\(ext.isEmpty ? "bin" : ext)")
+        try data.write(to: url, options: .atomic)
+        return url
     }
 
     private static func writeBody(data: Data, filename: String, mediaType: String, boundary: String) throws -> URL {

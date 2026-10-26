@@ -22,6 +22,8 @@ struct MessageRow: View {
     let onToggleFavorite: () async -> Void
     let copyTemporaryLink: () async -> String?
     let onOpenGallery: () -> Void
+    /// Sends the edited copy produced from this message's image preview.
+    let onSendEditedImage: (UIImage) -> Void
     let selectionMode: Bool
     let isSelected: Bool
     let isHighlighted: Bool
@@ -101,7 +103,8 @@ struct MessageRow: View {
         case .image:
             if let image = preview.image {
                 ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
-                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview)
+                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview,
+                            onEditFinished: sendEditedFromPreview)
             }
         case .video:
             if let url = preview.url {
@@ -292,6 +295,13 @@ struct MessageRow: View {
             try? await Task.sleep(for: .milliseconds(350))
             onOpenGallery()
         }
+    }
+
+    /// The editor hands back an edited copy; close the preview and hand it to
+    /// the timeline, which enqueues it as a new message.
+    private func sendEditedFromPreview(_ image: UIImage) {
+        previewItem = nil
+        onSendEditedImage(image)
     }
 
     private var mediaActionRow: some View {

@@ -44,6 +44,7 @@
 		1A00000000000000000000A2 /* CommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000A1 /* CommandCatalog.swift */; };
 		1A00000000000000000000B2 /* AssistantBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000B1 /* AssistantBar.swift */; };
 		1A00000000000000000000C2 /* AssistantAvatarMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000C1 /* AssistantAvatarMedia.swift */; };
+		1A00000000000000000000D2 /* ImageEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000D1 /* ImageEditor.swift */; };
 		1A0000000000000000000063 /* FerryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000061 /* FerryUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -87,6 +88,7 @@
 		1A00000000000000000000A1 /* CommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandCatalog.swift; sourceTree = "<group>"; };
 		1A00000000000000000000B1 /* AssistantBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantBar.swift; sourceTree = "<group>"; };
 		1A00000000000000000000C1 /* AssistantAvatarMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantAvatarMedia.swift; sourceTree = "<group>"; };
+		1A00000000000000000000D1 /* ImageEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditor.swift; sourceTree = "<group>"; };
 		1A0000000000000000000060 /* FerryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FerryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000061 /* FerryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -173,6 +175,7 @@
 				1A00000000000000000000A1 /* CommandCatalog.swift */,
 				1A00000000000000000000B1 /* AssistantBar.swift */,
 				1A00000000000000000000C1 /* AssistantAvatarMedia.swift */,
+				1A00000000000000000000D1 /* ImageEditor.swift */,
 				1A0000000000000000000008 /* Assets.xcassets */,
 				1A0000000000000000000020 /* Info.plist */,
 				1A0000000000000000000036 /* InfoPlist.strings */,
@@ -316,6 +319,7 @@
 				1A00000000000000000000A2 /* CommandCatalog.swift in Sources */,
 				1A00000000000000000000B2 /* AssistantBar.swift in Sources */,
 				1A00000000000000000000C2 /* AssistantAvatarMedia.swift in Sources */,
+				1A00000000000000000000D2 /* ImageEditor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -484,7 +488,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -514,7 +518,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_REGION = "zh-Hans";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -542,7 +546,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;
@@ -558,7 +562,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferry.test.FerryUITests;

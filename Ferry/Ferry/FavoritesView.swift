@@ -7,10 +7,14 @@ struct FavoritesView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var previewItem: MessagePreview?
+    @State private var statusMessage: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
+                if let statusMessage {
+                    Text(statusMessage).font(.footnote).foregroundStyle(.red).padding(.top, 8)
+                }
                 if model.localStore.favorites.isEmpty {
                     ContentUnavailableView("暂无收藏", systemImage: "star",
                                            description: Text("长按消息并选择「收藏」后，会显示在这里。"))
@@ -56,6 +60,12 @@ struct FavoritesView: View {
                             load: {
                                 if let url = preview.url { return try? Data(contentsOf: url) }
                                 return nil
+                            },
+                            onEditFinished: { edited in
+                                previewItem = nil
+                                if let error = model.sendEditedImage(edited, originalName: preview.name) {
+                                    statusMessage = error
+                                }
                             })
             }
         case .video:

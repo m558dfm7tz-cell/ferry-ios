@@ -329,6 +329,20 @@ final class AppModel {
         }
     }
 
+    /// Enqueue an image produced by the editor as a new outgoing message.
+    /// Returns a Chinese error message on failure, or nil on success. The
+    /// original message (when there was one) is left untouched.
+    @discardableResult
+    func sendEditedImage(_ image: UIImage, originalName: String?) -> String? {
+        let ext = ((originalName ?? "") as NSString).pathExtension.lowercased()
+        let mediaType = ext == "png" ? "image/png" : "image/jpeg"
+        guard let encoded = EditedImageExport.encode(image, originalMediaType: mediaType) else {
+            return "编辑后的图片无法导出。"
+        }
+        let name = EditedImageExport.name(for: originalName ?? "编辑", mime: encoded.mime)
+        return uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime)
+    }
+
     func fileData(for message: MessagePayload) async -> Data? {
         guard let url = await fileURL(for: message) else { return nil }
         return try? Data(contentsOf: url)
