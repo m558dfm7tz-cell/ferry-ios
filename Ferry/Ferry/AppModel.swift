@@ -64,6 +64,11 @@ final class AppModel {
     /// The Ferry space the phone-local caches are currently pointed at.
     private(set) var spaceKey: SpaceKey?
     private var cursor: Int64 = 0
+    /// Deletion-change-log cursor (GET /api/v1/changes?since=…).
+    private var changeCursor: Int64 = 0
+    /// Custom-assistant names seen in the last server assistant-state snapshot,
+    /// used to detect assistants deleted on another device.
+    private var knownServerAssistantNames: Set<String> = []
     private var generation = UUID()
     private var loadingImages: Set<String> = []
     private var loadingThumbnails: Set<String> = []
@@ -374,6 +379,13 @@ final class AppModel {
     /// while the assistant still resolves, and its custom avatar media is
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
+        removeAssistantLocally(id: id)
+    }
+
+    /// Remove one assistant's grouping and avatar from this phone (used both by
+    /// the user's own delete action and by server-driven deletions from another
+    /// device). Messages are never deleted — they fall back to 全部.
+    private func removeAssistantLocally(id: String) {
         clearUnread(forAssistant: id)
         unreadAssistantIDs.remove(id)
         avatarStore.reset(for: id)
@@ -545,6 +557,8 @@ final class AppModel {
         loadingImages = []
         loadingThumbnails = []
         cursor = 0
+        changeCursor = 0
+        knownServerAssistantNames = []
         hasOlder = false
         isLoadingOlder = false
         isLoadingInitial = false
@@ -596,6 +610,7 @@ final class AppModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshMessages(generation: current)
+                await self?.refreshChanges(generation: current)
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -615,6 +630,89 @@ final class AppModel {
         } catch let error as URLError where error.code == .cancelled {
             return
         } catch { handle(error, generation: current) }
+    }
+
+    /// Poll the server's deletion change log + assistant bar state and apply
+    /// deletions made on other devices to the local caches and UI. Best-effort:
+    /// a failure here never flips the app offline (the message poll surfaces
+    /// connectivity problems), so a transient error just retries next tick.
+    private func refreshChanges(generation current: UUID) async {
+        guard current == generation, let endpoint, let token else { return }
+        do {
+            let page = try await client.changes(endpoint: endpoint, token: token, since: changeCursor)
+            guard current == generation else { return }
+            for change in page.changes { applyChange(change) }
+            changeCursor = max(changeCursor, page.revision)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
+        } catch {
+            // Best-effort: retried on the next poll tick.
+        }
+        do {
+            let state = try await client.assistantState(endpoint: endpoint, token: token)
+            guard current == generation else { return }
+            applyAssistantState(state)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
+        } catch {
+            // Best-effort.
+        }
+    }
+
+    private func applyChange(_ change: Change) {
+        switch change.kind {
+        case "message":
+            if change.itemID == "*" {
+                // Clear-all: the server dropped the whole history.
+                let maxSequence = messages.map(\.sequence).max() ?? 0
+                localStore.clearAll(upTo: maxSequence)
+                messages.removeAll()
+                images = [:]
+                videoThumbnails = [:]
+                videoDurations = [:]
+                unreadMessageIDs.removeAll()
+                reviewStore.rebuild(from: [])
+            } else {
+                removeMessageLocally(id: change.itemID)
+            }
+        case "favorite":
+            localStore.removeFavorite(change.itemID)
+        default:
+            break
+        }
+    }
+
+    /// Drop one message and every local artifact attached to it (image cache,
+    /// video poster, unread badge), so a message deleted on another device
+    /// disappears from the timeline and the media gallery.
+    private func removeMessageLocally(id: String) {
+        messages.removeAll { $0.id == id }
+        images.removeValue(forKey: id)
+        videoThumbnails.removeValue(forKey: id)
+        videoDurations.removeValue(forKey: id)
+        unreadMessageIDs.remove(id)
+        localStore.hide([id])
+        reviewStore.rebuild(from: messages)
+    }
+
+    /// Detect custom assistants removed on another device and drop them locally.
+    /// Compared against the previous snapshot so assistants that only exist on
+    /// this phone (and were never synced) are never deleted by accident.
+    private func applyAssistantState(_ state: AssistantStatePayload) {
+        let currentNames = Set(state.custom.map(\.name))
+        let removed = knownServerAssistantNames.subtracting(currentNames)
+        if !removed.isEmpty {
+            for name in removed {
+                if let assistant = assistantStore.custom.first(where: { $0.name == name }) {
+                    removeAssistantLocally(id: assistant.id)
+                }
+            }
+        }
+        knownServerAssistantNames = currentNames
     }
 
     /// Initial (WeChat-style) load: fetch the newest page and, later, start

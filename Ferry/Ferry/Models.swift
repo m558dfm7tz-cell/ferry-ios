@@ -273,3 +273,35 @@ struct SpaceKey: Hashable, Sendable {
         return digest.map { String(format: "%02x", Int($0)) }.joined()
     }
 }
+
+// MARK: - Multi-device sync (server-authoritative) payloads
+
+/// One deletion event from `GET /api/v1/changes`. `kind` is "message" or
+/// "favorite"; `itemID` is the 32-hex message id, or "*" for a clear-all.
+struct Change: Decodable, Sendable {
+    let seq: Int64
+    let kind: String
+    let itemID: String
+    enum CodingKeys: String, CodingKey { case seq, kind, itemID = "item_id" }
+}
+
+struct ChangesPage: Decodable, Sendable {
+    let changes: [Change]
+    let revision: Int64
+}
+
+/// One custom assistant in the shared assistant bar (`assistant-state.custom`).
+struct ServerCustomAssistant: Codable, Sendable {
+    let name: String
+    let avatarText: String?
+    let colorIndex: Int?
+    enum CodingKeys: String, CodingKey { case name, avatarText, colorIndex }
+}
+
+/// `GET/PUT /api/v1/assistant-state`: the server-authoritative assistant bar
+/// (selected filter, per-assistant read cursors, custom assistant list).
+struct AssistantStatePayload: Codable, Sendable {
+    let selected: String?
+    let reads: [String: Int64]
+    let custom: [ServerCustomAssistant]
+}

@@ -12,6 +12,8 @@ protocol FerryServicing {
     func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data
     func attachmentFile(endpoint: ServerEndpoint, token: String, path: String, filename: String?) async throws -> URL
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
+    func changes(endpoint: ServerEndpoint, token: String, since: Int64) async throws -> ChangesPage
+    func assistantState(endpoint: ServerEndpoint, token: String) async throws -> AssistantStatePayload
 }
 
 struct FerryClient: FerryServicing {
@@ -82,6 +84,18 @@ struct FerryClient: FerryServicing {
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload {
         try await json(endpoint: endpoint, path: "/api/v1/files/\(messageID)/download-link",
                        method: "POST", token: token, body: nil)
+    }
+
+    /// Deletion change log (`GET /api/v1/changes`): recent message/favorite
+    /// removals from other devices, ordered ascending by sequence.
+    func changes(endpoint: ServerEndpoint, token: String, since: Int64) async throws -> ChangesPage {
+        try await json(endpoint: endpoint, path: "/api/v1/changes", token: token,
+                       query: [URLQueryItem(name: "since", value: String(since))])
+    }
+
+    /// Server-authoritative assistant bar state (custom assistants list).
+    func assistantState(endpoint: ServerEndpoint, token: String) async throws -> AssistantStatePayload {
+        try await json(endpoint: endpoint, path: "/api/v1/assistant-state", token: token)
     }
 
     /// Attachment bytes, not JSON: `download_url` is a server-supplied path and
