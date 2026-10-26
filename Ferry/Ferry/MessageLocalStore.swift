@@ -18,36 +18,105 @@ struct FavoriteMessage: Codable, Identifiable, Equatable {
 @MainActor @Observable
 final class LocalDataStore {
     private let defaults: UserDefaults
+    /// The space this store is currently pointed at; nil until `activate` runs.
+    private(set) var spaceKey: SpaceKey?
     private(set) var hiddenIDs: Set<String>
     private(set) var clearedBeforeSequence: Int64?
     private(set) var favorites: [FavoriteMessage]
 
     static let favoritesFolderName = "Favorites"
 
+    /// Favorites live under `Application Support/Ferry/Spaces/<space>/Favorites`
+    /// once a space is active, so different servers never share favorite files.
     var favoritesFolder: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        if let spaceKey {
+            return base.appendingPathComponent("Ferry", isDirectory: true)
+                .appendingPathComponent("Spaces", isDirectory: true)
+                .appendingPathComponent(spaceKey.folderName, isDirectory: true)
+                .appendingPathComponent(Self.favoritesFolderName, isDirectory: true)
+        }
         return base.appendingPathComponent(Self.favoritesFolderName, isDirectory: true)
     }
 
-    private enum Keys {
+    /// Pre-space (unscoped) keys: migrated into the first space ever activated.
+    private enum LegacyKeys {
         static let hiddenIDs = "ferry.local.hiddenIDs"
         static let clearedBefore = "ferry.local.clearedBeforeSequence"
         static let favorites = "ferry.local.favorites"
     }
 
+    private var hiddenKey: String { "ferry.local.hiddenIDs." + (spaceKey?.value ?? "") }
+    private var clearedKey: String { "ferry.local.clearedBeforeSequence." + (spaceKey?.value ?? "") }
+    private var favoritesKey: String { "ferry.local.favorites." + (spaceKey?.value ?? "") }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.hiddenIDs = Set(defaults.stringArray(forKey: Keys.hiddenIDs) ?? [])
-        if let number = defaults.object(forKey: Keys.clearedBefore) as? NSNumber {
-            self.clearedBeforeSequence = number.int64Value
-        } else {
-            self.clearedBeforeSequence = nil
+        self.hiddenIDs = []
+        self.clearedBeforeSequence = nil
+        self.favorites = []
+    }
+
+    /// Point the store at one Ferry space and load its persisted state. The
+    /// first space ever activated absorbs any legacy (unscoped) data, so an
+    /// upgrade from the pre-space build never loses favorites or hidden ids.
+    func activate(space: SpaceKey) {
+        guard space != spaceKey else { return }
+        spaceKey = space
+        if Self.hasLegacy(defaults: defaults) {
+            migrateLegacy()
         }
-        if let data = defaults.data(forKey: Keys.favorites),
-           let decoded = try? JSONDecoder().decode([FavoriteMessage].self, from: data) {
-            self.favorites = decoded
+        load()
+    }
+
+    private func load() {
+        hiddenIDs = Set(defaults.stringArray(forKey: hiddenKey) ?? [])
+        if let number = defaults.object(forKey: clearedKey) as? NSNumber {
+            clearedBeforeSequence = number.int64Value
         } else {
-            self.favorites = []
+            clearedBeforeSequence = nil
+        }
+        if let data = defaults.data(forKey: favoritesKey),
+           let decoded = try? JSONDecoder().decode([FavoriteMessage].self, from: data) {
+            favorites = decoded
+        } else {
+            favorites = []
+        }
+    }
+
+    private static func hasLegacy(defaults: UserDefaults) -> Bool {
+        defaults.stringArray(forKey: LegacyKeys.hiddenIDs) != nil
+            || defaults.object(forKey: LegacyKeys.clearedBefore) != nil
+            || defaults.data(forKey: LegacyKeys.favorites) != nil
+    }
+
+    /// Move legacy unscoped data (UserDefaults values + favorite files) into the
+    /// current space, then clear the legacy keys.
+    private func migrateLegacy() {
+        let legacyFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent(Self.favoritesFolderName, isDirectory: true)
+        if FileManager.default.fileExists(atPath: legacyFolder.path) {
+            try? FileManager.default.createDirectory(at: favoritesFolder, withIntermediateDirectories: true)
+            if let items = try? FileManager.default.contentsOfDirectory(atPath: legacyFolder.path) {
+                for item in items {
+                    let source = legacyFolder.appendingPathComponent(item)
+                    let destination = favoritesFolder.appendingPathComponent(item)
+                    try? FileManager.default.moveItem(at: source, to: destination)
+                }
+            }
+            try? FileManager.default.removeItem(at: legacyFolder)
+        }
+        if let array = defaults.stringArray(forKey: LegacyKeys.hiddenIDs) {
+            defaults.set(array, forKey: hiddenKey)
+            defaults.removeObject(forKey: LegacyKeys.hiddenIDs)
+        }
+        if let number = defaults.object(forKey: LegacyKeys.clearedBefore) as? NSNumber {
+            defaults.set(number, forKey: clearedKey)
+            defaults.removeObject(forKey: LegacyKeys.clearedBefore)
+        }
+        if let data = defaults.data(forKey: LegacyKeys.favorites) {
+            defaults.set(data, forKey: favoritesKey)
+            defaults.removeObject(forKey: LegacyKeys.favorites)
         }
     }
 
@@ -73,11 +142,11 @@ final class LocalDataStore {
     }
 
     private func persistHidden() {
-        defaults.set(Array(hiddenIDs), forKey: Keys.hiddenIDs)
+        defaults.set(Array(hiddenIDs), forKey: hiddenKey)
         if let cleared = clearedBeforeSequence {
-            defaults.set(NSNumber(value: cleared), forKey: Keys.clearedBefore)
+            defaults.set(NSNumber(value: cleared), forKey: clearedKey)
         } else {
-            defaults.removeObject(forKey: Keys.clearedBefore)
+            defaults.removeObject(forKey: clearedKey)
         }
     }
 
@@ -112,7 +181,7 @@ final class LocalDataStore {
 
     private func persistFavorites() {
         if let data = try? JSONEncoder().encode(favorites) {
-            defaults.set(data, forKey: Keys.favorites)
+            defaults.set(data, forKey: favoritesKey)
         }
     }
 

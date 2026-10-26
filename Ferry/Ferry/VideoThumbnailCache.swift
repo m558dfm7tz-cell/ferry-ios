@@ -8,9 +8,28 @@ import os
 /// and durations in a sidecar <id>.duration so both survive relaunches.
 enum VideoThumbnailCache {
     private static let logger = Logger(subsystem: "com.ferry.test", category: "VideoThumbnail")
+    private static let spaceLock = NSLock()
+    private static var spaceFolderName: String?
+
+    /// Set once per connect. Thumbnails are then written under a per-space
+    /// folder so different servers never share poster caches.
+    static func setSpace(_ space: SpaceKey?) {
+        spaceLock.lock()
+        spaceFolderName = space?.folderName
+        spaceLock.unlock()
+    }
 
     private static var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        spaceLock.lock()
+        let folder = spaceFolderName
+        spaceLock.unlock()
+        if let folder {
+            return base.appendingPathComponent("Ferry", isDirectory: true)
+                .appendingPathComponent("Spaces", isDirectory: true)
+                .appendingPathComponent(folder, isDirectory: true)
+                .appendingPathComponent("Thumbnails", isDirectory: true)
+        }
         return base.appendingPathComponent("Thumbnails", isDirectory: true)
     }
 

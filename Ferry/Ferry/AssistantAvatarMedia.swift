@@ -73,25 +73,51 @@ final class AssistantAvatarStore {
 
     private let defaults: UserDefaults
     private let sync: any AssistantAvatarSyncing
+    private(set) var spaceKey: SpaceKey?
 
     private static let storageKey = "ferry.local.assistantAvatars"
     private static let directoryName = "AssistantAvatars"
+
+    private var scopedKey: String { Self.storageKey + "." + (spaceKey?.value ?? "") }
 
     init(defaults: UserDefaults = .standard,
          sync: any AssistantAvatarSyncing = NoopAssistantAvatarSync()) {
         self.defaults = defaults
         self.sync = sync
-        if let data = defaults.data(forKey: Self.storageKey),
+    }
+
+    /// Point the store at one Ferry space and load its avatars. The first space
+    /// ever activated absorbs legacy (unscoped) data.
+    func activate(space: SpaceKey) {
+        guard space != spaceKey else { return }
+        spaceKey = space
+        if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([String: AssistantAvatar].self, from: data) {
             avatars = decoded
+        } else if let legacy = defaults.data(forKey: Self.storageKey),
+                  let decoded = try? JSONDecoder().decode([String: AssistantAvatar].self, from: legacy) {
+            avatars = decoded
+            defaults.removeObject(forKey: Self.storageKey)
+            persist()
+        } else {
+            avatars = [:]
         }
     }
 
-    /// Directory holding the avatar media files (created on first access).
-    static var directory: URL {
+    /// Directory holding the avatar media files (created on first access),
+    /// scoped to the active space.
+    var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        let url = base.appendingPathComponent(Self.directoryName, isDirectory: true)
+        let url: URL
+        if let spaceKey {
+            url = base.appendingPathComponent("Ferry", isDirectory: true)
+                .appendingPathComponent("Spaces", isDirectory: true)
+                .appendingPathComponent(spaceKey.folderName, isDirectory: true)
+                .appendingPathComponent(Self.directoryName, isDirectory: true)
+        } else {
+            url = base.appendingPathComponent(Self.directoryName, isDirectory: true)
+        }
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -100,7 +126,7 @@ final class AssistantAvatarStore {
     func media(for assistantID: String) -> AssistantAvatarMedia? {
         guard let avatar = avatars[assistantID],
               let fileName = avatar.fileName, !fileName.isEmpty else { return nil }
-        let url = Self.directory.appendingPathComponent(fileName)
+        let url = directory.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         switch avatar.kind {
         case .text: return nil
@@ -122,7 +148,7 @@ final class AssistantAvatarStore {
     func setVideo(from sourceURL: URL, for assistantID: String) {
         let ext = sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension
         let name = "\(assistantID).\(ext)"
-        let destination = Self.directory.appendingPathComponent(name)
+        let destination = directory.appendingPathComponent(name)
         do {
             removeFile(for: assistantID)
             try FileManager.default.copyItem(at: sourceURL, to: destination)
@@ -169,20 +195,20 @@ final class AssistantAvatarStore {
 
     private func persist() {
         if let data = try? JSONEncoder().encode(avatars) {
-            defaults.set(data, forKey: Self.storageKey)
+            defaults.set(data, forKey: scopedKey)
         }
     }
 
     private func replaceFile(named name: String, data: Data, for assistantID: String) {
         removeFile(for: assistantID)
-        let url = Self.directory.appendingPathComponent(name)
+        let url = directory.appendingPathComponent(name)
         try? data.write(to: url, options: .atomic)
         Self.imageCache.removeObject(forKey: url.path as NSString)
     }
 
     private func removeFile(for assistantID: String) {
         guard let name = avatars[assistantID]?.fileName else { return }
-        let url = Self.directory.appendingPathComponent(name)
+        let url = directory.appendingPathComponent(name)
         try? FileManager.default.removeItem(at: url)
         Self.imageCache.removeObject(forKey: url.path as NSString)
     }

@@ -77,7 +77,10 @@ enum AssistantPalette {
 final class AssistantStore {
     private(set) var custom: [Assistant]
     private let defaults: UserDefaults
+    private(set) var spaceKey: SpaceKey?
     private static let customKey = "ferry.local.customAssistants"
+
+    private var scopedKey: String { Self.customKey + "." + (spaceKey?.value ?? "") }
 
     /// Fixed assistants and their sender-name match keywords.
     static let builtIn: [Assistant] = [
@@ -93,11 +96,24 @@ final class AssistantStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        if let data = defaults.data(forKey: Self.customKey),
+        self.custom = []
+    }
+
+    /// Point the store at one Ferry space and load its custom assistants. The
+    /// first space ever activated absorbs legacy (unscoped) data.
+    func activate(space: SpaceKey) {
+        guard space != spaceKey else { return }
+        spaceKey = space
+        if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([Assistant].self, from: data) {
-            self.custom = decoded
+            custom = decoded
+        } else if let legacy = defaults.data(forKey: Self.customKey),
+                  let decoded = try? JSONDecoder().decode([Assistant].self, from: legacy) {
+            custom = decoded
+            defaults.removeObject(forKey: Self.customKey)
+            persist()
         } else {
-            self.custom = []
+            custom = []
         }
     }
 
@@ -200,7 +216,7 @@ final class AssistantStore {
 
     private func persist() {
         if let data = try? JSONEncoder().encode(custom) {
-            defaults.set(data, forKey: Self.customKey)
+            defaults.set(data, forKey: scopedKey)
         }
     }
 }

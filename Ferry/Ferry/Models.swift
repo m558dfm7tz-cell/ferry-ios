@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct Device: Codable, Equatable, Identifiable, Sendable {
@@ -238,4 +239,37 @@ enum DayKey {
 struct APIErrorEnvelope: Decodable, Sendable {
     struct Detail: Decodable, Sendable { let code: String; let message: String }
     let error: Detail
+}
+
+/// Identifies one Ferry "space": a server address plus, when the server enforces
+/// an access password, a SHA-256 hash of that password. The password itself is
+/// never stored or logged. Keying phone-local caches (favorites, custom
+/// assistants, avatars, thumbnails) by this value keeps different servers — and
+/// different passwords on one server — from leaking into each other.
+struct SpaceKey: Hashable, Sendable {
+    /// Stable value used as a UserDefaults key suffix.
+    let value: String
+
+    /// Reconstruct a previously persisted space (its `value` is stable).
+    init(value: String) {
+        self.value = value
+    }
+
+    init(origin: String, password: String) {
+        let normalized = origin.trimmingCharacters(in: .whitespacesAndNewlines)
+        if password.isEmpty {
+            value = normalized
+        } else {
+            let digest = SHA256.hash(data: Data(password.utf8))
+            let hex = digest.map { String(format: "%02x", Int($0)) }.joined()
+            value = normalized + "#" + hex
+        }
+    }
+
+    /// Filesystem-safe folder name: the origin may contain `://` and the value
+    /// may be long, so it is hashed again into a fixed hex string.
+    var folderName: String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        return digest.map { String(format: "%02x", Int($0)) }.joined()
+    }
 }

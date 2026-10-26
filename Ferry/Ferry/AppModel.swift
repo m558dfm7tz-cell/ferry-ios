@@ -61,6 +61,8 @@ final class AppModel {
     private let defaults: UserDefaults
     private(set) var endpoint: ServerEndpoint?
     private(set) var token: String?
+    /// The Ferry space the phone-local caches are currently pointed at.
+    private(set) var spaceKey: SpaceKey?
     private var cursor: Int64 = 0
     private var generation = UUID()
     private var loadingImages: Set<String> = []
@@ -75,6 +77,9 @@ final class AppModel {
     /// Background grace window that keeps polling alive after leaving the app.
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private static let serverKey = "ferry.server.origin"
+    /// origin → space-key value mapping, persisted at join time so a reconnect
+    /// (which has a token but not the password) can restore the same space.
+    private static let spaceKeysKey = "ferry.spaceKeys"
     private static let pageSize = 50
     private static let maxHistoryPages = 40
 
@@ -188,6 +193,9 @@ final class AppModel {
             serverAddress = endpoint.origin
             do { try credentials.save(token: claim.token, for: endpoint.origin) }
             catch { credentialWarning = error.localizedDescription }
+            let space = SpaceKey(origin: endpoint.origin, password: accessPassword)
+            rememberSpace(space, for: endpoint.origin)
+            activate(space: space)
             accessPassword = ""
             phase = .connected
             uploader.configure(endpoint: endpoint, token: claim.token)
@@ -195,6 +203,41 @@ final class AppModel {
             startPolling()
             refreshCommandCatalog()
         } catch { handle(error, generation: current) }
+    }
+
+    /// Point all phone-local caches (favorites, hidden ids, custom assistants,
+    /// avatars, video thumbnails) at one Ferry space, isolating data from
+    /// different servers / access passwords. The chat transcript itself is
+    /// already server-authoritative: it is held in memory and re-fetched on
+    /// every launch.
+    private func activate(space: SpaceKey) {
+        spaceKey = space
+        localStore.activate(space: space)
+        assistantStore.activate(space: space)
+        avatarStore.activate(space: space)
+        VideoThumbnailCache.setSpace(space)
+    }
+
+    /// Resolve the space for an origin on reconnect (token-only, no password).
+    private func space(for origin: String) -> SpaceKey {
+        if let stored = storedSpaceValue(for: origin), !stored.isEmpty {
+            return SpaceKey(value: stored)
+        }
+        return SpaceKey(origin: origin, password: "")
+    }
+
+    private func rememberSpace(_ space: SpaceKey, for origin: String) {
+        var mapping = storedSpaceValues()
+        mapping[origin] = space.value
+        defaults.set(mapping, forKey: Self.spaceKeysKey)
+    }
+
+    private func storedSpaceValues() -> [String: String] {
+        defaults.dictionary(forKey: Self.spaceKeysKey) as? [String: String] ?? [:]
+    }
+
+    private func storedSpaceValue(for origin: String) -> String? {
+        storedSpaceValues()[origin]
     }
 
     func discover() async {
@@ -535,6 +578,7 @@ final class AppModel {
             currentDevice = device
             phase = .connected
             statusMessage = nil
+            activate(space: space(for: endpoint.origin))
             uploader.configure(endpoint: endpoint, token: token)
             await loadInitial(generation: current)
             startPolling()
