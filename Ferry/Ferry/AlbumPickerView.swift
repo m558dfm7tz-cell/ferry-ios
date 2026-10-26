@@ -4,7 +4,7 @@ import UIKit
 
 /// WeChat-style photo picker, presented from the composer's 相册 button.
 ///
-/// This build ships the grid page only:
+/// Grid page:
 /// - album-switch capsule (top) + a tap-away album list,
 /// - a 4-column thumbnail grid sorted newest-first,
 /// - a sequence-numbered selection circle on each selectable cell,
@@ -13,10 +13,15 @@ import UIKit
 /// - limited / denied photo-library permission handling, and
 /// - `PHCachingImageManager` thumbnail caching.
 ///
+/// Full-screen 大图预览 (`AlbumPreviewView`): tap a thumbnail to open from that
+/// image and page left/right through the whole album; the 预览 button pages
+/// through only the selected assets. It shares selection / 原图 / edited-image
+/// state with the grid, and single-tap hides/shows the bars.
+///
 /// Sending reuses the existing `Uploader.enqueue` path for still images:
-/// original bytes when 原图 is checked, otherwise a downscaled JPEG. Videos and
-/// the full-screen 大图预览 (tap-to-preview, swipe, edit, Live Photo switch)
-/// are a later step and are deliberately not wired here.
+/// original bytes when 原图 is checked, otherwise a downscaled JPEG. Videos
+/// (displayed with a duration badge) and the Live Photo switch are a later step
+/// and are deliberately not wired here.
 struct AlbumPickerView: View {
     let model: AppModel
 
@@ -34,21 +39,38 @@ struct AlbumPickerView: View {
     @State private var sendError: String?
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
+    /// Full-screen preview state; nil shows the grid.
+    @State private var previewContext: PickerPreviewContext?
+    /// Edited replacements keyed by asset localIdentifier. When present for a
+    /// selected asset, the edited image is sent instead of the original bytes.
+    @State private var editedImages: [String: UIImage] = [:]
 
     private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 1), count: 4)
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            switch permission {
-            case .loading:
-                ProgressView().tint(.white)
-            case .denied:
-                deniedView
-            case .limited, .ready:
-                content
+            if let context = previewContext {
+                AlbumPreviewView(displayAssets: context.assets,
+                                 startIndex: context.startIndex,
+                                 selected: $selected,
+                                 sendOriginal: $sendOriginal,
+                                 editedImages: $editedImages,
+                                 imageManager: imageManager,
+                                 onSend: send,
+                                 onClose: { previewContext = nil })
+                    .zIndex(1)
+            } else {
+                switch permission {
+                case .loading:
+                    ProgressView().tint(.white)
+                case .denied:
+                    deniedView
+                case .limited, .ready:
+                    content
+                }
+                if showAlbumList { albumListOverlay }
             }
-            if showAlbumList { albumListOverlay }
         }
         .statusBarHidden()
         .task { await resolvePermission() }
@@ -136,7 +158,8 @@ struct AlbumPickerView: View {
                         sequence: selectionIndex(for: asset),
                         isSelectable: isSelectable(asset),
                         imageManager: imageManager,
-                        onTapCircle: { toggle(asset) }
+                        onTapCircle: { toggle(asset) },
+                        onTapThumbnail: { openPreview(at: asset) }
                     )
                 }
             }
@@ -145,10 +168,10 @@ struct AlbumPickerView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 0) {
-            // 大图预览 is the next step; the button is already laid out and
-            // greys out while nothing is selected, matching the spec.
             Button {
-                // Preview page is wired in a later build.
+                guard !selected.isEmpty else { return }
+                // 预览 only shows the already-selected assets.
+                previewContext = PickerPreviewContext(assets: selected, startIndex: 0)
             } label: {
                 Text("预览")
                     .font(.system(size: 15))
@@ -396,6 +419,13 @@ struct AlbumPickerView: View {
         }
     }
 
+    /// Open the full-screen preview starting at `asset`, paging through the
+    /// whole current album.
+    private func openPreview(at asset: PHAsset) {
+        guard let index = assets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) else { return }
+        previewContext = PickerPreviewContext(assets: assets, startIndex: index)
+    }
+
     // MARK: - Send
 
     private func send() {
@@ -403,11 +433,17 @@ struct AlbumPickerView: View {
         isSending = true
         let picks = selected
         let original = sendOriginal
+        let edited = editedImages
         Task { @MainActor in
             for asset in picks {
-                guard let loaded = await loadSendData(for: asset, manager: imageManager, sendOriginal: original) else {
-                    continue
+                let loaded: (data: Data, mime: String, name: String)?
+                if let editedImage = edited[asset.localIdentifier],
+                   let data = editedImage.jpegData(compressionQuality: 0.92) {
+                    loaded = (data, "image/jpeg", MediaLoader.generatedName(prefix: "照片", mime: "image/jpeg"))
+                } else {
+                    loaded = await loadSendData(for: asset, manager: imageManager, sendOriginal: original)
                 }
+                guard let loaded else { continue }
                 if let error = model.uploader.enqueue(data: loaded.data, name: loaded.name, mediaType: loaded.mime) {
                     sendError = error
                     isSending = false
@@ -457,6 +493,7 @@ private struct PickerGridCell: View {
     let isSelectable: Bool
     let imageManager: PHCachingImageManager
     let onTapCircle: () -> Void
+    let onTapThumbnail: () -> Void
 
     @State private var thumbnail: UIImage?
 
@@ -472,6 +509,7 @@ private struct PickerGridCell: View {
         .aspectRatio(1, contentMode: .fit)
         .clipped()
         .contentShape(Rectangle())
+        .onTapGesture(perform: onTapThumbnail)
         .overlay(alignment: .topTrailing) {
             if isSelectable { selectionCircle }
         }
@@ -480,20 +518,8 @@ private struct PickerGridCell: View {
     }
 
     private var selectionCircle: some View {
-        Button(action: onTapCircle) {
-            ZStack {
-                Circle().fill(sequence != nil ? pickerGreen : Color.black.opacity(0.35))
-                Circle().strokeBorder(Color.white, lineWidth: 1.5)
-                if let sequence {
-                    Text("\(sequence)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-            }
-            .frame(width: 24, height: 24)
-        }
-        .buttonStyle(.plain)
-        .padding(4)
+        PickerSelectionCircle(sequence: sequence, action: onTapCircle)
+            .padding(4)
     }
 
     @ViewBuilder private var bottomBadges: some View {
@@ -525,6 +551,284 @@ private struct PickerGridCell: View {
         _ = imageManager.requestImage(for: asset, targetSize: target, contentMode: .aspectFill, options: options) { image, _ in
             guard let image else { return }
             DispatchQueue.main.async { thumbnail = image }
+        }
+    }
+}
+
+/// Numbered selection circle shared by the grid and the full-screen preview.
+private struct PickerSelectionCircle: View {
+    let sequence: Int?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle().fill(sequence != nil ? pickerGreen : Color.black.opacity(0.35))
+                Circle().strokeBorder(Color.white, lineWidth: 1.5)
+                if let sequence {
+                    Text("\(sequence)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 24, height: 24)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Full-screen preview
+
+/// Which assets the full-screen preview pages through, and where it starts.
+private struct PickerPreviewContext {
+    let assets: [PHAsset]
+    let startIndex: Int
+}
+
+/// WeChat-style full-screen preview: paging through `displayAssets`, with a
+/// top bar (`<` back + numbered selection circle), a bottom bar
+/// (编辑 / 原图 / 发送(N)), and single-tap to hide/show the bars. Selection,
+/// 原图 and edited images are shared with the grid through bindings.
+private struct AlbumPreviewView: View {
+    let displayAssets: [PHAsset]
+    let startIndex: Int
+    @Binding var selected: [PHAsset]
+    @Binding var sendOriginal: Bool
+    @Binding var editedImages: [String: UIImage]
+    let imageManager: PHCachingImageManager
+    let onSend: () -> Void
+    let onClose: () -> Void
+
+    @State private var currentID: String?
+    @State private var chromeVisible = true
+    @State private var editorInput: EditorInput?
+
+    private struct EditorInput: Identifiable {
+        let asset: PHAsset
+        let image: UIImage
+        var id: String { asset.localIdentifier }
+    }
+
+    init(displayAssets: [PHAsset],
+         startIndex: Int,
+         selected: Binding<[PHAsset]>,
+         sendOriginal: Binding<Bool>,
+         editedImages: Binding<[String: UIImage]>,
+         imageManager: PHCachingImageManager,
+         onSend: @escaping () -> Void,
+         onClose: @escaping () -> Void) {
+        self.displayAssets = displayAssets
+        self.startIndex = startIndex
+        self._selected = selected
+        self._sendOriginal = sendOriginal
+        self._editedImages = editedImages
+        self.imageManager = imageManager
+        self.onSend = onSend
+        self.onClose = onClose
+        let initial = displayAssets.indices.contains(startIndex)
+            ? displayAssets[startIndex].localIdentifier
+            : displayAssets.first?.localIdentifier
+        self._currentID = State(initialValue: initial)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            pager.ignoresSafeArea()
+            VStack(spacing: 0) {
+                topBar
+                Spacer()
+                bottomBar
+            }
+            .opacity(chromeVisible ? 1 : 0)
+            .allowsHitTesting(chromeVisible)
+            .animation(.easeInOut(duration: 0.18), value: chromeVisible)
+        }
+        .statusBarHidden()
+        .fullScreenCover(item: $editorInput) { input in
+            ImageEditorView(image: input.image, confirmTitle: "完成",
+                            onFinish: { edited in
+                                editedImages[input.asset.localIdentifier] = edited
+                                editorInput = nil
+                            },
+                            onCancel: { editorInput = nil })
+        }
+    }
+
+    private var pager: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 0) {
+                ForEach(displayAssets, id: \.localIdentifier) { asset in
+                    PreviewPage(asset: asset,
+                                editedImage: editedImages[asset.localIdentifier],
+                                imageManager: imageManager,
+                                onToggleChrome: { chromeVisible.toggle() })
+                        .containerRelativeFrame(.horizontal)
+                        .id(asset.localIdentifier)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $currentID)
+        .scrollIndicators(.hidden)
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 0) {
+            Button { onClose() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("返回")
+
+            Spacer()
+
+            if let asset = currentAsset, isSelectable(asset) {
+                PickerSelectionCircle(sequence: selectionIndex(for: asset)) { toggle(asset) }
+                    .padding(.trailing, 4)
+            } else {
+                Color.clear.frame(width: 44, height: 44)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .background(
+            LinearGradient(colors: [Color.black.opacity(0.6), Color.clear],
+                           startPoint: .top, endPoint: .bottom)
+        )
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing: 0) {
+            Button { startEditing() } label: {
+                Text("编辑")
+                    .font(.system(size: 15))
+                    .foregroundStyle(canEdit ? Color.white : Color.white.opacity(0.4))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canEdit)
+            .accessibilityLabel("编辑")
+
+            Button { sendOriginal.toggle() } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: sendOriginal ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16))
+                        .foregroundStyle(sendOriginal ? pickerGreen : Color.white.opacity(0.8))
+                    Text("原图")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+
+            sendButton
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 52)
+        .background(Color.black.opacity(0.9))
+    }
+
+    private var sendButton: some View {
+        Button { onSend() } label: {
+            Text(selected.isEmpty ? "发送" : "发送(\(selected.count))")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(selected.isEmpty ? Color.white.opacity(0.5) : Color.white)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(selected.isEmpty ? Color.white.opacity(0.15) : pickerGreen,
+                            in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .disabled(selected.isEmpty)
+        .accessibilityLabel(selected.isEmpty ? "发送" : "发送\(selected.count)张")
+    }
+
+    // MARK: Preview helpers
+
+    private var currentAsset: PHAsset? {
+        if let id = currentID, let asset = displayAssets.first(where: { $0.localIdentifier == id }) {
+            return asset
+        }
+        return displayAssets.indices.contains(startIndex) ? displayAssets[startIndex] : displayAssets.first
+    }
+
+    private var canEdit: Bool {
+        guard let asset = currentAsset else { return false }
+        return isSelectable(asset)
+    }
+
+    private func isSelectable(_ asset: PHAsset) -> Bool {
+        asset.mediaType == .image
+    }
+
+    private func selectionIndex(for asset: PHAsset) -> Int? {
+        guard let index = selected.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) else {
+            return nil
+        }
+        return index + 1
+    }
+
+    private func toggle(_ asset: PHAsset) {
+        guard isSelectable(asset) else { return }
+        if let index = selected.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) {
+            selected.remove(at: index)
+        } else {
+            selected.append(asset)
+        }
+    }
+
+    private func startEditing() {
+        guard let asset = currentAsset, isSelectable(asset) else { return }
+        let base = editedImages[asset.localIdentifier]
+        Task { @MainActor in
+            let image = base ?? await loadFullImage(for: asset, manager: imageManager)
+            guard let image else { return }
+            editorInput = EditorInput(asset: asset, image: image)
+        }
+    }
+}
+
+/// One full-screen page: loads (or shows the edited) image for its asset.
+private struct PreviewPage: View {
+    let asset: PHAsset
+    let editedImage: UIImage?
+    let imageManager: PHCachingImageManager
+    let onToggleChrome: () -> Void
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            if let editedImage {
+                Image(uiImage: editedImage)
+                    .resizable()
+                    .scaledToFit()
+            } else if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ProgressView().tint(.white)
+            }
+            if asset.mediaType == .video {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onToggleChrome)
+        .task(id: asset.localIdentifier) {
+            guard editedImage == nil else { return }
+            let maxDimension = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale
+            image = await loadImage(for: asset, manager: imageManager, maxDimension: maxDimension)
         }
     }
 }
@@ -567,6 +871,22 @@ private func loadImage(for asset: PHAsset,
         options.resizeMode = .fast
         let size = CGSize(width: maxDimension, height: maxDimension)
         _ = manager.requestImage(for: asset, targetSize: size, contentMode: .aspectFit, options: options) { image, _ in
+            continuation.resume(returning: image)
+        }
+    }
+}
+
+/// Full-resolution image for the editor. The editor downscales to its own
+/// working resolution (`EditorImageOps.prepare`), so we request the largest
+/// available image.
+private func loadFullImage(for asset: PHAsset, manager: PHCachingImageManager) async -> UIImage? {
+    await withCheckedContinuation { continuation in
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .none
+        _ = manager.requestImage(for: asset, targetSize: PHImageManagerMaximumSize,
+                                 contentMode: .aspectFit, options: options) { image, _ in
             continuation.resume(returning: image)
         }
     }
