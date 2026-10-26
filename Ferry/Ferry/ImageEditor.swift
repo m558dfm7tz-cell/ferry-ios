@@ -336,7 +336,8 @@ final class ImageEditorModel {
     private let preparedOriginal: UIImage
     private(set) var base: UIImage
     private(set) var annotations: [EditorAnnotation] = []
-    private var history: [Snapshot] = []
+    private var undoStack: [Snapshot] = []
+    private var redoStack: [Snapshot] = []
     private var pixellatedCache: UIImage?
 
     init(image: UIImage) {
@@ -345,7 +346,8 @@ final class ImageEditorModel {
         self.base = prepared
     }
 
-    var canUndo: Bool { !history.isEmpty }
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
 
     var isUnmodified: Bool { annotations.isEmpty && base === preparedOriginal }
 
@@ -387,9 +389,18 @@ final class ImageEditorModel {
     }
 
     func undo() {
-        guard let last = history.popLast() else { return }
+        guard let last = undoStack.popLast() else { return }
+        redoStack.append(Snapshot(base: base, annotations: annotations))
         base = last.base
         annotations = last.annotations
+        pixellatedCache = nil
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(Snapshot(base: base, annotations: annotations))
+        base = next.base
+        annotations = next.annotations
         pixellatedCache = nil
     }
 
@@ -420,10 +431,12 @@ final class ImageEditorModel {
     }
 
     private func pushHistory() {
-        history.append(Snapshot(base: base, annotations: annotations))
-        if history.count > Self.historyLimit {
-            history.removeFirst(history.count - Self.historyLimit)
+        undoStack.append(Snapshot(base: base, annotations: annotations))
+        if undoStack.count > Self.historyLimit {
+            undoStack.removeFirst(undoStack.count - Self.historyLimit)
         }
+        // A new edit invalidates the redo chain, so it is discarded here.
+        redoStack.removeAll()
     }
 }
 
@@ -1122,17 +1135,31 @@ struct ImageEditorView: View {
 
     private var topBar: some View {
         HStack(spacing: 14) {
-            Button { model.undo() } label: {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .background(Color.white.opacity(0.12), in: Circle())
+            HStack(spacing: 10) {
+                Button { model.undo() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Color.white.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.canUndo ? .white : .white.opacity(0.35))
+                .disabled(!model.canUndo)
+                .accessibilityLabel("撤销")
+                .accessibilityIdentifier("editor-undo")
+
+                Button { model.redo() } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Color.white.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.canRedo ? .white : .white.opacity(0.35))
+                .disabled(!model.canRedo)
+                .accessibilityLabel("重做")
+                .accessibilityIdentifier("editor-redo")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(model.canUndo ? .white : .white.opacity(0.35))
-            .disabled(!model.canUndo)
-            .accessibilityLabel("撤销")
-            .accessibilityIdentifier("editor-undo")
 
             Spacer()
 
