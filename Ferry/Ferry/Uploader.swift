@@ -371,6 +371,48 @@ struct MovieTransfer: Transferable {
     }
 }
 
+/// Copies a received transfer file to a stable temp URL. The file handed to a
+/// `FileRepresentation` importing closure is only valid during that call, so we
+/// must copy it before returning.
+private func copyTransferredFile(_ source: URL, fallbackExtension: String) throws -> URL {
+    let ext = source.pathExtension.lowercased()
+    let dest = FileManager.default.temporaryDirectory
+        .appendingPathComponent("picked-\(UUID().uuidString).\(ext.isEmpty ? fallbackExtension : ext)")
+    try FileManager.default.copyItem(at: source, to: dest)
+    return dest
+}
+
+/// Imports a picker item as a still image of a fixed content type. A Live
+/// Photo's `loadTransferable(type: Data.self)` can return the paired movie
+/// bytes instead of the still, so the still frame is requested by an explicit
+/// image container (HEIC / JPEG / generic image).
+struct HEICStillTransfer: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .heic) { received in
+            HEICStillTransfer(url: try copyTransferredFile(received.file, fallbackExtension: "heic"))
+        }
+    }
+}
+
+struct JPEGStillTransfer: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .jpeg) { received in
+            JPEGStillTransfer(url: try copyTransferredFile(received.file, fallbackExtension: "jpg"))
+        }
+    }
+}
+
+struct ImageStillTransfer: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            ImageStillTransfer(url: try copyTransferredFile(received.file, fallbackExtension: "img"))
+        }
+    }
+}
+
 /// Turns a PhotosPicker item, a file URL, or a camera capture into upload-ready
 /// bytes plus a media type and file name.
 enum MediaLoader {
@@ -435,13 +477,11 @@ enum MediaLoader {
     /// movie bytes instead of the still image (those bytes are then mislabeled
     /// as a photo and render as a broken "file" on the receiving device).
     ///
-    /// Preferred path: `loadFileRepresentation(for:)` with an explicit image
-    /// container (HEIC/JPEG/image) so we always get the still picture. Falls
-    /// back to reading the `.fullSizePhoto`/`.photo` resource directly from the
-    /// photo library for assets where the picker item does not expose a usable
-    /// file representation.
+    /// Preferred path: explicit still-image `Transferable` types (HEIC, then
+    /// JPEG, then generic image). Falls back to reading the
+    /// `.fullSizePhoto`/`.photo` resource directly from the photo library.
     static func livePhotoStillImage(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
-        if let data = await fileRepresentationData(from: item, types: [.heic, .jpeg, .image]) {
+        if let data = await stillImageData(from: item) {
             let mime = imageMime(from: data)
             return (data, mime, generatedName(prefix: "照片", mime: mime))
         }
@@ -451,40 +491,37 @@ enum MediaLoader {
         return nil
     }
 
-    /// Extract the paired video of a Live Photo. Preferred path:
-    /// `loadFileRepresentation(for: .movie)`; falls back to the `.pairedVideo`
+    /// Extract the paired video of a Live Photo. Preferred path: the existing
+    /// `MovieTransfer` (`.movie` content type); falls back to the `.pairedVideo`
     /// photo-library resource. Returns nil (still-only) when unavailable.
     static func livePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
-        if let url = try? await item.loadFileRepresentation(for: .movie) {
-            return Self.copyToTemp(url: url, prefix: "live")
+        if let movie = try? await item.loadTransferable(type: MovieTransfer.self) {
+            return movie.url
         }
         return await legacyLivePhotoVideoURL(from: item)
     }
 
-    /// Read a picker item's file representation for one of several content
-    /// types (in order), returning the file bytes.
-    private static func fileRepresentationData(from item: PhotosPickerItem, types: [UTType]) async -> Data? {
-        for type in types {
-            if let url = try? await item.loadFileRepresentation(for: type),
-               let data = try? Data(contentsOf: url) {
-                return data
-            }
+    /// Load the still image bytes via explicit `Transferable` types, trying
+    /// HEIC, then JPEG, then generic image. Each temp file is removed after its
+    /// bytes are read.
+    private static func stillImageData(from item: PhotosPickerItem) async -> Data? {
+        func read(_ url: URL) -> Data? {
+            defer { try? FileManager.default.removeItem(at: url) }
+            return try? Data(contentsOf: url)
+        }
+        if let heic = try? await item.loadTransferable(type: HEICStillTransfer.self),
+           let data = read(heic.url) {
+            return data
+        }
+        if let jpeg = try? await item.loadTransferable(type: JPEGStillTransfer.self),
+           let data = read(jpeg.url) {
+            return data
+        }
+        if let image = try? await item.loadTransferable(type: ImageStillTransfer.self),
+           let data = read(image.url) {
+            return data
         }
         return nil
-    }
-
-    /// Copy a temporary file URL into a stable temp file (the URL returned by
-    /// `loadFileRepresentation` is only valid for the duration of that call).
-    private static func copyToTemp(url: URL, prefix: String) -> URL? {
-        let ext = url.pathExtension.lowercased()
-        let copy = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(prefix)-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
-        do {
-            try FileManager.default.copyItem(at: url, to: copy)
-            return copy
-        } catch {
-            return nil
-        }
     }
 
     /// Fallback still-frame extraction via the photo-library resource
