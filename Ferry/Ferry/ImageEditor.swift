@@ -386,7 +386,16 @@ final class ImageEditorModel {
 
 // MARK: - Canvas
 
-final class EditorCanvasUIView: UIView {
+final class EditorCanvasUIView: UIView, UIGestureRecognizerDelegate {
+    /// What a single finger does on the canvas. Two fingers always zoom/pan
+    /// (pinch for scale, two-finger drag for translation), so a drawing tool can
+    /// stay selected and still be navigated.
+    enum SingleFingerMode: Equatable {
+        case draw
+        case text
+        case none
+    }
+
     var baseImage: UIImage? {
         didSet { setNeedsDisplay() }
     }
@@ -397,21 +406,67 @@ final class EditorCanvasUIView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    var singleFingerMode: SingleFingerMode = .draw
+    var allowsZoomPan = true
+
+    /// Screen-space zoom (>= 1) and pan (points) applied to the fitted image
+    /// rect. Kept here — not as a SwiftUI transform — so gesture locations stay
+    /// in the view's own untransformed coordinates and the draw/export math
+    /// never compounds.
+    private(set) var zoomScale: CGFloat = 1
+    private(set) var panOffset: CGSize = .zero
+
+    /// Single-finger callbacks report **normalized** (0...1) image coordinates.
+    var onStrokePoint: ((CGPoint) -> Void)?
+    var onStrokeEnd: (() -> Void)?
+    var onStrokeCancel: (() -> Void)?
+    var onTextAnchor: ((CGPoint) -> Void)?
+
+    private var pinch: UIPinchGestureRecognizer!
+    private var twoFingerPan: UIPanGestureRecognizer!
+    private var singleFingerPan: UIPanGestureRecognizer!
+    private var singleTap: UITapGestureRecognizer!
+    private var pinchAnchor: CGPoint = .zero
+    private var pinchStartZoom: CGFloat = 1
+    private var touchStart: CGPoint = .zero
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
         backgroundColor = .clear
         contentMode = .redraw
         clearsContextBeforeDrawing = true
+        isMultipleTouchEnabled = true
+
+        pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.delegate = self
+        addGestureRecognizer(pinch)
+
+        twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
+        twoFingerPan.minimumNumberOfTouches = 2
+        twoFingerPan.delegate = self
+        addGestureRecognizer(twoFingerPan)
+
+        singleFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleSingleFingerPan(_:)))
+        singleFingerPan.minimumNumberOfTouches = 1
+        singleFingerPan.maximumNumberOfTouches = 1
+        singleFingerPan.delegate = self
+        addGestureRecognizer(singleFingerPan)
+
+        singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        singleTap.numberOfTouchesRequired = 1
+        singleTap.require(toFail: singleFingerPan)
+        singleTap.delegate = self
+        addGestureRecognizer(singleTap)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Aspect-fit rect that centres `imageSize` inside `container`. This is the
     /// single source of truth for the on-screen offset/scale: the canvas draws
-    /// with it and the SwiftUI layer uses the same math to map gestures, so a
-    /// finger and the drawn stroke always agree — and the full-res export (which
-    /// paints 1:1 into pixel space) stays consistent with the screen.
+    /// with it and the same math maps gestures, so a finger and the drawn stroke
+    /// always agree — and the full-res export (which paints 1:1 into pixel
+    /// space) stays consistent with the screen.
     static func aspectFitRect(for imageSize: CGSize, in container: CGSize) -> CGRect {
         guard imageSize.width > 0, imageSize.height > 0,
               container.width > 0, container.height > 0 else { return .zero }
@@ -423,18 +478,160 @@ final class EditorCanvasUIView: UIView {
                       width: width, height: height)
     }
 
+    func resetTransform() {
+        zoomScale = 1
+        panOffset = .zero
+        setNeedsDisplay()
+    }
+
     override func draw(_ rect: CGRect) {
         guard let baseImage, bounds.width > 0, bounds.height > 0 else { return }
-        // Centre the image inside the view (aspect-fit) instead of blindly
-        // filling `bounds`; the letterbox offset/scale are then applied to the
-        // annotations so strokes land exactly where the finger is.
+        // Centre the image inside the view (aspect-fit) and apply the current
+        // zoom/pan so the image and every annotation scale/translate together —
+        // strokes stay glued to the pixels they were drawn on.
         let fitted = Self.aspectFitRect(for: baseImage.size, in: bounds.size)
-        baseImage.draw(in: fitted)
+        let imageRect = CGRect(x: fitted.minX + panOffset.width,
+                               y: fitted.minY + panOffset.height,
+                               width: fitted.width * zoomScale,
+                               height: fitted.height * zoomScale)
+        baseImage.draw(in: imageRect)
         guard let context = UIGraphicsGetCurrentContext() else { return }
         context.saveGState()
-        context.translateBy(x: fitted.minX, y: fitted.minY)
+        context.translateBy(x: fitted.minX + panOffset.width, y: fitted.minY + panOffset.height)
+        context.scaleBy(x: zoomScale, y: zoomScale)
         AnnotationPainter.paint(annotations, pixellated: pixellatedImage, in: fitted.size)
         context.restoreGState()
+    }
+
+    // MARK: Geometry
+
+    private func fittedRect() -> CGRect {
+        guard let baseImage else { return .zero }
+        return Self.aspectFitRect(for: baseImage.size, in: bounds.size)
+    }
+
+    /// Screen point → normalized (0...1) image point, inverting the zoom/pan.
+    private func normalizedPoint(forScreen p: CGPoint) -> CGPoint {
+        let f = fittedRect()
+        guard f.width > 0, f.height > 0, zoomScale > 0 else { return .zero }
+        let x = (p.x - f.minX - panOffset.width) / (f.width * zoomScale)
+        let y = (p.y - f.minY - panOffset.height) / (f.height * zoomScale)
+        return CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
+    }
+
+    /// Screen point → display point in the (unscaled) fitted-rect space.
+    private func displayPoint(forScreen p: CGPoint) -> CGPoint {
+        let f = fittedRect()
+        guard zoomScale > 0 else { return .zero }
+        return CGPoint(x: (p.x - f.minX - panOffset.width) / zoomScale,
+                       y: (p.y - f.minY - panOffset.height) / zoomScale)
+    }
+
+    /// Keep the zoomed image overlapping the view (never dragged fully away).
+    private func clampPan() {
+        let f = fittedRect()
+        guard f.width > 0, f.height > 0 else { return }
+        let w = f.width * zoomScale
+        let h = f.height * zoomScale
+        let margin: CGFloat = 16
+        var x = panOffset.width
+        var y = panOffset.height
+        if w > bounds.width {
+            x = min(max(x, bounds.width - margin - f.minX - w), margin - f.minX)
+        } else {
+            x = 0
+        }
+        if h > bounds.height {
+            y = min(max(y, bounds.height - margin - f.minY - h), margin - f.minY)
+        } else {
+            y = 0
+        }
+        panOffset = CGSize(width: x, height: y)
+    }
+
+    // MARK: Gestures
+
+    @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
+        guard allowsZoomPan else { return }
+        switch g.state {
+        case .began:
+            pinchAnchor = displayPoint(forScreen: g.location(in: self))
+            pinchStartZoom = zoomScale
+        case .changed:
+            let newZoom = min(max(pinchStartZoom * g.scale, 1), 6)
+            zoomScale = newZoom
+            let f = fittedRect()
+            panOffset = CGSize(width: g.location(in: self).x - f.minX - pinchAnchor.x * newZoom,
+                               height: g.location(in: self).y - f.minY - pinchAnchor.y * newZoom)
+            clampPan()
+            setNeedsDisplay()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleTwoFingerPan(_ g: UIPanGestureRecognizer) {
+        guard allowsZoomPan else { return }
+        switch g.state {
+        case .changed:
+            let t = g.translation(in: self)
+            panOffset.width += t.width
+            panOffset.height += t.height
+            g.setTranslation(.zero, in: self)
+            clampPan()
+            setNeedsDisplay()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleSingleFingerPan(_ g: UIPanGestureRecognizer) {
+        switch singleFingerMode {
+        case .draw:
+            switch g.state {
+            case .began:
+                touchStart = g.location(in: self)
+                onStrokePoint?(normalizedPoint(forScreen: touchStart))
+            case .changed:
+                onStrokePoint?(normalizedPoint(forScreen: g.location(in: self)))
+            case .ended:
+                onStrokeEnd?()
+            case .cancelled, .failed:
+                onStrokeCancel?()
+            default:
+                break
+            }
+        case .text:
+            switch g.state {
+            case .began:
+                touchStart = g.location(in: self)
+            case .ended:
+                onTextAnchor?(normalizedPoint(forScreen: touchStart))
+            default:
+                break
+            }
+        case .none:
+            break
+        }
+    }
+
+    @objc private func handleSingleTap(_ g: UITapGestureRecognizer) {
+        let p = normalizedPoint(forScreen: g.location(in: self))
+        switch singleFingerMode {
+        case .draw:
+            onStrokePoint?(p)
+            onStrokeEnd?()
+        case .text:
+            onTextAnchor?(p)
+        case .none:
+            break
+        }
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // Pinch and two-finger pan work together (zoom while panning).
+        (g === pinch && other === twoFingerPan) || (g === twoFingerPan && other === pinch)
     }
 }
 
@@ -442,15 +639,33 @@ struct EditorCanvas: UIViewRepresentable {
     let base: UIImage
     let annotations: [EditorAnnotation]
     let pixellated: UIImage?
+    let singleFingerMode: EditorCanvasUIView.SingleFingerMode
+    let onStrokePoint: (CGPoint) -> Void
+    let onStrokeEnd: () -> Void
+    let onStrokeCancel: () -> Void
+    let onTextAnchor: (CGPoint) -> Void
 
     func makeUIView(context: Context) -> EditorCanvasUIView {
         EditorCanvasUIView()
     }
 
     func updateUIView(_ view: EditorCanvasUIView, context: Context) {
+        let baseChanged = view.baseImage !== base
+        let modeChanged = view.singleFingerMode != singleFingerMode
         view.baseImage = base
         view.annotations = annotations
         view.pixellatedImage = pixellated
+        // Rotation/crop produces a new base image; entering crop disables
+        // zoom/pan, so the transform must go back to identity in both cases.
+        if baseChanged || (modeChanged && singleFingerMode == .none) {
+            view.resetTransform()
+        }
+        view.singleFingerMode = singleFingerMode
+        view.allowsZoomPan = singleFingerMode != .none
+        view.onStrokePoint = onStrokePoint
+        view.onStrokeEnd = onStrokeEnd
+        view.onStrokeCancel = onStrokeCancel
+        view.onTextAnchor = onTextAnchor
     }
 }
 
@@ -723,16 +938,7 @@ struct ImageEditorView: View {
     private var canvasArea: some View {
         GeometryReader { geo in
             let frame = Self.fittedRect(for: model.base.size, in: geo.size)
-            let layer = canvasLayer(frame: frame, container: geo.size)
-            Group {
-                if isCropping {
-                    layer
-                } else if tool == .text {
-                    layer.gesture(textGesture(frame: frame))
-                } else {
-                    layer.gesture(drawGesture(frame: frame))
-                }
-            }
+            canvasLayer(frame: frame, container: geo.size)
         }
         .padding(.horizontal, 12)
         .accessibilityIdentifier("editor-canvas")
@@ -746,7 +952,12 @@ struct ImageEditorView: View {
         ZStack(alignment: .topLeading) {
             EditorCanvas(base: model.base,
                          annotations: model.annotations + (draft.map { [$0] } ?? []),
-                         pixellated: model.pixellated)
+                         pixellated: model.pixellated,
+                         singleFingerMode: singleFingerMode,
+                         onStrokePoint: handleStrokePoint,
+                         onStrokeEnd: handleStrokeEnd,
+                         onStrokeCancel: handleStrokeCancel,
+                         onTextAnchor: handleTextAnchor)
                 .frame(width: container.width, height: container.height)
             if isCropping {
                 CropOverlay(rect: $cropRect)
@@ -1005,38 +1216,41 @@ struct ImageEditorView: View {
 
     // MARK: Gestures
 
-    /// A tap on the canvas places the text anchor. Modelled as a zero-distance
-    /// drag so the location comes from `DragGesture.Value.location`.
-    private func textGesture(frame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onEnded { value in
-                textAnchor = Self.normalize(value.startLocation, in: frame)
-                textValue = ""
-                textFocused = true
-            }
+    /// One finger draws / places text; two fingers zoom/pan. The single-finger
+    /// events arrive from the canvas's UIKit recognizers as normalized points.
+    private var singleFingerMode: EditorCanvasUIView.SingleFingerMode {
+        if isCropping { return .none }
+        return tool == .text ? .text : .draw
     }
 
-    private func drawGesture(frame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                let point = Self.normalize(value.location, in: frame)
-                if var current = draft {
-                    if tool == .arrow, let first = current.points.first {
-                        current.points = [first, point]
-                    } else {
-                        current.points.append(point)
-                    }
-                    draft = current
-                } else {
-                    draft = EditorAnnotation(kind: tool.annotationKind, points: [point], text: "",
-                                             colorIndex: colorIndex, thickness: currentThickness)
-                }
+    private func handleStrokePoint(_ point: CGPoint) {
+        if var current = draft {
+            if tool == .arrow, let first = current.points.first {
+                current.points = [first, point]
+            } else {
+                current.points.append(point)
             }
-            .onEnded { _ in
-                guard let finished = draft else { return }
-                draft = nil
-                model.add(finished)
-            }
+            draft = current
+        } else {
+            draft = EditorAnnotation(kind: tool.annotationKind, points: [point], text: "",
+                                     colorIndex: colorIndex, thickness: currentThickness)
+        }
+    }
+
+    private func handleStrokeEnd() {
+        guard let finished = draft else { return }
+        draft = nil
+        model.add(finished)
+    }
+
+    private func handleStrokeCancel() {
+        draft = nil
+    }
+
+    private func handleTextAnchor(_ point: CGPoint) {
+        textAnchor = point
+        textValue = ""
+        textFocused = true
     }
 
     private var currentThickness: CGFloat {
@@ -1047,11 +1261,5 @@ struct ImageEditorView: View {
 
     private static func fittedRect(for imageSize: CGSize, in container: CGSize) -> CGRect {
         EditorCanvasUIView.aspectFitRect(for: imageSize, in: container)
-    }
-
-    private static func normalize(_ point: CGPoint, in frame: CGRect) -> CGPoint {
-        guard frame.width > 0, frame.height > 0 else { return .zero }
-        return CGPoint(x: min(max((point.x - frame.minX) / frame.width, 0), 1),
-                       y: min(max((point.y - frame.minY) / frame.height, 0), 1))
     }
 }
