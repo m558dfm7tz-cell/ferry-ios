@@ -35,6 +35,7 @@ final class AppModel {
     let localStore: LocalDataStore
     let catalog = CommandCatalogStore()
     let assistantStore = AssistantStore()
+    let avatarStore = AssistantAvatarStore()
 
     private let client: any FerryServicing
     private let credentials: CredentialStoring

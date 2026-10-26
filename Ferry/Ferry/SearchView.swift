@@ -3,7 +3,7 @@ import SwiftUI
 /// Type filter chips for chat search. The server has no search API, so search
 /// runs client-side over loaded messages and pages older in the background.
 enum SearchFilter: String, CaseIterable, Identifiable {
-    case all, text, image, video, file, link
+    case all, text, image, video, file, excel, word, archive, link
 
     var id: String { rawValue }
 
@@ -14,16 +14,19 @@ enum SearchFilter: String, CaseIterable, Identifiable {
         case .image: return "图片"
         case .video: return "视频"
         case .file: return "文件"
+        case .excel: return "Excel"
+        case .word: return "Word"
+        case .archive: return "压缩包"
         case .link: return "链接"
         }
     }
 
-    /// File-type chips (图片/视频/文件) list that whole category without a
-    /// keyword; text/link still require a search term.
+    /// Category chips list that whole category without a keyword (图片/视频/
+    /// 文件/Excel/Word/压缩包/链接); 文本 and 全部 still need a search term.
     var isTypeOnly: Bool {
         switch self {
-        case .image, .video, .file: return true
-        case .all, .text, .link: return false
+        case .image, .video, .file, .excel, .word, .archive, .link: return true
+        case .all, .text: return false
         }
     }
 
@@ -51,9 +54,48 @@ enum SearchFilter: String, CaseIterable, Identifiable {
         case .file:
             guard let file = message.file else { return false }
             return !PreviewRouter.isImage(file.mediaType) && !PreviewRouter.isVideo(file)
+        case .excel:
+            return Self.isSpreadsheet(message)
+        case .word:
+            return Self.isDocument(message)
+        case .archive:
+            return Self.isArchive(message)
         case .link:
             return text.contains("http://") || text.contains("https://")
         }
+    }
+
+    // MARK: - Category helpers (extension, then mime fallback)
+
+    private static let spreadsheetExtensions: Set<String> = ["xls", "xlsx", "xlsm", "csv", "numbers", "et", "ods"]
+    private static let documentExtensions: Set<String> = ["doc", "docx", "rtf", "pages", "wps", "odt"]
+    private static let archiveExtensions: Set<String> = ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"]
+
+    private static func isSpreadsheet(_ message: MessagePayload) -> Bool {
+        guard let file = message.file else { return false }
+        if matches(file, extensions: spreadsheetExtensions) { return true }
+        let mime = file.mediaType.lowercased()
+        return mime.contains("excel") || mime.contains("spreadsheet") || mime.contains("csv")
+    }
+
+    private static func isDocument(_ message: MessagePayload) -> Bool {
+        guard let file = message.file else { return false }
+        if matches(file, extensions: documentExtensions) { return true }
+        let mime = file.mediaType.lowercased()
+        return mime.contains("msword") || mime.contains("wordprocessingml") || mime.contains("rtf")
+    }
+
+    private static func isArchive(_ message: MessagePayload) -> Bool {
+        guard let file = message.file else { return false }
+        if matches(file, extensions: archiveExtensions) { return true }
+        let mime = file.mediaType.lowercased()
+        return mime.contains("zip") || mime.contains("compressed") || mime.contains("x-tar")
+            || mime.contains("gzip") || mime.contains("x-7z")
+    }
+
+    private static func matches(_ file: FileInfo, extensions: Set<String>) -> Bool {
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        return extensions.contains(ext)
     }
 }
 

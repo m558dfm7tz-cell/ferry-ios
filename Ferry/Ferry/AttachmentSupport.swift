@@ -13,6 +13,9 @@ struct AttachmentActions: View {
     let load: () async -> Data?
     var tint: Color = .primary
     var onToast: ((String) -> Void)? = nil
+    /// Optional extra entry rendered beside 保存/分享: opens the grid of every
+    /// image and video in the current chat. Nil keeps the row unchanged.
+    var onOpenGallery: (() -> Void)? = nil
 
     @State private var busy = false
     @State private var saved = false
@@ -30,6 +33,14 @@ struct AttachmentActions: View {
 
     var body: some View {
         HStack(spacing: 14) {
+            if let onOpenGallery {
+                Button(action: onOpenGallery) {
+                    icon("square.grid.2x2")
+                }
+                .accessibilityLabel("全部图片和视频")
+                .accessibilityIdentifier("viewer-open-gallery")
+            }
+
             Button { Task { await save() } } label: {
                 icon(saved ? "checkmark" : (isImageOrVideo ? "square.and.arrow.down" : "folder"),
                      tint: saved ? Color.green : nil)

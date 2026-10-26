@@ -146,13 +146,34 @@ final class AssistantStore {
 
 // MARK: - Avatar view
 
-/// Circular avatar (a letter on a colored disc), reused by the bar and the
-/// message rows.
+/// Circular avatar reused by the bar, the message rows and the editor. Renders
+/// the default letter disc, or the assistant's custom image / muted looping
+/// video when one has been picked.
 struct AssistantAvatarView: View {
     let assistant: Assistant
     var size: CGFloat = 32
+    /// Custom media (image or looping video) resolved from `AssistantAvatarStore`.
+    var media: AssistantAvatarMedia? = nil
 
     var body: some View {
+        ZStack {
+            if let media, media.kind == .image,
+               let url = media.imageURL,
+               let image = AssistantAvatarStore.cachedImage(at: url) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if let media, media.kind == .video, let url = media.videoURL {
+                LoopingVideoView(url: url)
+            } else {
+                defaultDisc
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+
+    private var defaultDisc: some View {
         Text(assistant.avatarText)
             .font(.system(size: size * 0.42, weight: .semibold))
             .foregroundStyle(.white)
@@ -163,15 +184,26 @@ struct AssistantAvatarView: View {
 
 // MARK: - Bar
 
-/// The horizontal, scrollable row of avatar buttons below the top bar:
-/// 全部 + each assistant + "＋新建". The selected avatar lights up and the red
-/// dot marks assistants with unseen messages.
+/// Height the timeline reserves at its top so messages scroll *under* the
+/// floating bar instead of being hidden by it.
+enum AssistantBarMetrics {
+    static let height: CGFloat = 82
+}
+
+/// The horizontal, scrollable row of avatar buttons floating over the top of the
+/// timeline: 全部 + each assistant + "＋新建". There is no background, so the
+/// chat transcript shows through underneath. The selected avatar lights up, the
+/// red dot marks assistants with unseen messages, and a long-press opens the
+/// avatar editor (image / muted looping video / default).
 struct AssistantBarView: View {
     let assistants: [Assistant]
     @Binding var selectedID: String?
     let unreadIDs: Set<String>
+    let avatarStore: AssistantAvatarStore
     let onSelect: (String?) -> Void
     let onAdd: () -> Void
+
+    @State private var editingAssistant: Assistant?
 
     private let avatarSize: CGFloat = 40
 
@@ -183,18 +215,29 @@ struct AssistantBarView: View {
                 ForEach(assistants) { assistant in
                     avatarButton(title: assistant.name, text: assistant.avatarText,
                                  color: assistant.color, id: assistant.id,
-                                 accessibilityID: "assistant-avatar-\(assistant.id)")
+                                 accessibilityID: "assistant-avatar-\(assistant.id)",
+                                 assistant: assistant)
                 }
                 addButton
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
         }
-        .background(Color.chatBackground)
         .accessibilityIdentifier("assistant-bar")
+        .sheet(item: $editingAssistant) { assistant in
+            NavigationStack {
+                AssistantAvatarEditorView(assistant: assistant, store: avatarStore)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("完成") { editingAssistant = nil }
+                        }
+                    }
+            }
+        }
     }
 
     private func avatarButton(title: String, text: String, color: Color,
-                              id: String?, accessibilityID: String) -> some View {
+                              id: String?, accessibilityID: String,
+                              assistant: Assistant? = nil) -> some View {
         let selected = selectedID == id
         let unread = id.map { unreadIDs.contains($0) } ?? false
         return Button {
@@ -202,28 +245,20 @@ struct AssistantBarView: View {
         } label: {
             VStack(spacing: 4) {
                 ZStack(alignment: .topTrailing) {
-                    Text(text)
-                        .font(.system(size: avatarSize * 0.4, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: avatarSize, height: avatarSize)
-                        .background(color, in: Circle())
-                        .overlay {
-                            if selected {
-                                Circle().strokeBorder(Color.white, lineWidth: 2.5)
-                            }
-                        }
-                        .opacity(selected ? 1 : 0.72)
+                    avatarDisc(assistant: assistant, text: text, color: color, selected: selected)
+                        .opacity(selected ? 1 : 0.92)
                     if unread {
                         Circle()
                             .fill(Color.red)
                             .frame(width: 10, height: 10)
-                            .overlay(Circle().strokeBorder(Color.chatBackground, lineWidth: 2))
+                            .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 2))
                     }
                 }
                 Text(title)
                     .font(.caption2)
                     .foregroundStyle(selected ? .primary : .secondary)
                     .lineLimit(1)
+                    .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
             }
             .frame(width: 56)
         }
@@ -231,6 +266,45 @@ struct AssistantBarView: View {
         .accessibilityLabel(title)
         .accessibilityIdentifier(accessibilityID)
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
+        .contextMenu {
+            if let assistant {
+                Button {
+                    editingAssistant = assistant
+                } label: {
+                    Label("更换头像", systemImage: "photo")
+                }
+            }
+        }
+    }
+
+    /// The avatar disc itself: custom image/video when set, otherwise the
+    /// coloured letter disc. A soft shadow keeps it readable over the transcript
+    /// now that the bar no longer has a background.
+    private func avatarDisc(assistant: Assistant?, text: String, color: Color,
+                            selected: Bool) -> some View {
+        discContent(assistant: assistant, text: text, color: color)
+            .frame(width: avatarSize, height: avatarSize)
+            .overlay {
+                if selected {
+                    Circle().strokeBorder(Color.white, lineWidth: 2.5)
+                }
+            }
+            .shadow(color: Color.black.opacity(0.45), radius: 4, x: 0, y: 1)
+    }
+
+    @ViewBuilder
+    private func discContent(assistant: Assistant?, text: String, color: Color) -> some View {
+        if let assistant, let media = avatarStore.media(for: assistant.id) {
+            AssistantAvatarView(assistant: assistant, size: avatarSize, media: media)
+        } else if let assistant {
+            AssistantAvatarView(assistant: assistant, size: avatarSize)
+        } else {
+            Text(text)
+                .font(.system(size: avatarSize * 0.4, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: avatarSize, height: avatarSize)
+                .background(color, in: Circle())
+        }
     }
 
     private var addButton: some View {

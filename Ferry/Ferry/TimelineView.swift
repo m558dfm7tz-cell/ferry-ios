@@ -26,6 +26,11 @@ struct TimelineView: View {
 
     private static let bottomAnchorID = "timeline-bottom"
 
+    /// Keyboard-appearance notifications, used to keep the newest message
+    /// visible above the composer (see `followKeyboard(_:)`).
+    private let keyboardWillShowPublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardWillShowNotification)
+
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
     private struct PendingScroll: Equatable {
@@ -51,12 +56,7 @@ struct TimelineView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                AssistantBarView(assistants: model.assistantStore.assistants,
-                                 selectedID: $model.selectedAssistantID,
-                                 unreadIDs: model.unreadAssistantIDs,
-                                 onSelect: { model.selectAssistant($0) },
-                                 onAdd: { showNewAssistant = true })
+            ZStack(alignment: .top) {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 18) {
@@ -96,7 +96,8 @@ struct TimelineView: View {
                                            isSelected: selectedIDs.contains(message.id),
                                            isHighlighted: highlightedID == message.id,
                                            onToggleSelection: { toggleSelection(message.id) },
-                                           assistant: model.assistantStore.assistant(for: message))
+                                           assistant: model.assistantStore.assistant(for: message),
+                                           assistantMedia: avatarMedia(for: message))
                                     .contentShape(Rectangle())
                                     .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
@@ -106,7 +107,12 @@ struct TimelineView: View {
                         // true bottom regardless of LazyVStack content heights.
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
-                    .padding(.horizontal, 18).padding(.vertical, 20)
+                    // Extra top inset so the transcript scrolls *under* the
+                    // floating (background-less) assistant bar and shows through
+                    // it, instead of being permanently hidden behind it.
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 20)
+                    .padding(.top, 20 + AssistantBarMetrics.height)
                     .contentShape(Rectangle())
                     .onTapGesture { dismissKeyboard() }
                 }
@@ -154,6 +160,10 @@ struct TimelineView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden)
                 .background(Color.chatBackground.ignoresSafeArea())
+                // Keyboard follow: see followKeyboard(_:) for the root cause.
+                .onReceive(keyboardWillShowPublisher) { note in
+                    followKeyboard(note)
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if !atBottom {
                         Button {
@@ -176,6 +186,12 @@ struct TimelineView: View {
                     }
                 }
             }
+                AssistantBarView(assistants: model.assistantStore.assistants,
+                                 selectedID: $model.selectedAssistantID,
+                                 unreadIDs: model.unreadAssistantIDs,
+                                 avatarStore: model.avatarStore,
+                                 onSelect: { model.selectAssistant($0) },
+                                 onAdd: { showNewAssistant = true })
             }
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom) {
@@ -311,6 +327,35 @@ struct TimelineView: View {
     private func openMediaGallery(_ messageID: String) {
         galleryInitialID = messageID
         showMediaGallery = true
+    }
+
+    /// Custom avatar media (image / looping video) for the assistant a message
+    /// belongs to, or nil for the default letter disc.
+    private func avatarMedia(for message: MessagePayload) -> AssistantAvatarMedia? {
+        guard let id = model.assistantStore.assistant(for: message)?.id else { return nil }
+        return model.avatarStore.media(for: id)
+    }
+
+    /// Keep the newest message visible above the composer when the keyboard
+    /// comes up.
+    ///
+    /// Root cause of the bug this fixes: SwiftUI models the keyboard as a bottom
+    /// safe-area region, so showing it shrinks the ScrollView's **visible**
+    /// height while `contentOffset` stays exactly where it was. The
+    /// `.defaultScrollAnchor(.bottom)` above only re-anchors when the **content**
+    /// size changes (a new message, or first appearance), so it never fires for
+    /// the keyboard; the bottom `keyboardHeight` of the transcript ends up
+    /// underneath it. `atBottom` is captured here — before the layout shrinks —
+    /// and the re-anchor runs after the keyboard animation so the newest message
+    /// lands right above the composer. Someone reading older history is left
+    /// where they are.
+    private func followKeyboard(_ note: Notification) {
+        guard atBottom else { return }
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(max(duration, 0.1)))
+            scrollToBottomAnchor()
+        }
     }
 
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a

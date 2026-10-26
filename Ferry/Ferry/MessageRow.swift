@@ -27,6 +27,8 @@ struct MessageRow: View {
     let isHighlighted: Bool
     let onToggleSelection: () -> Void
     let assistant: Assistant?
+    /// Custom avatar media for that assistant (nil = default letter disc).
+    let assistantMedia: AssistantAvatarMedia?
 
     @State private var copied = false
     @State private var saved = false
@@ -63,7 +65,7 @@ struct MessageRow: View {
         HStack(alignment: .bottom, spacing: 12) {
             if selectionMode { selectionIndicator }
             if let assistant, !isCurrent {
-                AssistantAvatarView(assistant: assistant, size: 32)
+                AssistantAvatarView(assistant: assistant, size: 32, media: assistantMedia)
                     .padding(.bottom, 1)
             }
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
@@ -98,7 +100,8 @@ struct MessageRow: View {
         switch preview.kind {
         case .image:
             if let image = preview.image {
-                ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType, load: loadFile)
+                ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
+                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview)
             }
         case .video:
             if let url = preview.url {
@@ -279,6 +282,16 @@ struct MessageRow: View {
     private func openFile() {
         guard !selectionMode else { return }
         Task { await openFilePreview() }
+    }
+
+    /// Close the full-screen viewer first, then hand over to the chat-wide
+    /// media gallery (all images + videos) from the timeline.
+    private func openMediaGalleryFromPreview() {
+        previewItem = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            onOpenGallery()
+        }
     }
 
     private var mediaActionRow: some View {

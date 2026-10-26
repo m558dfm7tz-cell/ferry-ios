@@ -195,21 +195,32 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
-        /// iOS 16+: add 全选 when a partial range is selected (e.g. double-tap
-        /// word), the exact case where the system menu omits it. Cut/Copy/Paste
-        /// come from the system `suggestedActions` unchanged.
+        /// iOS 16+: put 全选 in the third slot of the edit menu (long-press and
+        /// double-tap alike). The system omits it once a range is already
+        /// selected (double-tap on a word), so we always supply our own and
+        /// drop any duplicate the system happened to include. Cut/Copy/Paste
+        /// and every other system action are kept as-is.
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
                       suggestedActions: [UIMenuElement]) -> UIMenu? {
-            var actions = suggestedActions
             let length = (textView.text as NSString).length
-            let selection = textView.selectedRange
-            if length > 0, selection.length > 0, selection.length < length {
-                let selectAll = UIAction(title: "全选") { _ in
-                    textView.selectedRange = NSRange(location: 0, length: length)
-                }
-                actions.append(selectAll)
+            guard length > 0 else { return UIMenu(children: suggestedActions) }
+
+            var actions = suggestedActions.filter { !Self.isSelectAll($0) }
+            let selectAll = UIAction(title: "全选") { _ in
+                textView.selectedRange = NSRange(location: 0, length: length)
             }
+            actions.insert(selectAll, at: min(2, actions.count))
             return UIMenu(children: actions)
+        }
+
+        /// Titles the system uses for "select all" (the app ships zh-Hans, but
+        /// the simulator/CI may run another language).
+        private static let selectAllTitles: Set<String> = ["全选", "选择全部", "Select All"]
+
+        private static func isSelectAll(_ element: UIMenuElement) -> Bool {
+            if let action = element as? UIAction { return selectAllTitles.contains(action.title) }
+            if let menu = element as? UIMenu { return selectAllTitles.contains(menu.title) }
+            return false
         }
     }
 }

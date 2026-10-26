@@ -148,7 +148,8 @@ private struct MediaPagerView: View {
         if PreviewRouter.isImage(mediaType) {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
-                            load: { await model.fileData(for: message) })
+                            load: { await model.fileData(for: message) },
+                            onOpenGallery: { dismiss() })
             } else {
                 Color.black.overlay { ProgressView() }
                     .task { await model.loadImage(for: message) }

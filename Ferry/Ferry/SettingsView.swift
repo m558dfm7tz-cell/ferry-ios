@@ -29,6 +29,25 @@ struct SettingsView: View {
                 } header: {
                     Text("设备")
                 }
+
+                Section {
+                    ForEach(model.assistantStore.assistants) { assistant in
+                        NavigationLink {
+                            AssistantAvatarEditorView(assistant: assistant, store: model.avatarStore)
+                        } label: {
+                            HStack(spacing: 10) {
+                                AssistantAvatarView(assistant: assistant, size: 32,
+                                                    media: model.avatarStore.media(for: assistant.id))
+                                Text(assistant.name)
+                            }
+                        }
+                        .accessibilityIdentifier("assistant-avatar-setting-\(assistant.id)")
+                    }
+                } header: {
+                    Text("助手头像")
+                } footer: {
+                    Text("可设为图片或视频（视频静音循环播放）。头像保存在本机，暂未与服务器同步。")
+                }
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)

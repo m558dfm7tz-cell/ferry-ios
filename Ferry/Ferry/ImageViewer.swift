@@ -10,6 +10,9 @@ struct ImageViewer: View {
     let name: String
     let mediaType: String
     let load: () async -> Data?
+    /// Opens the grid of every image and video in this chat. Nil hides the
+    /// entry (e.g. when the viewer is already opened from that grid).
+    var onOpenGallery: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var showToast = false
@@ -27,7 +30,8 @@ struct ImageViewer: View {
         }
         .overlay(alignment: .bottomTrailing) {
             AttachmentActions(name: name, mediaType: mediaType, load: load, tint: .white,
-                              onToast: { text in flashToast(text) })
+                              onToast: { text in flashToast(text) },
+                              onOpenGallery: onOpenGallery)
                 .padding(20)
         }
         .overlay(alignment: .bottomLeading) {
