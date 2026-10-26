@@ -30,6 +30,8 @@ struct ComposerTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> ComposerUITextView {
         let textView = ComposerUITextView()
         textView.delegate = context.coordinator
+        textView.isEditable = true
+        textView.isSelectable = true
         textView.font = UIFont.preferredFont(forTextStyle: .body)
         textView.textColor = textColor
         textView.tintColor = tintColor
@@ -47,6 +49,7 @@ struct ComposerTextView: UIViewRepresentable {
         textView.placeholderLabel.font = textView.font
         textView.placeholderLabel.textColor = .placeholderText
         textView.placeholderLabel.isHidden = !text.isEmpty
+        textView.placeholderLabel.isUserInteractionEnabled = false
         textView.addSubview(textView.placeholderLabel)
 
         // Set the initial height once the view has a valid width.
@@ -78,11 +81,7 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
-        if isFocused.wrappedValue, !textView.isFirstResponder {
-            textView.becomeFirstResponder()
-        } else if !isFocused.wrappedValue, textView.isFirstResponder {
-            textView.resignFirstResponder()
-        }
+        context.coordinator.applyFocus(isFocused.wrappedValue, to: textView)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -92,6 +91,10 @@ struct ComposerTextView: UIViewRepresentable {
         private let maxLines: Int
         private let alwaysScrolls: Bool
         private let onMentionChange: ((MentionContext?) -> Void)?
+        /// The last focus state we acted on, so `updateUIView` only drives the
+        /// first responder on an explicit transition (and never spuriously
+        /// resigns a tap that just focused the text view).
+        private var lastKnownFocus = false
 
         init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
              maxLines: Int, alwaysScrolls: Bool, onMentionChange: ((MentionContext?) -> Void)?) {
@@ -101,6 +104,19 @@ struct ComposerTextView: UIViewRepresentable {
             self.maxLines = maxLines
             self.alwaysScrolls = alwaysScrolls
             self.onMentionChange = onMentionChange
+        }
+
+        /// Drive the text view's first-responder state only on a transition of
+        /// the focus binding. A tap on the text view focuses it and updates the
+        /// binding via the delegate, so `updateUIView` must not then resign it.
+        func applyFocus(_ wantsFocus: Bool, to textView: UITextView) {
+            guard wantsFocus != lastKnownFocus else { return }
+            lastKnownFocus = wantsFocus
+            if wantsFocus {
+                if !textView.isFirstResponder { textView.becomeFirstResponder() }
+            } else {
+                if textView.isFirstResponder { textView.resignFirstResponder() }
+            }
         }
 
         func textViewDidChange(_ textView: UITextView) {
@@ -126,10 +142,12 @@ struct ComposerTextView: UIViewRepresentable {
 
         func textViewDidBeginEditing(_ textView: UITextView) {
             isFocused.wrappedValue = true
+            lastKnownFocus = true
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
             isFocused.wrappedValue = false
+            lastKnownFocus = false
         }
 
         /// Recompute the auto-grow height (composer mode) or force scrolling

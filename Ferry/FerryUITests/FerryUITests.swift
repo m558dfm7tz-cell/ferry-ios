@@ -87,6 +87,17 @@ final class FerryUITests: XCTestCase {
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 8), "composer input should exist")
         tap(composer)
+
+        // Wait until the composer actually has keyboard focus before typing. On
+        // CI the software keyboard may not appear (hardware keyboard), so accept
+        // either the keyboard showing or the text view gaining focus directly.
+        let keyboardShown = app.keyboards.firstMatch.waitForExistence(timeout: 10)
+        if !keyboardShown {
+            let focused = NSPredicate(format: "hasKeyboardFocus == true")
+            let focusExpectation = expectation(for: focused, evaluatedWith: composer)
+            _ = XCTWaiter.wait(for: [focusExpectation], timeout: 10)
+        }
+
         composer.typeText("@")
 
         let desktop = app.buttons["mention-desktop"].firstMatch
