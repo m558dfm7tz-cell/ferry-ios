@@ -18,13 +18,16 @@ struct ComposerTextView: UIViewRepresentable {
     let textColor: UIColor
     let tintColor: UIColor
     let alwaysScrolls: Bool
+    /// Minimum single-line height. The composer uses a taller value so the bar
+    /// is easier to tap and read; the editor keeps the default (it scrolls).
+    var minHeight: CGFloat = 20
     var onMentionChange: ((MentionContext?) -> Void)? = nil
     var accessibilityIdentifier: String? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, height: $height, isFocused: isFocused,
                     maxLines: maxLines, alwaysScrolls: alwaysScrolls,
-                    onMentionChange: onMentionChange)
+                    minHeight: minHeight, onMentionChange: onMentionChange)
     }
 
     func makeUIView(context: Context) -> ComposerUITextView {
@@ -90,6 +93,7 @@ struct ComposerTextView: UIViewRepresentable {
         private let isFocused: FocusState<Bool>.Binding
         private let maxLines: Int
         private let alwaysScrolls: Bool
+        private let minHeight: CGFloat
         private let onMentionChange: ((MentionContext?) -> Void)?
         /// The last focus state we acted on, so `updateUIView` only drives the
         /// first responder on an explicit transition (and never spuriously
@@ -97,18 +101,23 @@ struct ComposerTextView: UIViewRepresentable {
         private var lastKnownFocus = false
 
         init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
-             maxLines: Int, alwaysScrolls: Bool, onMentionChange: ((MentionContext?) -> Void)?) {
+             maxLines: Int, alwaysScrolls: Bool, minHeight: CGFloat,
+             onMentionChange: ((MentionContext?) -> Void)?) {
             self.text = text
             self.height = height
             self.isFocused = isFocused
             self.maxLines = maxLines
             self.alwaysScrolls = alwaysScrolls
+            self.minHeight = minHeight
             self.onMentionChange = onMentionChange
         }
 
-        /// Drive the text view's first-responder state only on a transition of
-        /// the focus binding. A tap on the text view focuses it and updates the
-        /// binding via the delegate, so `updateUIView` must not then resign it.
+        /// Drive the text view's first-responder state only on an explicit
+        /// transition of the focus binding (e.g. the expand editor focusing on
+        /// appear, or an explicit dismiss). The delegate deliberately does NOT
+        /// write back to the focus binding, so a plain tap that focuses the
+        /// text view can never be followed by SwiftUI writing `false` back and
+        /// dismissing the keyboard right after it appears.
         func applyFocus(_ wantsFocus: Bool, to textView: UITextView) {
             guard wantsFocus != lastKnownFocus else { return }
             lastKnownFocus = wantsFocus
@@ -140,16 +149,6 @@ struct ComposerTextView: UIViewRepresentable {
             refreshLayout(textView)
         }
 
-        func textViewDidBeginEditing(_ textView: UITextView) {
-            isFocused.wrappedValue = true
-            lastKnownFocus = true
-        }
-
-        func textViewDidEndEditing(_ textView: UITextView) {
-            isFocused.wrappedValue = false
-            lastKnownFocus = false
-        }
-
         /// Recompute the auto-grow height (composer mode) or force scrolling
         /// (editor mode), and keep the placeholder in sync. Only toggles
         /// `isScrollEnabled` and the height binding when they actually change,
@@ -163,13 +162,24 @@ struct ComposerTextView: UIViewRepresentable {
             let wasScrolling = textView.isScrollEnabled
             textView.isScrollEnabled = false
             let width = textView.bounds.width > 0 ? textView.bounds.width : 200
-            let fit = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-            let minHeight = textView.font?.lineHeight ?? 20
-            let maxHeight = minHeight * CGFloat(max(maxLines, 1))
-            let clamped = min(max(fit.height, minHeight), maxHeight)
-            let shouldScroll = fit.height > maxHeight
+            let lineHeight = textView.font?.lineHeight ?? 20
+            // Content height excluding the current insets, so the calculation
+            // is stable across vertical-centering passes (no layout feedback).
+            let rawFit = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            let contentHeight = rawFit - textView.textContainerInset.top - textView.textContainerInset.bottom
+            let minHeight = max(lineHeight, self.minHeight)
+            let maxHeight = max(minHeight, lineHeight * CGFloat(max(maxLines, 1)))
+            let clamped = min(max(contentHeight, minHeight), maxHeight)
+            let shouldScroll = contentHeight > maxHeight
             if wasScrolling != shouldScroll {
                 textView.isScrollEnabled = shouldScroll
+            }
+            // Vertically center the text within the taller single-line bar.
+            let extra = max(0, clamped - contentHeight)
+            let top = extra / 2
+            let insets = UIEdgeInsets(top: top, left: 0, bottom: extra - top, right: 0)
+            if textView.textContainerInset != insets {
+                textView.textContainerInset = insets
             }
             if abs(height.wrappedValue - clamped) > 0.5 {
                 DispatchQueue.main.async { self.height.wrappedValue = clamped }

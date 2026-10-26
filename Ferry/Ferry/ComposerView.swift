@@ -16,10 +16,11 @@ struct ComposerView: View {
     @State private var showEditor = false
     @State private var pasted = false
     @State private var errorMessage: String?
-    @State private var textFieldHeight: CGFloat = 36
+    @State private var textFieldHeight: CGFloat = 44
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?
+    @State private var pasteAvailable = false
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
     var body: some View {
@@ -42,6 +43,13 @@ struct ComposerView: View {
             let picked = items
             photoItems = []
             Task { await loadAndEnqueue(picked) }
+        }
+        .onAppear { refreshPasteAvailability() }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            refreshPasteAvailability()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            refreshPasteAvailability()
         }
         .sheet(isPresented: $showPlus) {
             PlusPanel(onFile: { showFileImporter = true }, onCamera: { openCamera() })
@@ -86,8 +94,9 @@ struct ComposerView: View {
     }
 
     /// Fixed frame for the plus/send (and icon) buttons so switching between
-    /// them never changes the input bar height.
-    private var barButtonSize: CGFloat { 36 }
+    /// them never changes the input bar height. Sized to match the taller
+    /// composer so all controls stay vertically aligned.
+    private var barButtonSize: CGFloat { 44 }
 
     /// Approximate line count of the growing text field, used to reveal the
     /// expand button once the draft exceeds ~3 lines.
@@ -173,21 +182,23 @@ struct ComposerView: View {
         HStack(spacing: 10) {
             PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos, .livePhotos])) {
                 Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 22, weight: .light))
+                    .font(.system(size: 24, weight: .light))
                     .foregroundStyle(.white)
                     .frame(width: barButtonSize, height: barButtonSize)
             }
             .accessibilityLabel("相册")
 
-            PasteButton(payloadType: String.self) { strings in
-                if let text = strings.first { model.draft += text; flashPaste() }
+            Button { pasteFromClipboard() } label: {
+                Image(systemName: "doc.on.clipboard")
+                    .font(.system(size: 24, weight: .light))
+                    .foregroundStyle(.white)
+                    .frame(width: barButtonSize, height: barButtonSize)
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .tint(.white)
-            .foregroundStyle(.white)
-            .frame(width: barButtonSize, height: barButtonSize)
+            .buttonStyle(.plain)
+            .disabled(!pasteAvailable)
+            .opacity(pasteAvailable ? 1 : 0.4)
             .accessibilityLabel("粘贴")
+            .accessibilityIdentifier("paste-button")
 
             ComposerTextView(text: $model.draft,
                              height: $textFieldHeight,
@@ -198,6 +209,7 @@ struct ComposerView: View {
                              textColor: .white,
                              tintColor: .white,
                              alwaysScrolls: false,
+                             minHeight: 44,
                              onMentionChange: { context in
                                  mentionContext = context
                                  activeTarget = nil
@@ -232,7 +244,7 @@ struct ComposerView: View {
     private var plusButton: some View {
         Button { showPlus = true } label: {
             Image(systemName: "plus")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .frame(width: barButtonSize, height: barButtonSize)
                 .foregroundStyle(.white)
         }
@@ -246,7 +258,7 @@ struct ComposerView: View {
             Task { await model.send() }
         } label: {
             Image(systemName: "arrow.up")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.black)
                 .frame(width: barButtonSize, height: barButtonSize)
                 .background(sendButtonFill, in: Circle())
@@ -274,6 +286,45 @@ struct ComposerView: View {
         Task {
             try? await Task.sleep(for: .seconds(1.2))
             pasted = false
+        }
+    }
+
+    // MARK: - Paste from clipboard
+
+    /// The paste button is enabled whenever the general pasteboard carries
+    /// text, an image, or a file URL. Re-checked on appear, on pasteboard
+    /// change notifications, and when the app returns to the foreground.
+    private func refreshPasteAvailability() {
+        let pb = UIPasteboard.general
+        pasteAvailable = pb.hasStrings || pb.hasImages || pb.hasURLs
+    }
+
+    /// Route the clipboard content: text fills the input box, while an image
+    /// or a file is sent directly as its own message.
+    private func pasteFromClipboard() {
+        let pb = UIPasteboard.general
+        if pb.hasImages, let image = pb.image {
+            if let data = image.jpegData(compressionQuality: 0.9) {
+                let name = MediaLoader.generatedName(prefix: "粘贴", mime: "image/jpeg")
+                if let error = model.uploader.enqueue(data: data, name: name, mediaType: "image/jpeg") {
+                    errorMessage = error
+                }
+            }
+            return
+        }
+        if pb.hasURLs, let url = pb.url, url.isFileURL {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            if let info = MediaLoader.fileInfo(from: url) {
+                if let error = model.uploader.enqueue(fileURL: url, name: info.name, mediaType: info.mime) {
+                    errorMessage = error
+                }
+            }
+            return
+        }
+        if pb.hasStrings, let text = pb.string {
+            model.draft += text
+            flashPaste()
         }
     }
 

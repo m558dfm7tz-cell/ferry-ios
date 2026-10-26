@@ -18,13 +18,29 @@ enum SearchFilter: String, CaseIterable, Identifiable {
         }
     }
 
+    /// File-type chips (图片/视频/文件) list that whole category without a
+    /// keyword; text/link still require a search term.
+    var isTypeOnly: Bool {
+        switch self {
+        case .image, .video, .file: return true
+        case .all, .text, .link: return false
+        }
+    }
+
     /// Keyword (text body or file name, case-insensitive) must match, and the
-    /// message must belong to the selected type.
+    /// message must belong to the selected type. For type-only file filters an
+    /// empty query matches everything of that type.
     static func matches(_ message: MessagePayload, query: String, filter: SearchFilter) -> Bool {
         let text = message.text ?? ""
         let fileName = message.file?.name ?? ""
-        let keywordHit = text.localizedCaseInsensitiveContains(query)
-            || fileName.localizedCaseInsensitiveContains(query)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keywordHit: Bool
+        if trimmed.isEmpty {
+            keywordHit = filter.isTypeOnly
+        } else {
+            keywordHit = text.localizedCaseInsensitiveContains(trimmed)
+                || fileName.localizedCaseInsensitiveContains(trimmed)
+        }
         guard keywordHit else { return false }
 
         switch filter {
@@ -124,7 +140,7 @@ struct SearchView: View {
                 Button("取消") { cancelSearch() }.buttonStyle(.bordered)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if !query.isEmpty && results.isEmpty {
+        } else if (!query.isEmpty || filter.isTypeOnly) && results.isEmpty {
             ContentUnavailableView("无结果", systemImage: "magnifyingglass",
                                    description: Text("没有找到匹配的消息。"))
         } else {
@@ -140,7 +156,8 @@ struct SearchView: View {
     private func scheduleSearch() {
         searchTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else {
+        // File-type chips list their whole category without a keyword.
+        guard !q.isEmpty || filter.isTypeOnly else {
             results = []
             isSearching = false
             return

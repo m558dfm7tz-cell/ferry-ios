@@ -375,7 +375,13 @@ struct MovieTransfer: Transferable {
 /// bytes plus a media type and file name.
 enum MediaLoader {
     static func isLivePhoto(_ item: PhotosPickerItem) -> Bool {
-        item.supportedContentTypes.contains { $0.conforms(to: .livePhoto) }
+        if item.supportedContentTypes.contains(where: { $0.conforms(to: .livePhoto) }) { return true }
+        // Some picker items report image+movie instead of .livePhoto; fall back
+        // to the photo-library asset's media subtype so a Live Photo is never
+        // mistaken for a plain movie (which would drop the still image).
+        guard let identifier = item.itemIdentifier else { return false }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        return assets.firstObject?.mediaSubtypes.contains(.photoLive) == true
     }
 
     static func isMovie(_ item: PhotosPickerItem) -> Bool {
@@ -424,12 +430,67 @@ enum MediaLoader {
         return (base.isEmpty ? "视频" : base) + ".mp4"
     }
 
-    /// The Live Photo still frame (`.fullSizePhoto` / `.photo` resource) as its
-    /// original bytes. This must NOT use `item.loadTransferable(type: Data.self)`,
-    /// which for a Live Photo can return the paired movie bytes instead of the
-    /// still image; those bytes are then mislabeled as a photo and render as a
-    /// broken "file" on the receiving device.
+    /// The Live Photo still frame, as a normal image. A Live Photo must NOT use
+    /// `item.loadTransferable(type: Data.self)`, which can return the paired
+    /// movie bytes instead of the still image (those bytes are then mislabeled
+    /// as a photo and render as a broken "file" on the receiving device).
+    ///
+    /// Preferred path: `loadFileRepresentation(for:)` with an explicit image
+    /// container (HEIC/JPEG/image) so we always get the still picture. Falls
+    /// back to reading the `.fullSizePhoto`/`.photo` resource directly from the
+    /// photo library for assets where the picker item does not expose a usable
+    /// file representation.
     static func livePhotoStillImage(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
+        if let data = await fileRepresentationData(from: item, types: [.heic, .jpeg, .image]) {
+            let mime = imageMime(from: data)
+            return (data, mime, generatedName(prefix: "照片", mime: mime))
+        }
+        if let result = await legacyLivePhotoStillImage(from: item) {
+            return result
+        }
+        return nil
+    }
+
+    /// Extract the paired video of a Live Photo. Preferred path:
+    /// `loadFileRepresentation(for: .movie)`; falls back to the `.pairedVideo`
+    /// photo-library resource. Returns nil (still-only) when unavailable.
+    static func livePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
+        if let url = try? await item.loadFileRepresentation(for: .movie) {
+            return Self.copyToTemp(url: url, prefix: "live")
+        }
+        return await legacyLivePhotoVideoURL(from: item)
+    }
+
+    /// Read a picker item's file representation for one of several content
+    /// types (in order), returning the file bytes.
+    private static func fileRepresentationData(from item: PhotosPickerItem, types: [UTType]) async -> Data? {
+        for type in types {
+            if let url = try? await item.loadFileRepresentation(for: type),
+               let data = try? Data(contentsOf: url) {
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Copy a temporary file URL into a stable temp file (the URL returned by
+    /// `loadFileRepresentation` is only valid for the duration of that call).
+    private static func copyToTemp(url: URL, prefix: String) -> URL? {
+        let ext = url.pathExtension.lowercased()
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+        do {
+            try FileManager.default.copyItem(at: url, to: copy)
+            return copy
+        } catch {
+            return nil
+        }
+    }
+
+    /// Fallback still-frame extraction via the photo-library resource
+    /// (`.fullSizePhoto` / `.photo`), used when the picker item has no usable
+    /// file representation (e.g. `itemIdentifier`-backed assets).
+    private static func legacyLivePhotoStillImage(from item: PhotosPickerItem) async -> (data: Data, mime: String, name: String)? {
         guard let identifier = item.itemIdentifier else { return nil }
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
         guard let asset = assets.firstObject else { return nil }
@@ -441,9 +502,8 @@ enum MediaLoader {
         return (data, mime, generatedName(prefix: "照片", mime: mime))
     }
 
-    /// Extract the paired video of a Live Photo from the photo library. Falls
-    /// back to nil (still-only) when the asset/resource is unavailable.
-    static func livePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
+    /// Fallback paired-video extraction via the `.pairedVideo` resource.
+    private static func legacyLivePhotoVideoURL(from item: PhotosPickerItem) async -> URL? {
         guard let identifier = item.itemIdentifier else { return nil }
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
         guard let asset = assets.firstObject else { return nil }

@@ -569,7 +569,9 @@ final class AppModel {
     /// hidden/cleared messages, so results respect those too.
     func searchMessages(query: String, filter: SearchFilter, maxPages: Int = 40) async -> [MessagePayload] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
+        // File-type filters (图片/视频/文件) may list their whole category
+        // without a keyword; text/link still require a search term.
+        guard !query.isEmpty || filter.isTypeOnly else { return [] }
         var results: [MessagePayload] = []
         var seen: Set<String> = []
 
@@ -589,7 +591,8 @@ final class AppModel {
             pages += 1
             scan(messages)
         }
-        return results
+        // Newest first.
+        return results.sorted { $0.sequence > $1.sequence }
     }
 
     /// Copy the ≈90 s temporary download link for a file message to the
