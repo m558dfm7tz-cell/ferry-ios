@@ -19,7 +19,7 @@ private enum BubbleMetrics {
     /// Selection circle (22) + the row HStack's gap (12).
     static let selectionAllowance: CGFloat = 34
     /// Free space kept on the side opposite the bubble.
-    static let oppositeGap: CGFloat = 32
+    static let oppositeGap: CGFloat = 52
     static let minWidth: CGFloat = 120
 
     static func maxWidth(screen: CGFloat, hasAvatar: Bool, selectionMode: Bool) -> CGFloat {
@@ -27,7 +27,7 @@ private enum BubbleMetrics {
         var cap = row - oppositeGap
         if hasAvatar { cap -= avatarAllowance }
         if selectionMode { cap -= selectionAllowance }
-        return max(min(screen * 0.75, cap), minWidth)
+        return max(min(screen * 0.70, cap), minWidth)
     }
 }
 
@@ -74,7 +74,7 @@ struct MessageRow: View {
                                selectionMode: selectionMode)
     }
 
-    private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
+    private var isImage: Bool { message.file.map { PreviewRouter.isImage($0) } ?? false }
     private var isVideo: Bool {
         guard let file = message.file else { return false }
         return PreviewRouter.isVideo(file)
@@ -83,7 +83,7 @@ struct MessageRow: View {
         let file = message.file
         let mime = file?.mediaType ?? ""
         let name = file?.name ?? ""
-        return PreviewRouter.isImage(mime) || PreviewRouter.isVideo(mime, name: name)
+        return PreviewRouter.isImage(mime, name: name) || PreviewRouter.isVideo(mime, name: name)
     }
     private var imageLoaded: Bool {
         if case .some(.some(_)) = image { return true }
@@ -214,11 +214,22 @@ struct MessageRow: View {
         .animation(.easeInOut(duration: 0.15), value: copied)
     }
 
+    /// The old flexible frame stretched even a one-character message to
+    /// the full allowed width. Measure each line at Dynamic Type body size,
+    /// then cap only long text; reserve the separate 12pt bubble paddings.
+    private func textContentWidth(_ text: String) -> CGFloat {
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let longestLine = text.components(separatedBy: .newlines).reduce(CGFloat.zero) { longest, line in
+            max(longest, (line as NSString).size(withAttributes: [.font: font]).width)
+        }
+        return min(max(26, bubbleMaxWidth - 24), max(26, ceil(longestLine) + 5))
+    }
+
     @ViewBuilder private var content: some View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
-                .frame(maxWidth: bubbleMaxWidth, alignment: .leading)
+                .frame(width: textContentWidth(text), alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
