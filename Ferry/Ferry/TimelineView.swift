@@ -91,6 +91,8 @@ struct TimelineView: View {
                 transcriptView
                 VStack(spacing: 0) {
                     AssistantBarView(assistants: model.assistantStore.assistants,
+                                     transferMode: model.routeIsolationEnabled,
+                                     showUnclassifiedHistory: model.hasUnclassifiedHistory,
                                      selectedID: $model.selectedAssistantID,
                                      unreadIDs: model.unreadAssistantIDs,
                                      avatarStore: model.avatarStore,
@@ -667,6 +669,7 @@ struct TimelineView: View {
               let message = model.messages.first(where: { $0.id == id }) else {
             return model.selectedAssistantID
         }
+        if model.routeIsolationEnabled { return model.conversationIDForJump(message) }
         return model.assistantStore.assistant(for: message)?.id
     }
 

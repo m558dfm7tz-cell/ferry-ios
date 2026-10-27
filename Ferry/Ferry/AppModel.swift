@@ -28,8 +28,38 @@ final class AppModel {
     private(set) var isLoadingInitial = false
     private(set) var dayCounts: [String: Int] = [:]
 
-    /// The assistant currently being filtered on (nil = 全部, no filter).
+    /// Nil means the transfer tab once new routing is verified.
     var selectedAssistantID: String?
+    /// Fail closed. Do not enable until the actual Go + running FerryHelper
+    /// capability contract has been implemented and verified together.
+    private(set) var routeIsolationEnabled = false
+    /// Stable server profile identities, to be supplied by future verified
+    /// assistant-profiles API. Never manufacture custom server identifiers.
+    private var verifiedRouteNamesByID: [String: String] = [:]
+    static let unclassifiedHistoryID = "unresolved-assistants"
+
+    private func isKnownConversation(_ id: String) -> Bool {
+        assistantStore.assistants.contains(where: { $0.id == id }) ||
+            verifiedRouteNamesByID[id] != nil
+    }
+
+    private func visibleIdentity(for message: MessagePayload) -> String? {
+        guard let id = assistantStore.conversationID(for: message) else { return nil }
+        if id == "legacy-unclassified" || id.hasPrefix("unresolved:") ||
+           !isKnownConversation(id) {
+            return Self.unclassifiedHistoryID
+        }
+        return id
+    }
+
+    var hasUnclassifiedHistory: Bool {
+        routeIsolationEnabled &&
+            messages.contains { visibleIdentity(for: $0) == Self.unclassifiedHistoryID }
+    }
+
+    func conversationIDForJump(_ message: MessagePayload) -> String? {
+        visibleIdentity(for: message)
+    }
     private(set) var unreadAssistantIDs: Set<String> = []
 
     /// Route requested by a tapped notification; consumed by the timeline once
@@ -126,6 +156,9 @@ final class AppModel {
     /// Messages shown in the timeline, after applying the active assistant
     /// filter (nil = 全部, everything).
     var visibleMessages: [MessagePayload] {
+        if routeIsolationEnabled {
+            return messages.filter { visibleIdentity(for: $0) == selectedAssistantID }
+        }
         guard let selectedAssistantID else { return messages }
         return messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
     }
@@ -449,6 +482,8 @@ final class AppModel {
         if let id {
             unreadAssistantIDs.remove(id)
             clearUnread(forAssistant: id)
+        } else if routeIsolationEnabled {
+            clearUnreadForVisibleConversation()
         } else {
             unreadAssistantIDs.removeAll()
             clearAllUnread()
@@ -462,6 +497,7 @@ final class AppModel {
     /// while the assistant still resolves, and its custom avatar media is
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
+        guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
         if AssistantStore.builtIn.contains(where: { $0.id == id }) {
             assistantStore.deleteBuiltIn(id: id)
             avatarStore.reset(for: id)
@@ -482,6 +518,7 @@ final class AppModel {
     }
 
     func hideBuiltInAssistant(id: String) {
+        guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
         assistantStore.hideBuiltIn(id: id)
         if selectedAssistantID == id { selectAssistant(nil) }
     }
@@ -635,6 +672,11 @@ final class AppModel {
     }
 
     func clearAllMessages() {
+        // The existing API is global, not "clear this transfer thread".
+        guard !routeIsolationEnabled else {
+            statusMessage = "尚不支持仅清空互传。为防误删其他助手的历史消息，已取消操作。"
+            return
+        }
         let maxSequence = messages.map(\.sequence).max() ?? 0
         localStore.clearAll(upTo: maxSequence)
         messages.removeAll()
@@ -1252,6 +1294,12 @@ final class AppModel {
     /// assistant with a wake tag.
     private func markUnreadIfNeeded(_ message: MessagePayload) {
         guard !message.isCurrentDevice else { return }
+        if routeIsolationEnabled {
+            if let id = visibleIdentity(for: message), id != selectedAssistantID {
+                unreadAssistantIDs.insert(id)
+            }
+            return
+        }
         guard let assistantID = assistantStore.assistant(for: message)?.id else { return }
         if let selectedAssistantID, selectedAssistantID != assistantID {
             unreadAssistantIDs.insert(assistantID)
@@ -1265,7 +1313,7 @@ final class AppModel {
         guard !message.isCurrentDevice else { return }
         guard notificationSettings.isEnabled else { return }
         let assistant = assistantStore.assistant(for: message)
-        guard !isConversationVisible(assistant) else { return }
+        guard !isConversationVisible(message) else { return }
         guard message.sequence > notificationSettings.lastNotifiedSequence else { return }
         notificationSettings.lastNotifiedSequence = message.sequence
         unreadMessageIDs.insert(message.id)
@@ -1274,23 +1322,34 @@ final class AppModel {
     }
 
     /// Whether the message's conversation is on screen right now.
-    private func isConversationVisible(_ assistant: Assistant?) -> Bool {
-        // `.offline` counts as visible too: a message that arrives while a
-        // transient error is being repaired is still on screen.
+    private func isConversationVisible(_ message: MessagePayload) -> Bool {
         guard isActive, phase == .connected || phase == .offline else { return false }
-        guard let selectedAssistantID else { return true } // 全部 shows everything
-        return assistant?.id == selectedAssistantID
+        if routeIsolationEnabled {
+            return visibleIdentity(for: message) == selectedAssistantID
+        }
+        guard let selectedAssistantID else { return true }
+        return assistantStore.assistant(for: message)?.id == selectedAssistantID
     }
 
     private func markVisibleAsRead() {
-        if let selectedAssistantID { clearUnread(forAssistant: selectedAssistantID) }
+        if routeIsolationEnabled { clearUnreadForVisibleConversation() }
+        else if let selectedAssistantID { clearUnread(forAssistant: selectedAssistantID) }
         else { clearAllUnread() }
+    }
+
+    private func clearUnreadForVisibleConversation() {
+        unreadMessageIDs = unreadMessageIDs.filter { id in
+            guard let message = messages.first(where: { $0.id == id }) else { return true }
+            return visibleIdentity(for: message) != selectedAssistantID
+        }
+        updateBadge()
     }
 
     private func clearUnread(forAssistant id: String) {
         guard !unreadMessageIDs.isEmpty else { return }
         unreadMessageIDs = unreadMessageIDs.filter { messageID in
             guard let message = messages.first(where: { $0.id == messageID }) else { return true }
+            if routeIsolationEnabled { return visibleIdentity(for: message) != id }
             return assistantStore.assistant(for: message)?.id != id
         }
         updateBadge()
