@@ -241,13 +241,17 @@ struct MessageRow: View {
             case .some(.some(let decoded)):
                 imageBubble(decoded, file: file)
             case .some(.none):
-                FileCard(file: file, maxWidth: bubbleMaxWidth, isCurrent: isCurrent,
-                         isFavorite: isFavorite, saved: saved,
-                         onOpen: openFile,
-                         onSave: { Task { await save() } },
-                         onShare: { Task { await share() } },
-                         onFavorite: { Task { await onToggleFavorite() } },
-                         onCopyLink: { await copyTemporaryLink() })
+                // A temporary network/decode error must never permanently
+                // downgrade a previously valid image into a file card.
+                Button { Task { await loadImage() } } label: {
+                    RoundedRectangle(cornerRadius: 18).fill(.quaternary)
+                        .frame(width: 176, height: 118)
+                        .overlay {
+                            Label("重试图片", systemImage: "arrow.clockwise")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                }
+                .buttonStyle(.plain)
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
