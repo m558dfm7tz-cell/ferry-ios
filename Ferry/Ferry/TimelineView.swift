@@ -60,6 +60,26 @@ struct TimelineView: View {
         let nonce = UUID()
     }
 
+    /// A single gate for programmatic scroll. A keyboard/media callback must
+    /// never override a drag, or a search/date jump already in progress.
+    private enum ScrollReason {
+        case user, newMessage, keyboard, media, pagination, jump
+    }
+
+    private func queueScroll(to id: String, anchor: UnitPoint, reason: ScrollReason) {
+        switch reason {
+        case .user:
+            break
+        case .jump:
+            guard !transcriptUserDragging else { return }
+        case .pagination:
+            guard !transcriptUserDragging, !keyboardVisible, jumpHoldingID == nil else { return }
+        case .newMessage, .keyboard, .media:
+            guard isFollowingTail, !transcriptUserDragging, jumpHoldingID == nil else { return }
+        }
+        pendingScroll = PendingScroll(id: id, anchor: anchor)
+    }
+
     private enum SelectionAlert: String, Identifiable {
         case delete, clearAll
         var id: String { rawValue }
@@ -288,20 +308,20 @@ struct TimelineView: View {
                     // the top so the content does not visually jump.
                     guard jumpHoldingID == nil, didInitialScroll,
                           let oldFirst, oldFirst != newFirst else { return }
-                    pendingScroll = PendingScroll(id: oldFirst, anchor: .top)
+                    queueScroll(to: oldFirst, anchor: .top, reason: .pagination)
                 }
                 .onChange(of: model.visibleMessages.last?.id) { _, newLast in
                     guard newLast != nil, jumpHoldingID == nil else { return }
                     if !didInitialScroll {
                         didInitialScroll = true
-                        scrollToBottomAnchor()
+                        scrollToBottomAnchor(reason: .newMessage)
                         return
                     }
                     // The last cell loading can temporarily make geometry say
                     // !atBottom without a single user scroll. Track user
                     // intention separately so *every* new photo follows.
                     if isFollowingTail {
-                        scrollToBottomAnchor()
+                        scrollToBottomAnchor(reason: .newMessage)
                     } else {
                         withAnimation { showNewPill = true }
                     }
@@ -527,7 +547,7 @@ struct TimelineView: View {
             // keyboard animation that second scroll lands while the new layout
             // is still settling and was the main source of the dropped frames.
             guard keyboardVisible, isFollowingTail, !transcriptUserDragging else { return }
-            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
         }
     }
 
@@ -545,7 +565,7 @@ struct TimelineView: View {
             try? await Task.sleep(for: .seconds(max(duration, 0.1) + 0.05))
             guard !Task.isCancelled, isFollowingTail, !transcriptUserDragging,
                   !showAlbumPicker, !showAttachmentPanel, jumpHoldingID == nil else { return }
-            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
         }
     }
 
@@ -600,10 +620,9 @@ struct TimelineView: View {
         scrollToBottomAnchor()
     }
 
-    private func scrollToBottomAnchor() {
-        pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
-        // Do not schedule a second scroll: it used to arrive after another
-        // navigation/keyboard gesture and cause the visible bounce.
+    private func scrollToBottomAnchor(reason: ScrollReason = .user) {
+        queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: reason)
+        // Only one scroll per intent; don't enqueue a second delayed bounce.
     }
 
     private func followPendingMediaLoad() {
@@ -613,7 +632,7 @@ struct TimelineView: View {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(100))
                 guard jumpHoldingID == id, !transcriptUserDragging else { return }
-                pendingScroll = PendingScroll(id: id, anchor: .center)
+                queueScroll(to: id, anchor: .center, reason: .jump)
             }
             return
         }
@@ -623,7 +642,7 @@ struct TimelineView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(80))
             guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
-            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
         }
     }
 
@@ -669,11 +688,11 @@ struct TimelineView: View {
             // One layout pass for the reserved gap before anchoring to it.
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            pendingScroll = PendingScroll(id: id, anchor: .center)
+            queueScroll(to: id, anchor: .center, reason: .jump)
             // One soft highlight rather than an intrusive repeated yellow flash.
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled, jumpTargetID == id else { return }
-            pendingScroll = PendingScroll(id: id, anchor: .center)
+            queueScroll(to: id, anchor: .center, reason: .jump)
             try? await Task.sleep(for: .milliseconds(1250))
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }

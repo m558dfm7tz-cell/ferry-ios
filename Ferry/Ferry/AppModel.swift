@@ -419,7 +419,11 @@ final class AppModel {
         guard let spaceKey else { return }
         let key = Self.favoritesMigrationPrefix + spaceKey.value
         guard !defaults.bool(forKey: key) else { return }
-        for favorite in localStore.favorites {
+        for favorite in localStore.favorites
+            where favorite.id.count == 32 &&
+                favorite.id.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) ||
+                                             ($0 >= 97 && $0 <= 102) ||
+                                             ($0 >= 65 && $0 <= 70) }) {
             let record = favoriteRecord(from: favorite, at: 1)
             queueFavoriteAction(PendingFavoriteAction(kind: .add,
                 messageID: favorite.id, opAt: 1, record: record), flush: false)
@@ -1127,7 +1131,7 @@ final class AppModel {
         do {
             let page = try await client.messages(endpoint: endpoint, token: token, after: cursor)
             guard current == generation else { return }
-            page.messages.forEach(append)
+            appendBatch(page.messages)
             cursor = page.nextCursor
             phase = .connected
             statusMessage = nil
@@ -1601,16 +1605,27 @@ final class AppModel {
         }
     }
 
-    private func append(_ message: MessagePayload) {
-        guard !localStore.isHidden(message) else { return }
-        guard !messages.contains(where: { $0.id == message.id }) else { return }
-        messages.append(message)
+    /// Coalesce a network page into a single sort and observation update.
+    private func appendBatch(_ incoming: [MessagePayload]) {
+        guard !incoming.isEmpty else { return }
+        var knownIDs = Set(messages.map(\.id))
+        let fresh = incoming.filter {
+            !localStore.isHidden($0) && knownIDs.insert($0.id).inserted
+        }
+        guard !fresh.isEmpty else { return }
+        messages.append(contentsOf: fresh)
         messages.sort { $0.sequence < $1.sequence }
-        cursor = max(cursor, message.sequence)
-        countDays([message])
-        reviewStore.ingest(message: message)
-        markUnreadIfNeeded(message)
-        registerIncoming(message)
+        cursor = max(cursor, fresh.map(\.sequence).max() ?? cursor)
+        countDays(fresh)
+        for message in fresh {
+            reviewStore.ingest(message: message)
+            markUnreadIfNeeded(message)
+            registerIncoming(message)
+        }
+    }
+
+    private func append(_ message: MessagePayload) {
+        appendBatch([message])
     }
 
     /// A newly arrived assistant message is "unseen" only while a *different*
