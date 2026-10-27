@@ -4,7 +4,7 @@ import UIKit
 struct TimelineView: View {
     @Bindable var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var showFavorites = false
     @State private var showDateJump = false
     @State private var showSettings = false
@@ -164,6 +164,7 @@ struct TimelineView: View {
         }
         .fullScreenCover(isPresented: $showMediaGallery) {
             MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+                .presentationBackground(.clear)
         }
         .sheet(isPresented: $showNewAssistant) {
             NewAssistantSheet { name, avatarText, colorIndex in
@@ -204,12 +205,16 @@ struct TimelineView: View {
         .overlay {
             if showAlbumPicker {
                 AlbumPickerView(model: model, onClose: {
-                    showAlbumPicker = false
+                    withAnimation(.easeInOut(duration: 0.28)) {
+                        showAlbumPicker = false
+                    }
                 })
                 .ignoresSafeArea()
+                .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(10)
             }
         }
+        .animation(.easeInOut(duration: 0.28), value: showAlbumPicker)
         .overlay { if showToast { toastView } }
 
     }
@@ -294,8 +299,11 @@ struct TimelineView: View {
                     // showing, the pinned 待查看 row underneath it.
                     .padding(.top, 20 + AssistantBarMetrics.height
                              + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
-                    .contentShape(Rectangle())
-                    .onTapGesture { dismissKeyboard() }
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { dismissKeyboard() }
+                    }
                 }
                 let messageObserved = baseTranscript
                     .defaultScrollAnchor(.bottom)
