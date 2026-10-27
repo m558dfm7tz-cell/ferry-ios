@@ -26,7 +26,6 @@ struct ComposerView: View {
     @State private var didWarmUpAttachments = false
     @State private var keyboardPresented = false
     @State private var pendingAlbumAfterKeyboard = false
-    @State private var pendingPlusAfterKeyboard = false
 
     /// A queued image opened in the editor. `id` is the upload item it will
     /// replace when the edit is confirmed.
@@ -53,29 +52,7 @@ struct ComposerView: View {
                     .frame(maxWidth: 320, alignment: .leading)
             }
             inputBar
-            if showPlus {
-                PlusPanel(onFile: {
-                    showPlus = false
-                    // Present the system document picker only after the
-                    // attachment panel has been removed from the hierarchy.
-                    Task { @MainActor in
-                        await Task.yield()
-                        showFileImporter = true
-                    }
-                }, onCamera: {
-                    showPlus = false
-                    Task { @MainActor in
-                        await Task.yield()
-                        openCamera()
-                    }
-                })
-                // No moving Material layers across the composer: that created
-                // translucent ghosts when the keyboard and panel overlapped.
-                .transition(.opacity)
-            }
         }
-        // One subtle fade, never a translated double-material transition.
-        .animation(.easeOut(duration: 0.16), value: showPlus)
         .padding(.horizontal, 12).padding(.bottom, 6)
         // No full-width opaque glass rectangle around the input capsule.
         // Messages fade gently beneath the original independent input field.
@@ -91,20 +68,13 @@ struct ComposerView: View {
         .onAppear { refreshPasteAvailability() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardPresented = true
-            if showPlus { showPlus = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
             keyboardPresented = false
             if pendingAlbumAfterKeyboard {
                 pendingAlbumAfterKeyboard = false
                 withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
-            } else if pendingPlusAfterKeyboard {
-                pendingPlusAfterKeyboard = false
-                showPlus = true
             }
-        }
-        .onChange(of: focused.wrappedValue) { _, active in
-            if active { showPlus = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
@@ -263,7 +233,6 @@ struct ComposerView: View {
         HStack(spacing: 10) {
             Button {
                 showPlus = false
-                pendingPlusAfterKeyboard = false
                 if focused.wrappedValue || keyboardPresented {
                     pendingAlbumAfterKeyboard = true
                     dismissComposerKeyboard()
@@ -309,7 +278,24 @@ struct ComposerView: View {
                                  activeTarget = nil
                                  if context != nil { model.refreshCommandCatalog() }
                              },
-                             accessibilityIdentifier: "composer-input")
+                             accessibilityIdentifier: "composer-input",
+                             attachmentMode: $showPlus,
+                             onAttachmentFile: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     showFileImporter = true
+                                 }
+                             },
+                             onAttachmentCamera: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     openCamera()
+                                 }
+                             })
                 .frame(height: max(44, textFieldHeight), alignment: .center)
                 // Hard guarantee that long text can never be painted outside
                 // the capsule: the text view is sized by `textFieldHeight`, and
@@ -348,14 +334,14 @@ struct ComposerView: View {
     private var plusButton: some View {
         Button {
             if showPlus {
-                pendingPlusAfterKeyboard = false
                 showPlus = false
-            } else if focused.wrappedValue || keyboardPresented {
-                pendingPlusAfterKeyboard = true
-                pendingAlbumAfterKeyboard = false
                 dismissComposerKeyboard()
             } else {
+                pendingAlbumAfterKeyboard = false
+                // Keep the UITextView first responder and change only its
+                // native inputView; the keyboard swaps in one UIKit animation.
                 showPlus = true
+                focused.wrappedValue = true
             }
         } label: {
             Image(systemName: "plus")
