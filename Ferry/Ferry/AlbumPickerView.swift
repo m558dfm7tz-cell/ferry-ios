@@ -55,8 +55,8 @@ struct AlbumPickerView: View {
     @State private var dismissDrag: CGFloat = 0
     @State private var gridDragStartedAtTop = false
     /// After browsing below the first row, only the top bar may dismiss by drag.
-    @State private var gridHasBeenScrolled = false
     @State private var gridDragInProgress = false
+    @State private var finishingDragDismiss = false
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
     /// Full-screen preview state; nil shows the grid.
@@ -224,9 +224,6 @@ struct AlbumPickerView: View {
                 scroll.contentOffset.y + scroll.contentInsets.top
             } action: { _, distanceFromTop in
                 gridAtTop = distanceFromTop <= 2
-                // Overscroll bounce must not be treated as having browsed;
-                // disable grid dismissal only after a real downward browse.
-                if distanceFromTop > 22 { gridHasBeenScrolled = true }
             }
             .simultaneousGesture(dismissDragGesture)
         }
@@ -239,16 +236,21 @@ struct AlbumPickerView: View {
     private var dismissDragGesture: some Gesture {
         // A small minimum distance keeps cell taps / circle buttons crisp (a
         // tap is not a drag) while still tracking the pull the moment it moves.
-        DragGesture(minimumDistance: 12)
+        // Global coordinates are essential: the picker content itself follows
+        // dismissDrag. A local-coordinate gesture remeasures against the moving
+        // view and causes the repeated bounce seen during pull-to-dismiss.
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
+                guard !finishingDragDismiss else { return }
                 if !gridDragInProgress {
                     gridDragInProgress = true
                     gridDragStartedAtTop = gridAtTop
                 }
-                guard gridDragStartedAtTop, !gridHasBeenScrolled,
-                      gridAtTop, value.translation.height > 0,
+                // Latch the top-of-grid decision at gesture start. Rechecking
+                // gridAtTop after moving the containing view feeds back into
+                // the ScrollView geometry and repeatedly resets the offset.
+                guard gridDragStartedAtTop, value.translation.height > 0,
                       value.translation.height > abs(value.translation.width) else {
-                    if dismissDrag != 0 { dismissDrag = 0 }
                     return
                 }
                 dismissDrag = value.translation.height
@@ -258,14 +260,16 @@ struct AlbumPickerView: View {
                     gridDragStartedAtTop = false
                     gridDragInProgress = false
                 }
-                let shouldClose = gridDragStartedAtTop && !gridHasBeenScrolled &&
-                    (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
-                if shouldClose && selected.isEmpty {
-                    // Removing the overlay directly from its dragged position
-                    // avoids snapping up before revealing the conversation.
-                    requestClose()
+                guard !finishingDragDismiss, gridDragStartedAtTop,
+                      dismissDrag > 0 else { return }
+                let shouldClose = dismissDrag > 140 ||
+                    value.predictedEndTranslation.height > 240
+                if shouldClose, selected.isEmpty {
+                    animateDragDismiss()
                 } else {
-                    withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        dismissDrag = 0
+                    }
                     if shouldClose { requestClose() }
                 }
             }
@@ -273,18 +277,22 @@ struct AlbumPickerView: View {
 
     /// The header remains an explicit pull-to-close handle after scrolling.
     private var topBarDismissGesture: some Gesture {
-        DragGesture(minimumDistance: 18)
+        DragGesture(minimumDistance: 18, coordinateSpace: .global)
             .onChanged { value in
-                guard value.translation.height > 0,
+                guard !finishingDragDismiss, value.translation.height > 0,
                       value.translation.height > abs(value.translation.width) else { return }
                 dismissDrag = value.translation.height
             }
             .onEnded { value in
-                let shouldClose = dismissDrag > 110 || value.predictedEndTranslation.height > 230
-                if shouldClose && selected.isEmpty {
-                    requestClose()
+                guard !finishingDragDismiss else { return }
+                let shouldClose = dismissDrag > 110 ||
+                    value.predictedEndTranslation.height > 230
+                if shouldClose, selected.isEmpty {
+                    animateDragDismiss()
                 } else {
-                    withAnimation(.easeOut(duration: 0.2)) { dismissDrag = 0 }
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        dismissDrag = 0
+                    }
                     if shouldClose { requestClose() }
                 }
             }
@@ -412,6 +420,20 @@ struct AlbumPickerView: View {
     /// Keep one exit path for X, swipe, discard and successful sending.
     private func closePicker() {
         if let onClose { onClose() } else { dismiss() }
+    }
+
+    private func animateDragDismiss() {
+        guard !finishingDragDismiss else { return }
+        finishingDragDismiss = true
+        // Keep the overlay mounted until the downward exit finishes so it does
+        // not suddenly jump back to y = 0 during the parent state transition.
+        withAnimation(.easeOut(duration: 0.20)) {
+            dismissDrag = UIScreen.main.bounds.height + 120
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(205))
+            closePicker()
+        }
     }
 
     // MARK: - Permission

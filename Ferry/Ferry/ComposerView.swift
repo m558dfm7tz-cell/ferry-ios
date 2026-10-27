@@ -56,14 +56,26 @@ struct ComposerView: View {
             if showPlus {
                 PlusPanel(onFile: {
                     showPlus = false
-                    showFileImporter = true
+                    // Present the system document picker only after the
+                    // attachment panel has been removed from the hierarchy.
+                    Task { @MainActor in
+                        await Task.yield()
+                        showFileImporter = true
+                    }
                 }, onCamera: {
                     showPlus = false
-                    openCamera()
+                    Task { @MainActor in
+                        await Task.yield()
+                        openCamera()
+                    }
                 })
-                .transition(.move(edge: .top).combined(with: .opacity))
+                // No moving Material layers across the composer: that created
+                // translucent ghosts when the keyboard and panel overlapped.
+                .transition(.opacity)
             }
         }
+        // One subtle fade, never a translated double-material transition.
+        .animation(.easeOut(duration: 0.16), value: showPlus)
         .padding(.horizontal, 12).padding(.bottom, 6)
         // No full-width opaque glass rectangle around the input capsule.
         // Messages fade gently beneath the original independent input field.
@@ -88,7 +100,7 @@ struct ComposerView: View {
                 withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
             } else if pendingPlusAfterKeyboard {
                 pendingPlusAfterKeyboard = false
-                withAnimation(.easeOut(duration: 0.18)) { showPlus = true }
+                showPlus = true
             }
         }
         .onChange(of: focused.wrappedValue) { _, active in
@@ -337,13 +349,13 @@ struct ComposerView: View {
         Button {
             if showPlus {
                 pendingPlusAfterKeyboard = false
-                withAnimation(.easeOut(duration: 0.18)) { showPlus = false }
+                showPlus = false
             } else if focused.wrappedValue || keyboardPresented {
                 pendingPlusAfterKeyboard = true
                 pendingAlbumAfterKeyboard = false
                 dismissComposerKeyboard()
             } else {
-                withAnimation(.easeOut(duration: 0.18)) { showPlus = true }
+                showPlus = true
             }
         } label: {
             Image(systemName: "plus")
@@ -583,7 +595,8 @@ struct PlusPanel: View {
             panelButton("拍摄", systemImage: "camera", action: onCamera)
         }
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func panelButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -594,7 +607,8 @@ struct PlusPanel: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 96)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(Color(uiColor: .tertiarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
     }

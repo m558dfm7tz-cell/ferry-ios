@@ -380,19 +380,25 @@ struct TimelineView: View {
                         Button {
                             scrollToBottom()
                         } label: {
-                            VStack(spacing: 3) {
+                            HStack(spacing: 5) {
                                 Image(systemName: "arrow.down")
-                                    .font(.system(size: 20, weight: .bold))
-                                    .frame(width: 52, height: 52)
-                                    .background(.black.opacity(0.72), in: Circle())
-                                Text(showNewPill ? "有新消息" : "最新消息")
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 2)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("最新消息")
+                                    .font(.system(size: 14, weight: .semibold))
                             }
+                            .foregroundStyle(Color(red: 0.34, green: 0.75, blue: 0.95))
+                            .padding(.horizontal, 15)
+                            .frame(height: 34)
+                            .background(Color(red: 0.07, green: 0.15, blue: 0.21),
+                                        in: Capsule())
+                            .overlay(Capsule().strokeBorder(
+                                Color(red: 0.23, green: 0.47, blue: 0.62).opacity(0.7),
+                                lineWidth: 0.8))
+                            .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
-                        .padding(.trailing, 16).padding(.bottom, 12)
+                        .accessibilityLabel("回到最新消息")
+                        .padding(.trailing, 14).padding(.bottom, 10)
                         .transition(.opacity)
                     }
                 }
