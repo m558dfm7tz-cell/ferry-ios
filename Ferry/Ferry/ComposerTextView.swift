@@ -182,41 +182,43 @@ struct ComposerTextView: UIViewRepresentable {
                 if !textView.isScrollEnabled { textView.isScrollEnabled = true }
                 return
             }
-            // Measure with scrolling off so `sizeThatFits` reports the full text
-            // height instead of the visible bounds.
-            if textView.isScrollEnabled { textView.isScrollEnabled = false }
-            let width = textView.bounds.width > 0 ? textView.bounds.width : 200
-            let lineHeight = textView.font?.lineHeight ?? 20
-            // Content height excluding the current insets, so the calculation
-            // is stable across vertical-centering passes (no layout feedback).
-            let rawFit = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-            let contentHeight = rawFit - textView.textContainerInset.top - textView.textContainerInset.bottom
-            let minHeight = max(lineHeight, self.minHeight)
-            let maxHeight = max(minHeight, lineHeight * CGFloat(max(maxLines, 1)))
-            let clamped = min(max(contentHeight, minHeight), maxHeight)
-            let shouldScroll = contentHeight > maxHeight
-            // Restore against the *post-measure* value, not the pre-measure one.
-            // Comparing with the pre-measure flag left `isScrollEnabled` stuck at
-            // false on every pass after the first overflow, so the view silently
-            // stopped scrolling and reported its full content height as its
-            // intrinsic size — which let it grow past the SwiftUI frame and spill
-            // text out of the input capsule.
-            if textView.isScrollEnabled != shouldScroll {
-                textView.isScrollEnabled = shouldScroll
-            }
-            // Vertically center the text within the taller single-line bar.
-            // UIKit can report a taller empty sizeThatFits than the visible
-            // placeholder glyph. Center against the actual font line height
-            // on single-line bars to prevent an off-center initial placeholder.
-            let visibleHeight = min(clamped, max(lineHeight, contentHeight))
-            let extra = max(0, clamped - visibleHeight)
-            let top = extra / 2
-            let insets = UIEdgeInsets(top: top, left: 0, bottom: extra - top, right: 0)
+            // Keep UITextView scrolling enabled continuously. Flipping this
+            // flag during typing invalidated the text layout and sometimes
+            // clipped everything after the first few characters.
+            if !textView.isScrollEnabled { textView.isScrollEnabled = true }
+            let font = textView.font ?? UIFont.preferredFont(forTextStyle: .body)
+            let lineHeight = font.lineHeight
+            let width = max(48, textView.bounds.width - textView.textContainerInset.left
+                                 - textView.textContainerInset.right
+                                 - textView.textContainer.lineFragmentPadding * 2)
+            let content = textView.text.isEmpty ? " " : textView.text!
+            let textBounds = (content as NSString).boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font], context: nil)
+            let neededHeight = max(lineHeight, ceil(textBounds.height) + 3)
+            let minimum = max(lineHeight, minHeight)
+            let maximum = max(minimum, lineHeight * CGFloat(max(1, maxLines)) + 5)
+            let clamped = min(maximum, max(minimum, neededHeight))
+            let insetTop = max(0, (clamped - neededHeight) / 2)
+            let insets = UIEdgeInsets(top: insetTop, left: 0,
+                                     bottom: insetTop, right: 0)
             if textView.textContainerInset != insets {
                 textView.textContainerInset = insets
             }
-            if abs(height.wrappedValue - clamped) > 0.5 {
-                DispatchQueue.main.async { self.height.wrappedValue = clamped }
+            if abs(height.wrappedValue - clamped) > 1 {
+                DispatchQueue.main.async { [weak textView] in
+                    guard textView != nil else { return }
+                    self.height.wrappedValue = clamped
+                }
+            }
+            if textView.isFirstResponder {
+                let selection = textView.selectedRange
+                DispatchQueue.main.async { [weak textView] in
+                    guard let textView, textView.isFirstResponder else { return }
+                    let length = (textView.text as NSString).length
+                    if selection.location <= length { textView.scrollRangeToVisible(selection) }
+                }
             }
         }
 
