@@ -240,6 +240,12 @@ final class AssistantStore {
     }
 
     func assistant(for message: MessagePayload) -> Assistant? {
+        // A transfer remains ordinary even if its text begins with @总管.
+        if message.route == "transfer" { return nil }
+        if let id = message.assistantID,
+           let profile = assistants.first(where: { $0.id == id }) {
+            return profile
+        }
         // The Go server and FerryHelper use an explicit assistant identity.
         // Prefer it over sender device-name heuristics so Windows responses
         // addressed to 助手 display in the dedicated conversation.
@@ -586,10 +592,13 @@ struct AssistantBarView: View {
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
         // Explicit long-press action sheet avoids a contextMenu rendering
         // only its first item on some iOS versions inside ScrollView.
-        .onLongPressGesture(minimumDuration: 0.55) {
-            avatarMenuTarget = assistant
-            isAvatarMenuPresented = true
-        }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.55)
+                .onEnded { _ in
+                    avatarMenuTarget = assistant
+                    isAvatarMenuPresented = true
+                }
+        )
         .accessibilityAction(named: "管理头像") {
             avatarMenuTarget = assistant
             isAvatarMenuPresented = true

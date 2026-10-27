@@ -1193,6 +1193,18 @@ final class AppModel {
         cursor = max(cursor, visible.map(\.sequence).max() ?? cursor)
     }
 
+    /// Calendar markers use the active conversation in verified routing mode.
+    var visibleDayCounts: [String: Int] {
+        guard routeIsolationEnabled else { return dayCounts }
+        var counts: [String: Int] = [:]
+        for message in visibleMessages {
+            guard let date = TimestampFormat.date(from: message.createdAt) else { continue }
+            let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
+            counts[key, default: 0] += 1
+        }
+        return counts
+    }
+
     private func countDays(_ msgs: [MessagePayload]) {
         for message in msgs where !countedMessageIDs.contains(message.id) {
             countedMessageIDs.insert(message.id)
@@ -1254,7 +1266,7 @@ final class AppModel {
         let target = Calendar.current.startOfDay(for: day)
         let targetKey = DayKey.string(from: target)
 
-        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+        if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
             return .found(hit.id)
         }
         // A day newer than the newest loaded message cannot exist in history.
@@ -1268,12 +1280,12 @@ final class AppModel {
         while hasOlder, !Task.isCancelled, pages < Self.maxHistoryPages {
             guard await loadOlder() else { break }
             pages += 1
-            if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+            if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
                 return .found(hit.id)
             }
         }
         if Task.isCancelled { return .cancelled }
-        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+        if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
             return .found(hit.id)
         }
         return .empty
