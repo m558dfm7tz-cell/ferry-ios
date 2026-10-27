@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UIKit
+import CryptoKit
 
 @MainActor @Observable
 final class AppModel {
@@ -545,17 +546,54 @@ final class AppModel {
         catalog.refresh(host: endpoint?.baseURL.host)
     }
 
+    /// Disk cache is separated by Ferry space so identical message IDs from
+    /// different server/password pairs never reuse each other's photos.
+    private func mediaCacheURL(for message: MessagePayload, ext: String = "img") -> URL? {
+        guard let space = spaceKey?.value,
+              let root = FileManager.default.urls(for: .cachesDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let key = space + ":" + message.id + ":" + (message.file?.downloadURL ?? "")
+        let digest = SHA256.hash(data: Data(key.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return root.appendingPathComponent("ferry-media", isDirectory: true)
+                   .appendingPathComponent(digest + "." + ext)
+    }
+
+    func retryImage(for message: MessagePayload) async {
+        images.removeValue(forKey: message.id)
+        await loadImage(for: message)
+    }
+
     func loadImage(for message: MessagePayload) async {
         guard let file = message.file, PreviewRouter.isImage(file) else { return }
         guard images[message.id] == nil, !loadingImages.contains(message.id) else { return }
+        let cacheURL = mediaCacheURL(for: message)
+        if let cacheURL, let cached = try? Data(contentsOf: cacheURL),
+           let image = UIImage(data: cached) {
+            images[message.id] = image
+            return
+        }
         guard let endpoint, let token else { return }
         let current = generation
         loadingImages.insert(message.id)
         defer { loadingImages.remove(message.id) }
         do {
-            let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
+            let data = try await client.attachment(endpoint: endpoint, token: token,
+                                                    path: file.downloadURL)
             guard current == generation else { return }
-            images[message.id] = UIImage(data: data)
+            guard let decoded = UIImage(data: data) else {
+                images[message.id] = UIImage?.none
+                return
+            }
+            images[message.id] = decoded
+            // Do not cache failed responses or huge files; a valid successful
+            // image is kept across ordinary app relaunches.
+            if let cacheURL, data.count <= 12_000_000 {
+                let directory = cacheURL.deletingLastPathComponent()
+                try? FileManager.default.createDirectory(at: directory,
+                                                          withIntermediateDirectories: true)
+                try? data.write(to: cacheURL, options: .atomic)
+            }
         } catch {
             guard current == generation else { return }
             images[message.id] = UIImage?.none
@@ -639,8 +677,24 @@ final class AppModel {
         guard let file = message.file, let endpoint, let token else { return nil }
         let current = generation
         do {
-            let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
+            // Reuse a downloaded attachment for share/save/preview so opening
+            // the system share sheet never downloads the same file twice.
+            let cacheURL = mediaCacheURL(for: message, ext: "share")
+            if let cacheURL, FileManager.default.fileExists(atPath: cacheURL.path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
+               (attrs[.size] as? NSNumber)?.int64Value == file.size {
+                return cacheURL
+            }
+            let url = try await client.attachmentFile(endpoint: endpoint, token: token,
+                                                      path: file.downloadURL, filename: file.name)
             guard current == generation else { return nil }
+            if let cacheURL {
+                try? FileManager.default.createDirectory(
+                    at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: cacheURL)
+                try? FileManager.default.copyItem(at: url, to: cacheURL)
+                if FileManager.default.fileExists(atPath: cacheURL.path) { return cacheURL }
+            }
             return url
         } catch {
             guard current == generation else { return nil }
