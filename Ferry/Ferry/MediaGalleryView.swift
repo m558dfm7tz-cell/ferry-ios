@@ -9,16 +9,17 @@ import UIKit
 struct MediaGalleryView: View {
     @Bindable var model: AppModel
     let initialMessageID: String?
+    let onDismiss: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
     /// Freeze this chat's media identity for the life of the viewer; a server
     /// refresh cannot silently repopulate the pager with another chat's media.
     @State private var scopedMessages: [MessagePayload]
 
-    init(model: AppModel, initialMessageID: String?) {
+    init(model: AppModel, initialMessageID: String?, onDismiss: @escaping () -> Void) {
         self.model = model
         self.initialMessageID = initialMessageID
+        self.onDismiss = onDismiss
         let scope = model.mediaMessages
         _scopedMessages = State(initialValue: scope)
         // Select before the FIRST frame: avoids flashing the entire grid when
@@ -36,7 +37,7 @@ struct MediaGalleryView: View {
                                model: model,
                                onReturnToGrid: { self.selectedMessage = nil },
                                onCloseViewer: {
-                                   if initialMessageID != nil { dismiss() }
+                                   if initialMessageID != nil { onDismiss() }
                                    else { self.selectedMessage = nil }
                                })
             } else {
@@ -65,7 +66,7 @@ struct MediaGalleryView: View {
             .navigationTitle("媒体")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("关闭") { onDismiss() } }
             }
         }
     }
@@ -131,7 +132,6 @@ private struct MediaPagerView: View {
     let onReturnToGrid: () -> Void
     let onCloseViewer: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
     @State private var videoURLs: [String: URL] = [:]
     @State private var verticalDrag: CGFloat = 0
@@ -233,7 +233,7 @@ private struct MediaPagerView: View {
         flashToast("已发送编辑后的图片")
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.4))
-            dismiss()
+            onCloseViewer()
         }
     }
 

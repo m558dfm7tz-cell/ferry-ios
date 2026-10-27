@@ -165,10 +165,6 @@ struct TimelineView: View {
                     }
             }
         }
-        .fullScreenCover(item: $mediaPresentation) { presentation in
-            MediaGalleryView(model: model, initialMessageID: presentation.initialMessageID)
-                .presentationBackground(.clear)
-        }
         .sheet(isPresented: $showNewAssistant) {
             NewAssistantSheet { name, avatarText, colorIndex in
                 model.addAssistant(name: name, avatarText: avatarText, colorIndex: colorIndex)
@@ -222,6 +218,24 @@ struct TimelineView: View {
             }
         }
         .animation(.easeInOut(duration: 0.28), value: showAlbumPicker)
+        // Keep the chat media pager in the same view tree as the transcript.
+        // This avoids a second UIKit fullScreenCover coordinator swallowing the
+        // original bubble tap and allows the chat to emerge during drag-dismiss.
+        .overlay {
+            if let presentation = mediaPresentation {
+                MediaGalleryView(model: model,
+                                 initialMessageID: presentation.initialMessageID,
+                                 onDismiss: {
+                                     withAnimation(.easeOut(duration: 0.18)) {
+                                         mediaPresentation = nil
+                                     }
+                                 })
+                    .id(presentation.id)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .zIndex(20)
+            }
+        }
         .overlay { if showToast { toastView } }
 
     }
@@ -514,7 +528,9 @@ struct TimelineView: View {
     }
 
     private func openMediaGallery(_ messageID: String) {
-        mediaPresentation = MediaPresentation(initialMessageID: messageID)
+        withAnimation(.easeOut(duration: 0.18)) {
+            mediaPresentation = MediaPresentation(initialMessageID: messageID)
+        }
     }
 
     /// Enqueue an image edited from a preview as a new outgoing message.
