@@ -208,12 +208,20 @@ struct TimelineView: View {
         .overlay {
             if showAlbumPicker {
                 AlbumPickerView(model: model, onClose: {
-                    showAlbumPicker = false
+                    // Keep the picker mounted during the closing animation:
+                    // the grid slides back down, rather than vanishing.
+                    withAnimation(.easeInOut(duration: 0.28)) {
+                        showAlbumPicker = false
+                    }
                 })
                 .ignoresSafeArea()
+                // Present the entire grid from below the screen and reverse
+                // it downward on X/discard. Underlying chat remains mounted.
+                .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(10)
             }
         }
+        .animation(.easeInOut(duration: 0.28), value: showAlbumPicker)
         .overlay { if showToast { toastView } }
 
     }

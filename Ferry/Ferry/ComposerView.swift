@@ -73,7 +73,7 @@ struct ComposerView: View {
             keyboardPresented = false
             if pendingAlbumAfterKeyboard {
                 pendingAlbumAfterKeyboard = false
-                withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+                withAnimation(.easeOut(duration: 0.28)) { showImagePicker = true }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
@@ -237,7 +237,7 @@ struct ComposerView: View {
                     pendingAlbumAfterKeyboard = true
                     dismissComposerKeyboard()
                 } else {
-                    withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+                    withAnimation(.easeOut(duration: 0.28)) { showImagePicker = true }
                 }
             } label: {
                 Image(systemName: "photo.on.rectangle.angled")

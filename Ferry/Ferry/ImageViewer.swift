@@ -49,11 +49,18 @@ struct ImageViewer: View {
                                   } else {
                                       verticalDragOffset = translation
                                   }
-                              }).ignoresSafeArea()
+                              })
+                .ignoresSafeArea()
+                // Drag ONLY the image surface. Title and action chrome are
+                // added afterwards, in the fixed viewport coordinate space.
+                .offset(y: verticalDragOffset)
+                .scaleEffect(previewScale)
+                .opacity(previewOpacity)
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
                 .lineLimit(2).padding(20)
+                .opacity(previewOpacity)
         }
         .overlay(alignment: .bottomTrailing) {
             AttachmentActions(name: name, mediaType: mediaType, load: load,
@@ -61,6 +68,7 @@ struct ImageViewer: View {
                               onToast: { text in flashToast(text) },
                               onOpenGallery: onOpenGallery)
                 .padding(20)
+                .opacity(previewOpacity)
         }
         .overlay(alignment: .bottomLeading) {
             HStack(spacing: 14) {
@@ -87,11 +95,9 @@ struct ImageViewer: View {
                 .accessibilityLabel("识别文字")
             }
             .padding(20)
+            .opacity(previewOpacity)
         }
         .overlay { if showToast { toastView } }
-        .offset(y: verticalDragOffset)
-        .scaleEffect(previewScale)
-        .opacity(previewOpacity)
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
         }
