@@ -302,7 +302,14 @@ struct ComposerView: View {
     }
 
     private var plusButton: some View {
-        Button { withAnimation(.easeOut(duration: 0.18)) { showPlus.toggle() } } label: {
+        Button {
+            if focused.wrappedValue {
+                focused.wrappedValue = false
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                to: nil, from: nil, for: nil)
+            }
+            withAnimation(.easeOut(duration: 0.18)) { showPlus.toggle() }
+        } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
                 .frame(width: barButtonSize, height: barButtonSize)
