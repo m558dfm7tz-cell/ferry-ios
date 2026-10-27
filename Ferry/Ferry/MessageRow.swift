@@ -131,7 +131,10 @@ struct MessageRow: View {
             }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
-        .fullScreenCover(item: $previewItem) { preview in previewView(for: preview) }
+        .fullScreenCover(item: $previewItem) { preview in
+            previewView(for: preview)
+                .presentationBackground(.clear)
+        }
     }
 
     @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
@@ -140,7 +143,7 @@ struct MessageRow: View {
             if let image = preview.image {
                 ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
                             load: loadFile, loadFileURL: loadFileURL,
-                            onOpenGallery: openMediaGalleryFromPreview,
+                            onOpenGallery: nil,
                             onEditFinished: sendEditedFromPreview)
             }
         case .video:
@@ -287,8 +290,9 @@ struct MessageRow: View {
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
         Button {
             if !selectionMode {
-                // One carousel for chat images; no per-row preview on top.
-                onOpenGallery()
+                // Open the tapped image, not the gallery grid.
+                previewItem = MessagePreview(kind: .image, name: file.name,
+                                             mediaType: file.mediaType, image: decoded)
             }
         } label: {
             Image(uiImage: decoded)
@@ -367,8 +371,6 @@ struct MessageRow: View {
                               background: Color(.systemFill)) { Task { await save() } }
             RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
                               background: Color(.systemFill)) { Task { await share() } }
-            RoundActionButton(systemName: "square.grid.2x2", label: "媒体",
-                              background: Color(.systemFill)) { onOpenGallery() }
         }
         .animation(.easeInOut(duration: 0.15), value: saved)
     }

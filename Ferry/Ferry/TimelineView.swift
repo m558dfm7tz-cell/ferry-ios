@@ -195,7 +195,7 @@ struct TimelineView: View {
             }
         }
         .overlay { if showToast { toastView } }
-        .statusBarHidden(showAlbumPicker)
+
     }
 
     /// Split the lazy row hierarchy and scroll modifiers into smaller view
@@ -451,6 +451,10 @@ struct TimelineView: View {
                     Menu {
                         Button { showDateJump = true } label: { Label("跳转到日期", systemImage: "calendar") }
                         Button { showFavorites = true } label: { Label("收藏", systemImage: "star") }
+                        Button {
+                            galleryInitialID = nil
+                            showMediaGallery = true
+                        } label: { Label("图片与视频", systemImage: "square.grid.2x2") }
                         Button { enterSelection() } label: { Label("选择", systemImage: "checkmark.circle") }
                         Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
                     } label: {

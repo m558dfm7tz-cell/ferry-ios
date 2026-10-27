@@ -36,7 +36,8 @@ struct ImageViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black.opacity(max(0, 1 - abs(verticalDragOffset) / 340))
+                .ignoresSafeArea()
             ZoomableImageView(image: image,
                               onDismiss: { if let onClose { onClose() } else { dismiss() } },
                               onDragChange: { translation in
@@ -223,7 +224,7 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        backgroundColor = .clear
         imageView.contentMode = .scaleAspectFit
         scrollView.delegate = self
         scrollView.minimumZoomScale = 1
@@ -231,7 +232,7 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         scrollView.showsVerticalScrollIndicator = false
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.bouncesZoom = true
-        scrollView.backgroundColor = .black
+        scrollView.backgroundColor = .clear
         // At zoom scale 1 the image fits exactly, so pan-scrolling is disabled
         // and the vertical dismiss pan owns dragging. Scrolling is re-enabled
         // once zoomed in (see scrollViewDidZoom).
