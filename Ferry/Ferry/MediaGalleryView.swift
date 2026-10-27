@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Media gallery: a grid of every loaded image + video message. Tapping a cell
 /// opens a full-screen pager (TabView `.page`) positioned on that item, with
@@ -137,6 +138,13 @@ private struct MediaPagerView: View {
     @State private var showToast = false
     @State private var toastText = ""
 
+    private var safeTop: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 44
+    }
+
     init(messages: [MessagePayload], startID: String, model: AppModel,
          onReturnToGrid: @escaping () -> Void,
          onCloseViewer: @escaping () -> Void) {
@@ -165,6 +173,7 @@ private struct MediaPagerView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .background(Color.clear)
             .ignoresSafeArea()
         }
         .onChange(of: currentIndex) { _, _ in verticalDrag = 0 }
@@ -179,7 +188,16 @@ private struct MediaPagerView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("此聊天全部图片和视频")
             .accessibilityIdentifier("viewer-open-gallery")
-            .padding(.top, 4)
+            .padding(.top, max(12, safeTop + 6))
+            .padding(.trailing, 16)
+        }
+        .overlay(alignment: .top) {
+            Text("\(currentIndex + 1) / \(messages.count)")
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(.top, max(12, safeTop + 18))
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("media-pager-position")
         }
         .overlay { if showToast { toastView } }
         .statusBarHidden()
