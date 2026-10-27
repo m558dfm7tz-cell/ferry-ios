@@ -39,6 +39,16 @@ final class AppModel {
 
     /// The selection is captured before sending. Unknown profile IDs must
     /// fail closed rather than being sent as a normal transfer.
+    private func destinationForMessage(_ message: MessagePayload) -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let id = assistantStore.conversationID(for: message) else { return .transfer }
+        if let base = AssistantStore.builtIn.first(where: { $0.id == id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let name = verifiedRouteNamesByID[id] else { return nil }
+        return .assistant(name: name, id: id)
+    }
+
     private func destinationForSelection() -> MessageDestination? {
         guard routeIsolationEnabled else { return nil }
         guard let selectedAssistantID else { return .transfer }
@@ -162,12 +172,14 @@ final class AppModel {
     }
 
     var imageMessages: [MessagePayload] {
-        messages.filter { $0.file.map { PreviewRouter.isImage($0) } ?? false }
+        let pool = routeIsolationEnabled ? visibleMessages : messages
+        return pool.filter { $0.file.map { PreviewRouter.isImage($0) } ?? false }
     }
 
     /// Every loaded image + video message (non-hidden), for the media gallery.
     var mediaMessages: [MessagePayload] {
-        messages.filter {
+        let pool = routeIsolationEnabled ? visibleMessages : messages
+        return pool.filter {
             guard let file = $0.file else { return false }
             return PreviewRouter.isImage(file) || PreviewRouter.isVideo(file)
         }
@@ -733,14 +745,25 @@ final class AppModel {
     /// Returns a Chinese error message on failure, or nil on success. The
     /// original message (when there was one) is left untouched.
     @discardableResult
-    func sendEditedImage(_ image: UIImage, originalName: String?) -> String? {
+    func sendEditedImage(_ image: UIImage, originalName: String?,
+                         sourceMessage: MessagePayload? = nil) -> String? {
         let ext = ((originalName ?? "") as NSString).pathExtension.lowercased()
         let mediaType = ext == "png" ? "image/png" : "image/jpeg"
         guard let encoded = EditedImageExport.encode(image, originalMediaType: mediaType) else {
             return "编辑后的图片无法导出。"
         }
         let name = EditedImageExport.name(for: originalName ?? "编辑", mime: encoded.mime)
-        return uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime)
+        let originalTarget: MessageDestination?
+        if let sourceMessage, routeIsolationEnabled {
+            guard let target = destinationForMessage(sourceMessage) else {
+                return "原消息所属助手未同步，已取消编辑后发送。"
+            }
+            originalTarget = target
+        } else {
+            originalTarget = nil
+        }
+        return uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime,
+                                destinationOverride: originalTarget)
     }
 
     func fileData(for message: MessagePayload) async -> Data? {

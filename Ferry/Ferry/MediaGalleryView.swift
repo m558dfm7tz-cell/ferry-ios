@@ -188,8 +188,9 @@ private struct MediaPagerView: View {
 
     /// The editor produced a copy: send it as a new message, then leave the
     /// pager after a moment so the toast is readable.
-    private func sendEdited(_ image: UIImage, originalName: String) {
-        if let error = model.sendEditedImage(image, originalName: originalName) {
+    private func sendEdited(_ image: UIImage, sourceMessage: MessagePayload) {
+        if let error = model.sendEditedImage(image, originalName: sourceMessage.file?.name,
+                                             sourceMessage: sourceMessage) {
             flashToast(error)
             return
         }
@@ -211,7 +212,7 @@ private struct MediaPagerView: View {
                             // The top-right grid control already exists;
                             // don't display a second one in the action strip.
                             onOpenGallery: nil, onClose: onCloseViewer,
-                            onEditFinished: { edited in sendEdited(edited, originalName: name) })
+                            onEditFinished: { edited in sendEdited(edited, sourceMessage: message) })
             } else {
                 Color.black.overlay { ProgressView() }
                     .task { await model.loadImage(for: message) }

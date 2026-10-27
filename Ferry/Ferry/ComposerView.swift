@@ -438,8 +438,19 @@ struct ComposerView: View {
             return
         }
         let name = EditedImageExport.name(for: target.name, mime: encoded.mime)
+        guard let pending = model.uploader.items.first(where: { $0.id == target.id }) else {
+            errorMessage = "待发送的原图片已不存在。"
+            return
+        }
+        let originalDestination = pending.destination
+        if model.routeIsolationEnabled && originalDestination == nil {
+            errorMessage = "原图片的目标助手不明确，已阻止重新发送。"
+            return
+        }
         model.uploader.remove(target.id)
-        if let error = model.uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime) {
+        if let error = model.uploader.enqueue(data: encoded.data, name: name,
+                                               mediaType: encoded.mime,
+                                               destinationOverride: originalDestination) {
             errorMessage = error
         }
     }

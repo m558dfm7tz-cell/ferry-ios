@@ -81,8 +81,9 @@ final class Uploader {
 
     /// Enqueue one in-memory payload (small images). No client-side size cap.
     @discardableResult
-    func enqueue(data: Data, name: String, mediaType: String) -> String? {
-        let destination = destinationProvider?()
+    func enqueue(data: Data, name: String, mediaType: String,
+                 destinationOverride: MessageDestination? = nil) -> String? {
+        let destination = destinationOverride ?? destinationProvider?()
         if routingEnabled?() == true && destination == nil {
             return "助手身份尚未同步，不能发送此文件。"
         }
