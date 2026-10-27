@@ -441,10 +441,10 @@ struct MessageRow: View {
     }
 
     private func share() async {
-        guard let data = await loadFile() else { return }
-        if let url = AttachmentSupport.writeTemporaryFile(data, name: message.file?.name ?? "文件") {
-            shareItem = ShareItem(url: url)
-        }
+        // Stream/cached file URL avoids downloading the attachment into RAM
+        // and writing it again before the system share sheet can appear.
+        guard let url = await loadFileURL() else { return }
+        shareItem = ShareItem(url: url)
     }
 
     private func copyText() async {
