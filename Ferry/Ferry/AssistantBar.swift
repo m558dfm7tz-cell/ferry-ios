@@ -78,6 +78,25 @@ final class AssistantStore {
     private(set) var custom: [Assistant]
     private let defaults: UserDefaults
     private(set) var spaceKey: SpaceKey?
+    /// Server-owned v2 profiles, never persisted over the old local roster.
+    /// Includes archived and hidden identities for history lookup.
+    private(set) var serverProfiles: [AssistantProfile]? = nil
+
+    func adoptServerProfiles(_ profiles: [AssistantProfile]?) {
+        serverProfiles = profiles
+    }
+
+    var hasHiddenServerProfiles: Bool {
+        serverProfiles?.contains(where: { $0.hidden && !$0.deleted }) == true
+    }
+
+    var hasDeletedServerProfiles: Bool {
+        serverProfiles?.contains(where: { $0.deleted }) == true
+    }
+
+    func serverProfile(id: String) -> AssistantProfile? {
+        serverProfiles?.first(where: { $0.id == id })
+    }
     private static let customKey = "ferry.local.customAssistants"
     private static let builtInEditsKey = "ferry.local.builtInEdits"
     private static let hiddenBuiltInsKey = "ferry.local.hiddenBuiltIns"
@@ -116,6 +135,7 @@ final class AssistantStore {
     /// first space ever activated absorbs legacy (unscoped) data.
     func activate(space: SpaceKey) {
         guard space != spaceKey else { return }
+        serverProfiles = nil
         spaceKey = space
         if let data = defaults.data(forKey: builtInEditsScopedKey),
            let value = try? JSONDecoder().decode([String: Assistant].self, from: data) {
@@ -158,7 +178,22 @@ final class AssistantStore {
     /// Built-in identities stay stable even after a display-only rename.
     /// Hidden entries disappear from the bar; their messages remain in 全部.
     var assistants: [Assistant] {
-        Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) && !deletedBuiltInIDs.contains($0.id) }.map { base in
+        if let profiles = serverProfiles {
+            return profiles.filter { !$0.hidden && !$0.deleted }.map { profile in
+                let base = Self.builtIn.first(where: { $0.id == profile.id })
+                let prior = builtInEdits[profile.id]
+                let avatar = profile.avatarText.isEmpty
+                    ? (prior?.avatarText ?? base?.avatarText ?? String(profile.displayName.prefix(1)))
+                    : profile.avatarText
+                let color = profile.colorIndex < 0
+                    ? (prior?.colorIndex ?? base?.colorIndex ?? 0) : profile.colorIndex
+                return Assistant(id: profile.id, name: profile.displayName,
+                                 avatarText: avatar, colorIndex: color,
+                                 isBuiltIn: base != nil,
+                                 matchKeywords: [profile.routeName] + (base?.matchKeywords ?? []))
+            }
+        }
+        return Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) && !deletedBuiltInIDs.contains($0.id) }.map { base in
             guard let edited = builtInEdits[base.id] else { return base }
             return Assistant(id: base.id, name: edited.name, avatarText: edited.avatarText,
                              colorIndex: edited.colorIndex, isBuiltIn: true,
@@ -232,6 +267,9 @@ final class AssistantStore {
     }
 
     private func stableID(forName name: String) -> String? {
+        if let profile = serverProfiles?.first(where: { $0.routeName == name }) {
+            return profile.id
+        }
         if let base = Self.builtIn.first(where: {
             $0.name == name || $0.matchKeywords.contains(name)
         }) { return base.id }
@@ -419,6 +457,7 @@ enum AssistantBarMetrics {
 /// avatar editor (image / muted looping video / default).
 struct AssistantBarView: View {
     let assistants: [Assistant]
+    var allowCustomHide: Bool = false
     var transferMode: Bool = false
     var showUnclassifiedHistory: Bool = false
     @Binding var selectedID: String?
@@ -500,7 +539,8 @@ struct AssistantBarView: View {
                 Button("编辑信息") {
                     presentAfterMenu { renamingAssistant = assistant }
                 }
-                if assistant.isBuiltIn && !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
+                if (assistant.isBuiltIn || allowCustomHide) &&
+                    !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
                     Button("隐藏头像") {
                         presentAfterMenu {
                             removeActionIsHide = true
