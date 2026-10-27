@@ -36,7 +36,7 @@ struct ImageViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(max(0, 1 - abs(verticalDragOffset) / 340))
+            Color.black.opacity(Double(max(CGFloat(0), CGFloat(1) - abs(verticalDragOffset) / CGFloat(340))))
                 .ignoresSafeArea()
             ZoomableImageView(image: image,
                               onDismiss: { if let onClose { onClose() } else { dismiss() } },
