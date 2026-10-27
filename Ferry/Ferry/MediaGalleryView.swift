@@ -19,7 +19,12 @@ struct MediaGalleryView: View {
         Group {
             if let selectedMessage {
                 MediaPagerView(messages: model.mediaMessages, startID: selectedMessage.id,
-                               model: model, onReturnToGrid: { self.selectedMessage = nil })
+                               model: model,
+                               onReturnToGrid: { self.selectedMessage = nil },
+                               onCloseViewer: {
+                                   if initialMessageID != nil { dismiss() }
+                                   else { self.selectedMessage = nil }
+                               })
             } else {
                 mediaGrid
             }
@@ -116,6 +121,7 @@ private struct MediaPagerView: View {
     let messages: [MessagePayload]
     let model: AppModel
     let onReturnToGrid: () -> Void
+    let onCloseViewer: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
@@ -124,10 +130,12 @@ private struct MediaPagerView: View {
     @State private var toastText = ""
 
     init(messages: [MessagePayload], startID: String, model: AppModel,
-         onReturnToGrid: @escaping () -> Void) {
+         onReturnToGrid: @escaping () -> Void,
+         onCloseViewer: @escaping () -> Void) {
         self.messages = messages
         self.model = model
         self.onReturnToGrid = onReturnToGrid
+        self.onCloseViewer = onCloseViewer
         _currentIndex = State(initialValue: messages.firstIndex(where: { $0.id == startID }) ?? 0)
     }
 
@@ -201,7 +209,7 @@ private struct MediaPagerView: View {
                             load: { await model.fileData(for: message) },
                             // The top-right grid control already exists;
                             // don't display a second one in the action strip.
-                            onOpenGallery: nil, onClose: onReturnToGrid,
+                            onOpenGallery: nil, onClose: onCloseViewer,
                             onEditFinished: { edited in sendEdited(edited, originalName: name) })
             } else {
                 Color.black.overlay { ProgressView() }
