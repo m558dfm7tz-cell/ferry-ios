@@ -11,6 +11,7 @@ struct AttachmentActions: View {
     let name: String
     let mediaType: String
     let load: () async -> Data?
+    var loadFileURL: (() async -> URL?)? = nil
     var tint: Color = .primary
     var onToast: ((String) -> Void)? = nil
     /// Optional extra entry rendered beside 保存/分享: opens the grid of every
@@ -107,6 +108,10 @@ struct AttachmentActions: View {
     private func share() async {
         busy = true
         defer { busy = false }
+        if let loadFileURL {
+            if let url = await loadFileURL() { shareItem = ShareItem(url: url) }
+            return
+        }
         guard let data = await load() else { return }
         if let url = AttachmentSupport.writeTemporaryFile(data, name: name) {
             shareItem = ShareItem(url: url)
