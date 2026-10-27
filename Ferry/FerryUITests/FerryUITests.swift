@@ -49,6 +49,11 @@ final class FerryUITests: XCTestCase {
         let grid = app.buttons["viewer-open-gallery"].firstMatch
         XCTAssertTrue(grid.waitForExistence(timeout: 8),
                       "chat image should open its own pager with a gallery shortcut")
+        XCTAssertTrue(app.staticTexts["1 / 2"].waitForExistence(timeout: 5),
+                      "the tapped image should be the first media page")
+        app.swipeLeft()
+        XCTAssertTrue(app.staticTexts["2 / 2"].waitForExistence(timeout: 6),
+                      "swipe left must advance from chat photo to chat video")
         tap(grid)
         XCTAssertTrue(app.navigationBars["媒体"].waitForExistence(timeout: 8),
                       "top-right media shortcut should show this chat's grid")
