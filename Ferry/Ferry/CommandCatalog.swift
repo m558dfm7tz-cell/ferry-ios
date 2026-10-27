@@ -474,3 +474,159 @@ struct MentionPickerView: View {
         .accessibilityIdentifier("command-\(command.id)")
     }
 }
+
+
+// MARK: - Dedicated computer task UI
+
+/// The Windows FerryHelper owns the command vocabulary. This panel displays
+/// only commands supplied by its catalog (including the existing cached copy),
+/// rather than inventing HTTP endpoints or unsupported command spellings.
+struct AssistantTaskPanel: View {
+    @Bindable var model: AppModel
+
+    @State private var chosenID: String?
+    @State private var argument = ""
+    @State private var includeDate = false
+    @State private var date = Date()
+    @State private var executing = false
+
+    private var target: MentionTarget? {
+        model.catalog.targets.first {
+            $0.id == "helper" || $0.matchesAssistant("FerryHelper") || $0.matchesAssistant("助理")
+        }
+    }
+
+    private var commands: [CommandItem] {
+        guard let target else { return [] }
+        if !target.commands.isEmpty { return target.commands }
+        // Remote catalogs may publish a helper group with a single command.
+        if let insert = target.insertText, !insert.isEmpty {
+            return [CommandItem(id: target.id, title: target.title, insertText: insert,
+                                subtitle: target.subtitle)]
+        }
+        return []
+    }
+
+    private var chosen: CommandItem? {
+        commands.first(where: { $0.id == chosenID })
+    }
+
+    /// Date choice is an optional, editable positional argument. Never
+    /// synthesize flags that are not declared by the Windows command catalog.
+    private var offersDate: Bool {
+        guard let chosen else { return false }
+        let title = (chosen.title + " " + (chosen.subtitle ?? "")).lowercased()
+        return title.contains("文件") || title.contains("查找") ||
+               title.contains("搜索") || title.contains("日期") ||
+               title.contains("find") || title.contains("search")
+    }
+
+    private var preparedText: String? {
+        guard let chosen else { return nil }
+        let verb = chosen.insertText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !verb.isEmpty else { return nil }
+        var text = verb.hasPrefix("@") ? verb : model.catalog.wakeTag(forAssistantName: "助理") + " " + verb
+        let arguments = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chosen.requiresArgument && arguments.isEmpty && !includeDate { return nil }
+        if !arguments.isEmpty { text += " " + arguments }
+        if includeDate && offersDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            text += " " + formatter.string(from: date)
+        }
+        return text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "desktopcomputer").foregroundStyle(.cyan)
+                Text("电脑助理").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    model.refreshCommandCatalog()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("刷新电脑命令")
+            }
+            if commands.isEmpty {
+                Text("尚未读取到电脑助理的可用命令。连接电脑后刷新，也可以在下方使用 @ 指令。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(commands) { command in
+                            Button {
+                                chosenID = command.id
+                                argument = ""
+                                includeDate = false
+                            } label: {
+                                Text(command.title)
+                                    .font(.footnote.weight(.medium))
+                                    .padding(.horizontal, 12).padding(.vertical, 9)
+                                    .background(chosenID == command.id
+                                        ? Color.accentColor.opacity(0.27) : Color.white.opacity(0.09),
+                                        in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if let chosen {
+                    if let subtitle = chosen.subtitle, !subtitle.isEmpty {
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    TextField(chosen.requiresArgument ? "输入所需参数" : "附加参数（可选）",
+                              text: $argument)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 11).padding(.vertical, 7)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    if offersDate {
+                        Toggle("指定日期", isOn: $includeDate).font(.footnote)
+                        if includeDate {
+                            DatePicker("日期", selection: $date, displayedComponents: .date)
+                                .datePickerStyle(.compact)
+                                .font(.footnote)
+                        }
+                    }
+                    HStack(spacing: 10) {
+                        Button("填入输入框") {
+                            guard let preparedText else { return }
+                            model.draft = preparedText
+                        }
+                        .disabled(preparedText == nil)
+                        .buttonStyle(.bordered)
+                        Button {
+                            guard let preparedText, !executing else { return }
+                            executing = true
+                            Task { @MainActor in
+                                let success = await model.sendText(preparedText)
+                                executing = false
+                                if success {
+                                    chosenID = nil
+                                    argument = ""
+                                    includeDate = false
+                                    model.requestScrollToBottom()
+                                }
+                            }
+                        } label: {
+                            if executing { ProgressView() } else { Text("执行任务") }
+                        }
+                        .disabled(preparedText == nil || executing)
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityIdentifier("computer-assistant-commands")
+    }
+}
