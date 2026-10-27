@@ -230,8 +230,9 @@ final class AppModel {
 
     /// Every loaded image + video message (non-hidden), for the media gallery.
     var mediaMessages: [MessagePayload] {
-        let pool = routeIsolationEnabled ? visibleMessages : messages
-        return pool.filter {
+        // Even in legacy mode, selecting a single assistant must not let its
+        // media pager swipe into other assistants' conversation history.
+        return visibleMessages.filter {
             guard let file = $0.file else { return false }
             return PreviewRouter.isImage(file) || PreviewRouter.isVideo(file)
         }

@@ -164,6 +164,7 @@ struct TimelineView: View {
         }
         .fullScreenCover(isPresented: $showMediaGallery) {
             MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+                .presentationBackground(.clear)
         }
         .sheet(isPresented: $showNewAssistant) {
             NewAssistantSheet { name, avatarText, colorIndex in

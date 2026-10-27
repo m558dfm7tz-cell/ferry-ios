@@ -290,9 +290,9 @@ struct MessageRow: View {
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
         Button {
             if !selectionMode {
-                // Open the tapped image, not the gallery grid.
-                previewItem = MessagePreview(kind: .image, name: file.name,
-                                             mediaType: file.mediaType, image: decoded)
+                // Open the unified chat-scoped pager on this exact message.
+                // The pager handles left/right media and the top-right grid.
+                onOpenGallery()
             }
         } label: {
             Image(uiImage: decoded)
@@ -308,7 +308,8 @@ struct MessageRow: View {
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
         Button {
-            openFile()
+            guard !selectionMode else { return }
+            onOpenGallery()
         } label: {
             ZStack {
                 if let thumbnail {

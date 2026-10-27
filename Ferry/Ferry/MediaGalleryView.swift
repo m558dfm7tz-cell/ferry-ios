@@ -11,14 +11,27 @@ struct MediaGalleryView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
-    @State private var consumedInitialSelection = false
+    /// Freeze this chat's media identity for the life of the viewer; a server
+    /// refresh cannot silently repopulate the pager with another chat's media.
+    @State private var scopedMessages: [MessagePayload]
+
+    init(model: AppModel, initialMessageID: String?) {
+        self.model = model
+        self.initialMessageID = initialMessageID
+        let scope = model.mediaMessages
+        _scopedMessages = State(initialValue: scope)
+        // Select before the FIRST frame: avoids flashing the entire grid when
+        // the user first taps a bubble after opening Ferry.
+        _selectedMessage = State(initialValue:
+            initialMessageID.flatMap { id in scope.first(where: { $0.id == id }) })
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 3)]
 
     var body: some View {
         Group {
             if let selectedMessage {
-                MediaPagerView(messages: model.mediaMessages, startID: selectedMessage.id,
+                MediaPagerView(messages: scopedMessages, startID: selectedMessage.id,
                                model: model,
                                onReturnToGrid: { self.selectedMessage = nil },
                                onCloseViewer: {
@@ -29,25 +42,19 @@ struct MediaGalleryView: View {
                 mediaGrid
             }
         }
-        .onAppear {
-            guard !consumedInitialSelection else { return }
-            consumedInitialSelection = true
-            guard let id = initialMessageID,
-                  let message = model.mediaMessages.first(where: { $0.id == id }) else { return }
-            selectedMessage = message
-        }
+
     }
 
     private var mediaGrid: some View {
         NavigationStack {
             ScrollView {
-                if model.mediaMessages.isEmpty {
+                if scopedMessages.isEmpty {
                     ContentUnavailableView("暂无媒体", systemImage: "photo.on.rectangle.angled",
                                            description: Text("图片和视频消息会显示在这里。"))
                         .padding(.top, 120)
                 } else {
                     LazyVGrid(columns: columns, spacing: 3) {
-                        ForEach(model.mediaMessages) { message in
+                        ForEach(scopedMessages) { message in
                             cell(for: message)
                         }
                     }
