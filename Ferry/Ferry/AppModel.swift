@@ -1035,6 +1035,11 @@ final class AppModel {
             if let cacheURL, FileManager.default.fileExists(atPath: cacheURL.path),
                let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
                (attrs[.size] as? NSNumber)?.int64Value == file.size {
+                if PreviewRouter.isImage(file) {
+                    Task(priority: .utility) {
+                        await ImageCacheBudget.shared.recordAccess(cacheURL)
+                    }
+                }
                 return cacheURL
             }
             let url = try await client.attachmentFile(endpoint: endpoint, token: token,
@@ -1044,8 +1049,19 @@ final class AppModel {
                 try? FileManager.default.createDirectory(
                     at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? FileManager.default.removeItem(at: cacheURL)
-                try? FileManager.default.copyItem(at: url, to: cacheURL)
-                if FileManager.default.fileExists(atPath: cacheURL.path) { return cacheURL }
+                // Avoid persisting very large images as unbounded originals:
+                // the preview path already limits its own disk copies to 12 MB.
+                if !PreviewRouter.isImage(file) || file.size <= 12_000_000 {
+                    try? FileManager.default.copyItem(at: url, to: cacheURL)
+                    if FileManager.default.fileExists(atPath: cacheURL.path) {
+                        if PreviewRouter.isImage(file) {
+                            Task(priority: .utility) {
+                                await ImageCacheBudget.shared.prune(protecting: cacheURL)
+                            }
+                        }
+                        return cacheURL
+                    }
+                }
             }
             return url
         } catch {
