@@ -346,6 +346,11 @@ final class AppModel {
         assistantStore.activate(space: space)
         avatarStore.activate(space: space)
         VideoThumbnailCache.setSpace(space)
+        // Keep only a bounded amount of reusable photo bytes on disk, even
+        // when the app has not opened a photo in this session.
+        Task(priority: .utility) {
+            await ImageCacheBudget.shared.prune()
+        }
         loadOutbox()
         loadFavoriteActions()
         lastFavoritesFetch = nil
@@ -876,6 +881,11 @@ final class AppModel {
         if let cacheURL, let cached = try? Data(contentsOf: cacheURL),
            let image = UIImage(data: cached) {
             images[message.id] = image
+            // Cache hits count as recent use. Touch off the main actor so the
+            // chat transcript is not delayed by file-system metadata writes.
+            Task(priority: .utility) {
+                await ImageCacheBudget.shared.recordAccess(cacheURL)
+            }
             return
         }
         guard let endpoint, let token else { return }
@@ -897,7 +907,13 @@ final class AppModel {
                 let directory = cacheURL.deletingLastPathComponent()
                 try? FileManager.default.createDirectory(at: directory,
                                                           withIntermediateDirectories: true)
-                try? data.write(to: cacheURL, options: .atomic)
+                if (try? data.write(to: cacheURL, options: .atomic)) != nil {
+                    // Trim originals only; do not touch video/share files,
+                    // pending uploads, or independent favorite copies.
+                    Task(priority: .utility) {
+                        await ImageCacheBudget.shared.prune(protecting: cacheURL)
+                    }
+                }
             }
         } catch {
             guard current == generation else { return }
@@ -1812,5 +1828,73 @@ final class AppModel {
         } else {
             phase = token == nil ? .setup : .offline
         }
+    }
+}
+
+
+/// A single, global LRU budget for locally cached *original photo bytes*.
+///
+/// The existing photo cache uses a SHA-256 key incorporating Ferry space,
+/// message ID and download path. This policy deliberately keeps those names
+/// unchanged so existing offline cached images survive an upgrade. Only files
+/// matching that exact 64-hex-digest + one extension convention are eligible:
+/// "share.*" video/attachment copies, send-queue bodies, device-local favorite
+/// copies and video poster frames are never pruned here.
+///
+/// A cache miss just redownloads from Ferry; no server or chat records are
+/// deleted. Run file enumeration on this actor, not the UI's MainActor.
+private actor ImageCacheBudget {
+    static let shared = ImageCacheBudget()
+
+    private let limit: Int64 = 256 * 1024 * 1024
+
+    private var directory: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("ferry-media", isDirectory: true)
+    }
+
+    func recordAccess(_ url: URL) {
+        guard isCachedPhoto(url) else { return }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    func prune(protecting protected: URL? = nil) {
+        guard let directory else { return }
+        let manager = FileManager.default
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        guard let entries = try? manager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]) else { return }
+
+        var candidates: [(url: URL, size: Int64, lastUsed: Date)] = []
+        var total: Int64 = 0
+        for url in entries where isCachedPhoto(url) {
+            guard let metadata = try? url.resourceValues(forKeys: keys),
+                  metadata.isRegularFile == true else { continue }
+            let size = Int64(max(0, metadata.fileSize ?? 0))
+            total += size
+            candidates.append((url, size, metadata.contentModificationDate ?? .distantPast))
+        }
+        guard total > limit else { return }
+
+        for file in candidates.sorted(by: { $0.lastUsed < $1.lastUsed }) {
+            guard total > limit else { break }
+            // Never immediately evict the photo that was just downloaded.
+            if file.url == protected { continue }
+            do {
+                try manager.removeItem(at: file.url)
+                total -= file.size
+            } catch {
+                // A simultaneous share/read can keep a file temporarily busy;
+                // don't abort cleaning other old entries on one I/O failure.
+                continue
+            }
+        }
+    }
+
+    private func isCachedPhoto(_ url: URL) -> Bool {
+        let components = url.lastPathComponent.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 2, components[0].count == 64 else { return false }
+        return components[0].allSatisfy { "0123456789abcdef".contains($0) }
     }
 }
