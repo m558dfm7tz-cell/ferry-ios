@@ -26,6 +26,13 @@ struct ImageViewer: View {
     @State private var showEditor = false
     @State private var verticalDragOffset: CGFloat = 0
 
+    private var previewScale: CGFloat {
+        max(CGFloat(0.88), CGFloat(1) - abs(verticalDragOffset) / CGFloat(2000))
+    }
+    private var previewOpacity: Double {
+        Double(max(CGFloat(0.55), CGFloat(1) - abs(verticalDragOffset) / CGFloat(1100)))
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -77,8 +84,8 @@ struct ImageViewer: View {
         }
         .overlay { if showToast { toastView } }
         .offset(y: verticalDragOffset)
-        .scaleEffect(max(0.88, 1 - abs(verticalDragOffset) / 2000))
-        .opacity(max(0.55, 1 - abs(verticalDragOffset) / 1100))
+        .scaleEffect(previewScale)
+        .opacity(previewOpacity)
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
         }
