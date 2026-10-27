@@ -13,7 +13,7 @@ struct ComposerTextView: UIViewRepresentable {
     @Binding var height: CGFloat
     @Binding var insertCommand: TextInsertion?
     let placeholder: String
-    let isFocused: FocusState<Bool>.Binding
+    let isFocused: Binding<Bool>
     let maxLines: Int
     let textColor: UIColor
     let tintColor: UIColor
@@ -23,6 +23,11 @@ struct ComposerTextView: UIViewRepresentable {
     var minHeight: CGFloat = 20
     var onMentionChange: ((MentionContext?) -> Void)? = nil
     var accessibilityIdentifier: String? = nil
+    /// Switch the real UITextView inputView from system keyboard to attachment
+    /// controls; UIKit animates this in the keyboard's original safe area.
+    var attachmentMode: Binding<Bool>? = nil
+    var onAttachmentFile: (() -> Void)? = nil
+    var onAttachmentCamera: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, height: $height, isFocused: isFocused,
@@ -48,10 +53,16 @@ struct ComposerTextView: UIViewRepresentable {
         textView.textContainer.lineFragmentPadding = 0
         textView.isScrollEnabled = alwaysScrolls
         textView.keyboardDismissMode = .interactive
+        textView.contentInsetAdjustmentBehavior = .never
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textView.text = text
         textView.accessibilityIdentifier = accessibilityIdentifier
+        textView.onTapWhileShowingAttachment = { [attachmentMode, isFocused] in
+            guard attachmentMode?.wrappedValue == true else { return }
+            attachmentMode?.wrappedValue = false
+            isFocused.wrappedValue = true
+        }
 
         textView.placeholderLabel.text = placeholder
         textView.placeholderLabel.font = textView.font
@@ -101,13 +112,30 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
+        let wantsAttachment = attachmentMode?.wrappedValue == true
+        if wantsAttachment != textView.isShowingAttachmentInput {
+            textView.isShowingAttachmentInput = wantsAttachment
+            if wantsAttachment {
+                let menu = context.coordinator.attachmentInputView()
+                menu.onFile = onAttachmentFile
+                menu.onCamera = onAttachmentCamera
+                textView.inputView = menu
+            } else {
+                textView.inputView = nil
+            }
+            if textView.isFirstResponder { textView.reloadInputViews() }
+        } else if wantsAttachment {
+            let menu = context.coordinator.attachmentInputView()
+            menu.onFile = onAttachmentFile
+            menu.onCamera = onAttachmentCamera
+        }
         context.coordinator.applyFocus(isFocused.wrappedValue, to: textView)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         private var text: Binding<String>
         private var height: Binding<CGFloat>
-        private let isFocused: FocusState<Bool>.Binding
+        private let isFocused: Binding<Bool>
         private let maxLines: Int
         private let alwaysScrolls: Bool
         private let minHeight: CGFloat
@@ -120,8 +148,16 @@ struct ComposerTextView: UIViewRepresentable {
         /// dispatched more than once (before the parent clears the binding) is
         /// applied exactly once instead of growing the text each pass.
         private var lastAppliedInsertionID: UUID?
+        private var attachmentMenu: FerryAttachmentInputView?
 
-        init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
+        fileprivate func attachmentInputView() -> FerryAttachmentInputView {
+            if let attachmentMenu { return attachmentMenu }
+            let menu = FerryAttachmentInputView()
+            attachmentMenu = menu
+            return menu
+        }
+
+        init(text: Binding<String>, height: Binding<CGFloat>, isFocused: Binding<Bool>,
              maxLines: Int, alwaysScrolls: Bool, minHeight: CGFloat,
              onMentionChange: ((MentionContext?) -> Void)?) {
             self.text = text
@@ -133,18 +169,46 @@ struct ComposerTextView: UIViewRepresentable {
             self.onMentionChange = onMentionChange
         }
 
-        /// Drive the text view's first-responder state only on an explicit
-        /// transition of the focus binding (e.g. the expand editor focusing on
-        /// appear, or an explicit dismiss). The delegate deliberately does NOT
-        /// write back to the focus binding, so a plain tap that focuses the
-        /// text view can never be followed by SwiftUI writing `false` back and
-        /// dismissing the keyboard right after it appears.
+        /// Keep the shared state in sync with UIKit's actual first responder.
+        /// FocusState cannot represent the focus of a UIViewRepresentable unless
+        /// a native SwiftUI focusable target participates in that FocusState.
+        /// A plain Binding<Bool> avoids SwiftUI resetting focus behind UIKit.
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            lastKnownFocus = true
+            DispatchQueue.main.async { [weak textView] in
+                guard textView?.isFirstResponder == true else { return }
+                self.isFocused.wrappedValue = true
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            lastKnownFocus = false
+            DispatchQueue.main.async { [weak textView] in
+                guard textView?.isFirstResponder != true else { return }
+                self.isFocused.wrappedValue = false
+            }
+        }
+
+        /// UIKit may also lose the responder during an input-view change.
+        /// Reconcile a requested focus even if the binding itself did not
+        /// change; never resign a user-initiated tap while FocusState is stale.
         func applyFocus(_ wantsFocus: Bool, to textView: UITextView) {
-            guard wantsFocus != lastKnownFocus else { return }
-            lastKnownFocus = wantsFocus
             if wantsFocus {
-                if !textView.isFirstResponder { textView.becomeFirstResponder() }
-            } else {
+                lastKnownFocus = true
+                if !textView.isFirstResponder {
+                    if textView.window != nil {
+                        textView.becomeFirstResponder()
+                    } else {
+                        DispatchQueue.main.async { [weak textView] in
+                            guard self.isFocused.wrappedValue,
+                                  let textView, textView.window != nil,
+                                  !textView.isFirstResponder else { return }
+                            textView.becomeFirstResponder()
+                        }
+                    }
+                }
+            } else if lastKnownFocus {
+                lastKnownFocus = false
                 if textView.isFirstResponder { textView.resignFirstResponder() }
             }
         }
@@ -255,6 +319,28 @@ struct ComposerTextView: UIViewRepresentable {
 /// `UITextView` subclass that hosts a placeholder label (shown when empty).
 final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
+    var isShowingAttachmentInput = false
+    var onTapWhileShowingAttachment: (() -> Void)?
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleAttachmentTap))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    @objc private func handleAttachmentTap() {
+        if isShowingAttachmentInput {
+            onTapWhileShowingAttachment?()
+        }
+        // Keep the native responder even when the scroll/keyboard gesture
+        // recognizers compete for a tap on the empty composer.
+        if !isFirstResponder { becomeFirstResponder() }
+    }
     var onWidthChanged: (() -> Void)?
     private var lastLaidOutWidth: CGFloat = 0
 
@@ -269,5 +355,62 @@ final class ComposerUITextView: UITextView {
         placeholderLabel.frame = CGRect(origin: origin,
                                         size: CGSize(width: bounds.width - origin.x * 2,
                                                      height: placeholderLabel.font.lineHeight))
+        // Do not leave a single line scrolled upward after a UIKit
+        // keyboard-to-attachment input-view replacement.
+        if !text.contains("\n"), contentSize.height <= bounds.height + 2,
+           abs(contentOffset.y) > 0.5 {
+            contentOffset = .zero
+        }
     }
+}
+
+/// UIKit attachment input view: replaces the software keyboard rather than
+/// occupying a second SwiftUI sheet or resizing the transcript twice.
+private final class FerryAttachmentInputView: UIInputView {
+    var onFile: (() -> Void)?
+    var onCamera: (() -> Void)?
+
+    init() {
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 256),
+                   inputViewStyle: .keyboard)
+        backgroundColor = .secondarySystemBackground
+        heightAnchor.constraint(equalToConstant: 256).isActive = true
+
+        let file = makeButton("文件", symbol: "folder", action: #selector(openFile))
+        let camera = makeButton("拍摄", symbol: "camera", action: #selector(openCamera))
+        let row = UIStackView(arrangedSubviews: [file, camera])
+        row.axis = .horizontal
+        row.spacing = 16
+        row.distribution = .fillEqually
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            row.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            row.heightAnchor.constraint(equalToConstant: 96)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func makeButton(_ title: String, symbol: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.image = UIImage(systemName: symbol)
+        config.imagePlacement = .top
+        config.imagePadding = 10
+        config.baseForegroundColor = .label
+        config.background.backgroundColor = .tertiarySystemBackground
+        config.cornerStyle = .large
+        button.configuration = config
+        button.addTarget(self, action: action, for: .touchUpInside)
+        button.accessibilityIdentifier = title == "文件"
+            ? "composer-attachment-file" : "composer-attachment-camera"
+        return button
+    }
+
+    @objc private func openFile() { onFile?() }
+    @objc private func openCamera() { onCamera?() }
 }
