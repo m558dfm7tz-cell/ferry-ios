@@ -110,7 +110,8 @@ struct TimelineView: View {
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if selectionMode {
-                    SelectionBar(onClearAll: { selectionAlert = .clearAll })
+                    SelectionBar(canClearAll: !model.routeIsolationEnabled,
+                                 onClearAll: { selectionAlert = .clearAll })
                 } else {
                     ComposerView(model: model, focused: $composerFocused,
                                  showImagePicker: $showAlbumPicker,
@@ -738,13 +739,20 @@ private struct ScrollState: Hashable {
 /// this keeps only the 清空全部 access (so it is not lost). Confirmation
 /// happens in the parent via alerts.
 private struct SelectionBar: View {
+    let canClearAll: Bool
     let onClearAll: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Button("清空全部", systemImage: "trash") { onClearAll() }
-                .buttonStyle(.bordered)
-                .tint(.red)
+            if canClearAll {
+                Button("清空全部", systemImage: "trash") { onClearAll() }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            } else {
+                Text("可删除所选消息；互传不支持单独清空")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
         }
         .padding(.horizontal, 16).padding(.vertical, 10)

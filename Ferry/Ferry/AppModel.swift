@@ -27,6 +27,7 @@ final class AppModel {
     private(set) var isLoadingOlder = false
     private(set) var isLoadingInitial = false
     private(set) var dayCounts: [String: Int] = [:]
+    private var dayCountsByConversation: [String: [String: Int]] = [:]
 
     /// Nil means the transfer tab once new routing is verified.
     var selectedAssistantID: String?
@@ -959,6 +960,7 @@ final class AppModel {
         isLoadingOlder = false
         isLoadingInitial = false
         dayCounts = [:]
+        dayCountsByConversation = [:]
         dayIndexStarted = false
         countedMessageIDs = []
         selectedAssistantID = nil
@@ -1288,6 +1290,7 @@ final class AppModel {
         hasOlder = page.hasOlder
         cursor = max(messages.map(\.sequence).max() ?? 0, page.nextCursor)
         dayCounts = [:]
+        dayCountsByConversation = [:]
         countedMessageIDs = []
         countDays(messages)
         reviewStore.rebuild(from: messages)
@@ -1333,13 +1336,7 @@ final class AppModel {
     /// Calendar markers use the active conversation in verified routing mode.
     var visibleDayCounts: [String: Int] {
         guard routeIsolationEnabled else { return dayCounts }
-        var counts: [String: Int] = [:]
-        for message in visibleMessages {
-            guard let date = TimestampFormat.date(from: message.createdAt) else { continue }
-            let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
-            counts[key, default: 0] += 1
-        }
-        return counts
+        return dayCountsByConversation[selectedAssistantID ?? "__transfer__"] ?? [:]
     }
 
     private func countDays(_ msgs: [MessagePayload]) {
@@ -1348,6 +1345,10 @@ final class AppModel {
             guard let date = TimestampFormat.date(from: message.createdAt) else { continue }
             let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
             dayCounts[key, default: 0] += 1
+            if routeIsolationEnabled {
+                let identity = visibleIdentity(for: message) ?? "__transfer__"
+                dayCountsByConversation[identity, default: [:]][key, default: 0] += 1
+            }
         }
     }
 
