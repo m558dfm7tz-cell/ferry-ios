@@ -26,6 +26,12 @@ import UIKit
 /// `.pairedVideo` resource, MOV transcoded by `AVAssetExportSession`).
 struct AlbumPickerView: View {
     let model: AppModel
+    let onClose: (() -> Void)?
+
+    init(model: AppModel, onClose: (() -> Void)? = nil) {
+        self.model = model
+        self.onClose = onClose
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -68,7 +74,10 @@ struct AlbumPickerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            // The underlying timeline stays mounted. Fade the scrim as the
+            // picker is pulled down so the chat emerges naturally above it.
+            Color.black.opacity(max(0, 1 - Double(dismissDrag) / 340))
+                .ignoresSafeArea()
             if let context = previewContext {
                 AlbumPreviewView(displayAssets: context.assets,
                                  startIndex: context.startIndex,
@@ -101,7 +110,7 @@ struct AlbumPickerView: View {
             Text(sendError ?? "")
         }
         .alert("放弃已选的 \(selected.count) 项？", isPresented: $showDiscardConfirm) {
-            Button("放弃", role: .destructive) { dismiss() }
+            Button("放弃", role: .destructive) { closePicker() }
             Button("继续选择", role: .cancel) {}
         } message: {
             Text("关闭后将不再发送这些照片。")
@@ -373,10 +382,16 @@ struct AlbumPickerView: View {
     /// Used by the × button and by the pull-down-to-close gesture.
     private func requestClose() {
         if selected.isEmpty {
-            dismiss()
+            closePicker()
         } else {
             showDiscardConfirm = true
         }
+    }
+
+    /// In an in-chat overlay, dismissing an Environment sheet does nothing.
+    /// Keep one exit path for X, swipe, discard and successful sending.
+    private func closePicker() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     // MARK: - Permission
@@ -401,7 +416,7 @@ struct AlbumPickerView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(pickerGreen)
-            Button("关闭") { dismiss() }
+            Button("关闭") { closePicker() }
                 .foregroundStyle(.white)
         }
     }
@@ -565,7 +580,7 @@ struct AlbumPickerView: View {
             return
         }
         model.requestScrollToBottom()
-        dismiss()
+        closePicker()
     }
 
     private func send() {
@@ -608,7 +623,7 @@ struct AlbumPickerView: View {
             // newest message (the messages arrive asynchronously via the upload
             // queue, so the scroll lands on them once they appear).
             model.requestScrollToBottom()
-            dismiss()
+            closePicker()
         }
     }
 }
