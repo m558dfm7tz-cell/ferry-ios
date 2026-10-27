@@ -1,9 +1,10 @@
-name: Diagnose Media Tap (single UI test)
+name: Diagnose Media Tap (cached single UI test)
 
 on:
   push:
     branches:
       - diag/ios-media-tap-event-20261028
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,21 +12,75 @@ permissions:
 jobs:
   media-tap-test:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
+
+      - name: Select pinned Xcode
         run: |
           if [ -d /Applications/Xcode_16.4.app ]; then
             sudo xcode-select -s /Applications/Xcode_16.4.app
           fi
           xcodebuild -version
-      - name: Test only media tap (no IPA archive)
+
+      # Restore built iOS simulator objects and SwiftPM downloads from an
+      # earlier commit. Use a stable workspace-relative DerivedData directory
+      # so restored objects can be reused by Xcode's incremental compiler.
+      - name: Restore simulator build cache
+        id: xcode-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .ci-derived-data/Build
+            .ci-derived-data/SourcePackages
+          key: ferry-ui-dd-macos15-xcode164-v1-${{ github.sha }}
+          restore-keys: |
+            ferry-ui-dd-macos15-xcode164-v1-
+
+      - name: Run only the failing image tap test (no IPA build)
+        env:
+          NSUnbufferedIO: "YES"
         run: |
+          set -o pipefail
           xcodebuild test \
             -project Ferry/Ferry.xcodeproj \
             -scheme Ferry \
             -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath "$GITHUB_WORKSPACE/.ci-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ferry-media-tap.xcresult" \
+            -parallel-testing-enabled NO \
             -only-testing:FerryUITests/FerryUITests/testChatBubbleOpensPagerWithTopRightMediaGrid \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/ferry-media-tap.log"
+
+      - name: Show compact event trace
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/ferry-media-tap.log" ]; then
+            grep -E 'FERRY_PROBE|FERRY_TRACE|Test Case.*(passed|failed)|error:|TEST FAILED|TEST SUCCEEDED' \
+              "$RUNNER_TEMP/ferry-media-tap.log" | tail -70 || true
+          fi
+
+      # Save even when the UI assertion fails: failed iterations are precisely
+      # when an incremental build cache is needed most. Cache keys remain
+      # immutable per commit, with restore fallback to earlier commits.
+      - name: Save simulator build cache
+        if: always() && steps.xcode-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ci-derived-data/Build
+            .ci-derived-data/SourcePackages
+          key: ferry-ui-dd-macos15-xcode164-v1-${{ github.sha }}
+
+      - name: Upload failing test evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferry-media-tap-diagnostics
+          path: |
+            ${{ runner.temp }}/ferry-media-tap.log
+            ${{ runner.temp }}/ferry-media-tap.xcresult
+          if-no-files-found: warn
+          retention-days: 3
