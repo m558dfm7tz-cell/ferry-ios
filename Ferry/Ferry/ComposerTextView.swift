@@ -23,6 +23,11 @@ struct ComposerTextView: UIViewRepresentable {
     var minHeight: CGFloat = 20
     var onMentionChange: ((MentionContext?) -> Void)? = nil
     var accessibilityIdentifier: String? = nil
+    /// Switch the real UITextView inputView from system keyboard to attachment
+    /// controls; UIKit animates this in the keyboard's original safe area.
+    var attachmentMode: Binding<Bool>? = nil
+    var onAttachmentFile: (() -> Void)? = nil
+    var onAttachmentCamera: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, height: $height, isFocused: isFocused,
@@ -52,6 +57,11 @@ struct ComposerTextView: UIViewRepresentable {
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textView.text = text
         textView.accessibilityIdentifier = accessibilityIdentifier
+        textView.onTapWhileShowingAttachment = { [attachmentMode, isFocused] in
+            guard attachmentMode?.wrappedValue == true else { return }
+            attachmentMode?.wrappedValue = false
+            isFocused.wrappedValue = true
+        }
 
         textView.placeholderLabel.text = placeholder
         textView.placeholderLabel.font = textView.font
@@ -101,6 +111,23 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
+        let wantsAttachment = attachmentMode?.wrappedValue == true
+        if wantsAttachment != textView.isShowingAttachmentInput {
+            textView.isShowingAttachmentInput = wantsAttachment
+            if wantsAttachment {
+                let menu = context.coordinator.attachmentInputView()
+                menu.onFile = onAttachmentFile
+                menu.onCamera = onAttachmentCamera
+                textView.inputView = menu
+            } else {
+                textView.inputView = nil
+            }
+            if textView.isFirstResponder { textView.reloadInputViews() }
+        } else if wantsAttachment {
+            let menu = context.coordinator.attachmentInputView()
+            menu.onFile = onAttachmentFile
+            menu.onCamera = onAttachmentCamera
+        }
         context.coordinator.applyFocus(isFocused.wrappedValue, to: textView)
     }
 
@@ -120,6 +147,14 @@ struct ComposerTextView: UIViewRepresentable {
         /// dispatched more than once (before the parent clears the binding) is
         /// applied exactly once instead of growing the text each pass.
         private var lastAppliedInsertionID: UUID?
+        private var attachmentMenu: FerryAttachmentInputView?
+
+        func attachmentInputView() -> FerryAttachmentInputView {
+            if let attachmentMenu { return attachmentMenu }
+            let menu = FerryAttachmentInputView()
+            attachmentMenu = menu
+            return menu
+        }
 
         init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
              maxLines: Int, alwaysScrolls: Bool, minHeight: CGFloat,
@@ -255,6 +290,23 @@ struct ComposerTextView: UIViewRepresentable {
 /// `UITextView` subclass that hosts a placeholder label (shown when empty).
 final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
+    var isShowingAttachmentInput = false
+    var onTapWhileShowingAttachment: (() -> Void)?
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleAttachmentTap))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    @objc private func handleAttachmentTap() {
+        if isShowingAttachmentInput { onTapWhileShowingAttachment?() }
+    }
     var onWidthChanged: (() -> Void)?
     private var lastLaidOutWidth: CGFloat = 0
 
@@ -270,4 +322,55 @@ final class ComposerUITextView: UITextView {
                                         size: CGSize(width: bounds.width - origin.x * 2,
                                                      height: placeholderLabel.font.lineHeight))
     }
+}
+
+/// UIKit attachment input view: replaces the software keyboard rather than
+/// occupying a second SwiftUI sheet or resizing the transcript twice.
+private final class FerryAttachmentInputView: UIInputView {
+    var onFile: (() -> Void)?
+    var onCamera: (() -> Void)?
+
+    init() {
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 256),
+                   inputViewStyle: .keyboard)
+        backgroundColor = .secondarySystemBackground
+        heightAnchor.constraint(equalToConstant: 256).isActive = true
+
+        let file = makeButton("文件", symbol: "folder", action: #selector(openFile))
+        let camera = makeButton("拍摄", symbol: "camera", action: #selector(openCamera))
+        let row = UIStackView(arrangedSubviews: [file, camera])
+        row.axis = .horizontal
+        row.spacing = 16
+        row.distribution = .fillEqually
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 18),
+            row.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 20),
+            row.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -20),
+            row.heightAnchor.constraint(equalToConstant: 110)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func makeButton(_ title: String, symbol: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.gray()
+        config.title = title
+        config.image = UIImage(systemName: symbol)
+        config.imagePlacement = .top
+        config.imagePadding = 12
+        config.baseForegroundColor = .label
+        config.background.backgroundColor = .tertiarySystemBackground
+        config.cornerStyle = .large
+        button.configuration = config
+        button.addTarget(self, action: action, for: .touchUpInside)
+        button.accessibilityIdentifier = title == "文件"
+            ? "composer-attachment-file" : "composer-attachment-camera"
+        return button
+    }
+
+    @objc private func openFile() { onFile?() }
+    @objc private func openCamera() { onCamera?() }
 }
