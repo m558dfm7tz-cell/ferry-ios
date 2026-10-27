@@ -81,8 +81,8 @@ struct TimelineView: View {
                 transcriptView
                 VStack(spacing: 0) {
                     AssistantBarView(assistants: model.assistantStore.assistants,
-                                     transferMode: model.routeIsolationEnabled,
                                      allowCustomHide: model.routeIsolationEnabled,
+                                     transferMode: model.routeIsolationEnabled,
                                      showUnclassifiedHistory: model.hasUnclassifiedHistory,
                                      selectedID: $model.selectedAssistantID,
                                      unreadIDs: model.unreadAssistantIDs,
