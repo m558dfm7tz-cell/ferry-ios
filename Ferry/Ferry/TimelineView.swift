@@ -60,16 +60,6 @@ struct TimelineView: View {
         let nonce = UUID()
     }
 
-    /// Room the floating avatar bar — and, when it is showing, the pinned
-    /// 待查看 row underneath it — takes at the top of the transcript. A message
-    /// jumped to from the calendar or from search reserves exactly this much
-    /// above itself so it stops *below* the bar instead of behind it.
-    private var jumpTopInset: CGFloat {
-        AssistantBarMetrics.height
-            + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0)
-            + 12
-    }
-
     private enum SelectionAlert: String, Identifiable {
         case delete, clearAll
         var id: String { rawValue }
@@ -360,6 +350,11 @@ struct TimelineView: View {
                 }
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting {
+                        // A real user drag takes precedence over a timed jump.
+                        if jumpHoldingID != nil {
+                            jumpTask?.cancel()
+                            jumpHoldingID = nil
+                        }
                         transcriptUserDragging = true
                         isFollowingTail = false
                         if keyboardVisible { keyboardWasAtBottom = false }
@@ -605,7 +600,17 @@ struct TimelineView: View {
     }
 
     private func followPendingMediaLoad() {
-        guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
+        // Lazy image/video sizes may resolve after date/search scrollTo().
+        // Re-anchor the jumped row rather than drifting into another message.
+        if let id = jumpHoldingID, !transcriptUserDragging {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard jumpHoldingID == id, !transcriptUserDragging else { return }
+                pendingScroll = PendingScroll(id: id, anchor: .center)
+            }
+            return
+        }
+        guard isFollowingTail, !transcriptUserDragging else { return }
         // LazyVStack remeasures an image on the next layout pass. Following
         // every media load (not only the first) fixes consecutive photo sends.
         Task { @MainActor in
@@ -630,15 +635,8 @@ struct TimelineView: View {
         }
     }
 
-    /// Scroll a message jumped to from the calendar or from search to just
-    /// below the floating avatar bar, then flash it.
-    ///
-    /// Why the gap: `scrollTo(_:anchor: .top)` aligns the row with the top of
-    /// the scroll view's *visible* area, which is exactly where the floating
-    /// avatar bar (and the pinned 待查看 row) sits — the row used to land
-    /// behind them. Reserving `jumpTopInset` above that one row makes the same
-    /// `.top` anchor leave the row below the bar. The gap stays until the next
-    /// jump (or a filter change) so the transcript never jumps afterwards.
+    /// Place a date/search target in the middle of the viewport, not under
+    /// the floating avatar row. Keep it anchored while its media loads.
     private func jumpToMessage(_ id: String) {
         // A message the active assistant filter hides would silently scroll
         // nowhere (search happily finds messages of every assistant), so move
@@ -664,14 +662,13 @@ struct TimelineView: View {
             // One layout pass for the reserved gap before anchoring to it.
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            pendingScroll = PendingScroll(id: id,
-                anchor: model.visibleMessages.first?.id == id ? .top : .center)
+            pendingScroll = PendingScroll(id: id, anchor: .center)
             // One soft highlight rather than an intrusive repeated yellow flash.
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled, jumpTargetID == id else { return }
-            pendingScroll = PendingScroll(id: id,
-                anchor: model.visibleMessages.first?.id == id ? .top : .center)
-            try? await Task.sleep(for: .milliseconds(400))
+            pendingScroll = PendingScroll(id: id, anchor: .center)
+            try? await Task.sleep(for: .milliseconds(1250))
+            guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }
             if jumpHoldingID == id { jumpHoldingID = nil }
         }
