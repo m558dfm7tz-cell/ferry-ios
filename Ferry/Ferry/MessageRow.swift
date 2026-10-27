@@ -290,9 +290,9 @@ struct MessageRow: View {
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
         Button {
             if !selectionMode {
-                // Open the tapped image, not the gallery grid.
-                previewItem = MessagePreview(kind: .image, name: file.name,
-                                             mediaType: file.mediaType, image: decoded)
+                // The same original SwiftUI Button now opens the tapped
+                // media directly in this chat's horizontal pager.
+                onOpenGallery()
             }
         } label: {
             Image(uiImage: decoded)
@@ -308,7 +308,7 @@ struct MessageRow: View {
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
         Button {
-            openFile()
+            if !selectionMode { onOpenGallery() }
         } label: {
             ZStack {
                 if let thumbnail {
