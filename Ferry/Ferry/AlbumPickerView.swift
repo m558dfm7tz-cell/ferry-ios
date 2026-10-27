@@ -928,6 +928,15 @@ private struct AlbumPreviewView: View {
         .scrollIndicators(.hidden)
     }
 
+    // The photo picker fills the screen and hides the status bar; use
+    // the key window inset rather than the ignored SwiftUI safe area.
+    private var previewSystemInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 44
+    }
+
     private var topBar: some View {
         HStack(spacing: 0) {
             Button { onClose() } label: {
@@ -949,7 +958,7 @@ private struct AlbumPreviewView: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.top, 4)
+        .padding(.top, max(12, previewSystemInset + 8))
         .background(
             LinearGradient(colors: [Color.black.opacity(0.6), Color.clear],
                            startPoint: .top, endPoint: .bottom)
