@@ -293,15 +293,19 @@ struct MessageRow: View {
             .frame(maxWidth: 240, maxHeight: 320)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            // Attach the short tap directly to the visual media surface, not
-            // a Button wrapped by SwiftUI's context-menu interaction host.
-            .onTapGesture {
+            // Treat the visual thumbnail as ONE tappable accessibility item;
+            // a context menu must not cause nested SF Symbols to inherit its ID.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .contextMenu { mediaMenu }
+            // A plain onTapGesture below contextMenu was losing the short
+            // touch to the context-menu/scroll recognizers on device. Prefer
+            // this short tap while preserving the long-press menu.
+            .highPriorityGesture(TapGesture().onEnded {
                 guard !selectionMode else { return }
                 onOpenGallery()
-            }
-            .accessibilityAddTraits(.isButton)
+            })
             .accessibilityIdentifier("bubble.image")
-            .contextMenu { mediaMenu }
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
@@ -331,13 +335,14 @@ struct MessageRow: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onTapGesture {
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .contextMenu { mediaMenu }
+        .highPriorityGesture(TapGesture().onEnded {
             guard !selectionMode else { return }
             onOpenGallery()
-        }
-        .accessibilityAddTraits(.isButton)
+        })
         .accessibilityIdentifier("bubble.video")
-        .contextMenu { mediaMenu }
     }
 
     private func openFile() {
