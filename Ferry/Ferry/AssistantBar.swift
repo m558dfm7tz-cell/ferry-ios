@@ -92,6 +92,8 @@ final class AssistantStore {
                   matchKeywords: ["情报员"]),
         Assistant(id: "muse", name: "muse联络员", avatarText: "M", colorIndex: 1, isBuiltIn: true,
                   matchKeywords: ["muse"]),
+        Assistant(id: "helper", name: "助理", avatarText: "助", colorIndex: 2, isBuiltIn: true,
+                  matchKeywords: ["FerryHelper", "助理"]),
     ]
 
     init(defaults: UserDefaults = .standard) {
@@ -162,7 +164,12 @@ final class AssistantStore {
     func assistant(named name: String) -> Assistant? {
         let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return nil }
-        return assistants.first { $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame }
+        return assistants.first {
+            $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame ||
+            ($0.id == "helper" && $0.matchKeywords.contains {
+                $0.localizedCaseInsensitiveCompare(target) == .orderedSame
+            })
+        }
     }
 
     func matchingAssistant(senderName: String) -> Assistant? {
