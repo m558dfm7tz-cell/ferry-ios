@@ -38,6 +38,9 @@ struct ComposerTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> ComposerUITextView {
         let textView = ComposerUITextView()
         textView.delegate = context.coordinator
+        // The system's UITextView selection recognizers may otherwise prevent
+        // our tap from firing when the custom attachment inputView is active.
+        textView.attachmentTapGesture.delegate = context.coordinator
         textView.isEditable = true
         textView.isSelectable = true
         textView.font = UIFont.preferredFont(forTextStyle: .body)
@@ -131,7 +134,14 @@ struct ComposerTextView: UIViewRepresentable {
         context.coordinator.applyFocus(isFocused.wrappedValue, to: textView)
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            // Allow the composer tap to coexist with UITextView's selection
+            // gestures. It does not cancel text selection or scroll handling.
+            true
+        }
+
         private var text: Binding<String>
         private var height: Binding<CGFloat>
         private let isFocused: Binding<Bool>
@@ -320,11 +330,15 @@ final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
     var isShowingAttachmentInput = false
     var onTapWhileShowingAttachment: (() -> Void)?
+    private(set) var attachmentTapGesture: UITapGestureRecognizer!
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleAttachmentTap))
         tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        attachmentTapGesture = tap
         addGestureRecognizer(tap)
     }
 
@@ -334,11 +348,17 @@ final class ComposerUITextView: UITextView {
 
     @objc private func handleAttachmentTap() {
         if isShowingAttachmentInput {
+            // Switch UIKit's actual inputView synchronously, *before* publishing
+            // SwiftUI state. Merely setting the Binding can leave the old
+            // attachment keyboard visible for the entire next layout pass.
+            isShowingAttachmentInput = false
+            inputView = nil
+            if !isFirstResponder { becomeFirstResponder() }
+            reloadInputViews()
             onTapWhileShowingAttachment?()
+        } else if !isFirstResponder {
+            becomeFirstResponder()
         }
-        // Keep the native responder even when the scroll/keyboard gesture
-        // recognizers compete for a tap on the empty composer.
-        if !isFirstResponder { becomeFirstResponder() }
     }
     var onWidthChanged: (() -> Void)?
     private var lastLaidOutWidth: CGFloat = 0

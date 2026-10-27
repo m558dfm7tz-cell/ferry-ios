@@ -292,20 +292,16 @@ struct MessageRow: View {
             .resizable().scaledToFit()
             .frame(maxWidth: 240, maxHeight: 320)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            // Treat the visual thumbnail as ONE tappable accessibility item;
-            // a context menu must not cause nested SF Symbols to inherit its ID.
-            .accessibilityElement(children: .ignore)
-            .accessibilityAddTraits(.isButton)
-            .contextMenu { mediaMenu }
-            // A plain onTapGesture below contextMenu was losing the short
-            // touch to the context-menu/scroll recognizers on device. Prefer
-            // this short tap while preserving the long-press menu.
-            .highPriorityGesture(TapGesture().onEnded {
-                guard !selectionMode else { return }
-                onOpenGallery()
-            })
-            .accessibilityIdentifier("bubble.image")
+            .overlay {
+                // Use a native UIButton for the short tap. The previous SwiftUI
+                // TapGesture was lost inside the scroll/context-menu hierarchy.
+                // Keep the existing SwiftUI long-press actions on this target.
+                MediaTapButton(identifier: "bubble.image", label: "预览图片") {
+                    guard !selectionMode else { return }
+                    onOpenGallery()
+                }
+                .contextMenu { mediaMenu }
+            }
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
@@ -320,6 +316,7 @@ struct MessageRow: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.white.opacity(0.9))
                 .shadow(radius: 4)
+                .accessibilityHidden(true)
         }
         .frame(width: 220, height: 150)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -332,17 +329,16 @@ struct MessageRow: View {
                     .background(Color.black.opacity(0.6),
                                 in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                     .padding(6)
+                    .accessibilityHidden(true)
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
-        .contextMenu { mediaMenu }
-        .highPriorityGesture(TapGesture().onEnded {
-            guard !selectionMode else { return }
-            onOpenGallery()
-        })
-        .accessibilityIdentifier("bubble.video")
+        .overlay {
+            MediaTapButton(identifier: "bubble.video", label: "预览视频") {
+                guard !selectionMode else { return }
+                onOpenGallery()
+            }
+            .contextMenu { mediaMenu }
+        }
     }
 
     private func openFile() {
@@ -655,5 +651,41 @@ private struct LinkedText: View {
             result[lower..<upper].underlineStyle = .single
         }
         return result
+    }
+}
+
+
+// Native touch target shared by image and video bubbles. A real UIControl
+// receives touchUpInside even when the containing SwiftUI ScrollView installs
+// a scroll gesture. The context menu stays attached to the SwiftUI wrapper,
+// so a long press still exposes 保存 / 分享 / 复制临时下载链接 / 收藏.
+private struct MediaTapButton: UIViewRepresentable {
+    let identifier: String
+    let label: String
+    let onTap: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .custom)
+        button.backgroundColor = .clear
+        button.isAccessibilityElement = true
+        button.accessibilityIdentifier = identifier
+        button.accessibilityLabel = label
+        button.addTarget(context.coordinator, action: #selector(Coordinator.didTap(_:)), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        context.coordinator.onTap = onTap
+        button.accessibilityIdentifier = identifier
+        button.accessibilityLabel = label
+    }
+
+    final class Coordinator: NSObject {
+        var onTap: () -> Void
+        init(onTap: @escaping () -> Void) { self.onTap = onTap }
+
+        @objc func didTap(_ sender: UIButton) { onTap() }
     }
 }
