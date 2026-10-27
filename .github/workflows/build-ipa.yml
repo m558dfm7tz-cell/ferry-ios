@@ -3,7 +3,7 @@ name: Build IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'fix/ios-ui-media-20261027']
 
 permissions:
   contents: read
