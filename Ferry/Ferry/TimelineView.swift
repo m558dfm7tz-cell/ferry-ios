@@ -298,8 +298,15 @@ struct TimelineView: View {
                     // showing, the pinned 待查看 row underneath it.
                     .padding(.top, 20 + AssistantBarMetrics.height
                              + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
-                    .contentShape(Rectangle())
-                    .onTapGesture { dismissKeyboard() }
+                    // Only a tap on *empty transcript background* dismisses the
+                    // keyboard. A gesture attached to the whole message stack
+                    // competes with its child buttons (media bubbles) and the
+                    // composer inset. Keep native controls as the hit targets.
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { dismissKeyboard() }
+                    }
                 }
                 let messageObserved = baseTranscript
                     .defaultScrollAnchor(.bottom)
