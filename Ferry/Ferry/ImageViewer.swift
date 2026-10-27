@@ -246,7 +246,10 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === dismissPan {
             // Drag-dismiss is disabled while zoomed so pinch/pan keeps working.
-            return scrollView.zoomScale <= 1.01
+            guard scrollView.zoomScale <= 1.01 else { return false }
+            let velocity = dismissPan.velocity(in: self)
+            // Let the gallery handle left/right paging; dismiss vertically only.
+            return abs(velocity.y) > abs(velocity.x) * 1.25
         }
         return true
     }

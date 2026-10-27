@@ -118,7 +118,7 @@ struct MessageRow: View {
                 // Jump-to-message flash: pulses between a faint and a bright
                 // wash a few times, then fades out (driven by `highlightOn`).
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.yellow.opacity(highlightOn ? 0.42 : 0.10))
+                    .fill(Color.accentColor.opacity(highlightOn ? 0.18 : 0.03))
                     .animation(.easeInOut(duration: 0.2), value: highlightOn)
             }
         }
@@ -282,8 +282,8 @@ struct MessageRow: View {
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
         Button {
             if !selectionMode {
-                previewItem = MessagePreview(kind: .image, name: file.name,
-                                             mediaType: file.mediaType, image: decoded)
+                // One carousel for chat images; no per-row preview on top.
+                onOpenGallery()
             }
         } label: {
             Image(uiImage: decoded)

@@ -11,10 +11,29 @@ struct MediaGalleryView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
+    @State private var consumedInitialSelection = false
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 3)]
 
     var body: some View {
+        Group {
+            if let selectedMessage {
+                MediaPagerView(messages: model.mediaMessages, startID: selectedMessage.id,
+                               model: model, onReturnToGrid: { self.selectedMessage = nil })
+            } else {
+                mediaGrid
+            }
+        }
+        .onAppear {
+            guard !consumedInitialSelection else { return }
+            consumedInitialSelection = true
+            guard let id = initialMessageID,
+                  let message = model.mediaMessages.first(where: { $0.id == id }) else { return }
+            selectedMessage = message
+        }
+    }
+
+    private var mediaGrid: some View {
         NavigationStack {
             ScrollView {
                 if model.mediaMessages.isEmpty {
@@ -35,14 +54,6 @@ struct MediaGalleryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() } }
             }
-        }
-        .onAppear {
-            guard let id = initialMessageID,
-                  let message = model.mediaMessages.first(where: { $0.id == id }) else { return }
-            selectedMessage = message
-        }
-        .fullScreenCover(item: $selectedMessage) { message in
-            MediaPagerView(messages: model.mediaMessages, startID: message.id, model: model)
         }
     }
 
@@ -104,6 +115,7 @@ struct MediaGalleryView: View {
 private struct MediaPagerView: View {
     let messages: [MessagePayload]
     let model: AppModel
+    let onReturnToGrid: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
@@ -111,9 +123,11 @@ private struct MediaPagerView: View {
     @State private var showToast = false
     @State private var toastText = ""
 
-    init(messages: [MessagePayload], startID: String, model: AppModel) {
+    init(messages: [MessagePayload], startID: String, model: AppModel,
+         onReturnToGrid: @escaping () -> Void) {
         self.messages = messages
         self.model = model
+        self.onReturnToGrid = onReturnToGrid
         _currentIndex = State(initialValue: messages.firstIndex(where: { $0.id == startID }) ?? 0)
     }
 
@@ -130,7 +144,7 @@ private struct MediaPagerView: View {
             .ignoresSafeArea()
         }
         .overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
+            Button { onReturnToGrid() } label: {
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 44, height: 44)
@@ -185,7 +199,7 @@ private struct MediaPagerView: View {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
                             load: { await model.fileData(for: message) },
-                            onOpenGallery: { dismiss() },
+                            onOpenGallery: onReturnToGrid,
                             onEditFinished: { edited in sendEdited(edited, originalName: name) })
             } else {
                 Color.black.overlay { ProgressView() }

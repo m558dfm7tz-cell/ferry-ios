@@ -34,6 +34,9 @@ struct TimelineView: View {
     /// overlapping re-anchors on top of each other.
     @State private var keyboardFollowTask: Task<Void, Never>?
     @State private var jumpTask: Task<Void, Never>?
+    @State private var keyboardVisible = false
+    @State private var keyboardWasAtBottom = false
+    @State private var followMediaMessageID: String?
 
     private static let bottomAnchorID = "timeline-bottom"
 
@@ -41,6 +44,8 @@ struct TimelineView: View {
     /// visible above the composer (see `followKeyboard(_:)`).
     private let keyboardWillShowPublisher = NotificationCenter.default
         .publisher(for: UIResponder.keyboardWillShowNotification)
+    private let keyboardWillHidePublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardWillHideNotification)
 
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
@@ -125,7 +130,9 @@ struct TimelineView: View {
                                     // the row a jump landed on, so anchoring
                                     // the row to the top of the scroll view
                                     // leaves it just below the bar.
-                                    .padding(.top, message.id == jumpTargetID ? jumpTopInset : 0)
+                                    .padding(.top, message.id == jumpTargetID &&
+                                                     message.id != model.visibleMessages.first?.id
+                                             ? jumpTopInset : 0)
                                     .contentShape(Rectangle())
                                     .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
@@ -166,8 +173,15 @@ struct TimelineView: View {
                         return
                     }
                     if atBottom {
+                        // Media loads asynchronously and changes cell heights,
+                        // so remember the intent to follow that new message.
+                        if let message = model.visibleMessages.last, let file = message.file,
+                           PreviewRouter.isImage(file) || PreviewRouter.isVideo(file) {
+                            followMediaMessageID = message.id
+                        }
                         scrollToBottomAnchor()
                     } else {
+                        followMediaMessageID = nil
                         withAnimation { showNewPill = true }
                     }
                 }
@@ -177,6 +191,12 @@ struct TimelineView: View {
                 }
                 .onChange(of: model.scrollToBottomToken) { _, _ in
                     scrollToBottomAnchor()
+                }
+                .onChange(of: model.images.count) { _, _ in
+                    followPendingMediaLoad()
+                }
+                .onChange(of: model.videoThumbnails.count) { _, _ in
+                    followPendingMediaLoad()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     // Background/resume must not reset a user reading older messages.
@@ -201,12 +221,21 @@ struct TimelineView: View {
                     // top, spawning a load task each time.
                     if state.nearTop, !old.nearTop { onReachTop() }
                 }
+                .onScrollPhaseChange { _, phase in
+                    if phase == .interacting {
+                        followMediaMessageID = nil
+                        if keyboardVisible { keyboardWasAtBottom = false }
+                    }
+                }
                 .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden)
                 .background(Color.chatBackground.ignoresSafeArea())
                 // Keyboard follow: see followKeyboard(_:) for the root cause.
                 .onReceive(keyboardWillShowPublisher) { note in
                     followKeyboard(note)
+                }
+                .onReceive(keyboardWillHidePublisher) { note in
+                    restoreAfterKeyboard(note)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if !atBottom {
@@ -278,7 +307,7 @@ struct TimelineView: View {
                     }
             }
         }
-        .sheet(isPresented: $showMediaGallery) {
+        .fullScreenCover(isPresented: $showMediaGallery) {
             MediaGalleryView(model: model, initialMessageID: galleryInitialID)
         }
         .sheet(isPresented: $showNewAssistant) {
@@ -421,7 +450,9 @@ struct TimelineView: View {
     /// lands right above the composer. Someone reading older history is left
     /// where they are.
     private func followKeyboard(_ note: Notification) {
-        guard atBottom else { return }
+        if !keyboardVisible { keyboardWasAtBottom = atBottom }
+        keyboardVisible = true
+        guard keyboardWasAtBottom else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         keyboardFollowTask?.cancel()
         keyboardFollowTask = Task { @MainActor in
@@ -431,6 +462,22 @@ struct TimelineView: View {
             // itself 120ms later to catch LazyVStack height changes; during the
             // keyboard animation that second scroll lands while the new layout
             // is still settling and was the main source of the dropped frames.
+            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+        }
+    }
+
+    /// A keyboard shrink changes viewport height again; restore the bottom only
+    /// if it was being followed before the keyboard appeared.
+    private func restoreAfterKeyboard(_ note: Notification) {
+        let shouldFollow = keyboardWasAtBottom
+        keyboardVisible = false
+        keyboardWasAtBottom = false
+        keyboardFollowTask?.cancel()
+        guard shouldFollow else { return }
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
+        keyboardFollowTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(max(duration, 0.1)))
+            guard !Task.isCancelled else { return }
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -483,10 +530,16 @@ struct TimelineView: View {
 
     private func scrollToBottomAnchor() {
         pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
-        // Repeat once after layout settles: LazyVStack heights change as
-        // image/thumbnail cells load, which can shift the true bottom.
+        // Do not schedule a second scroll: it used to arrive after another
+        // navigation/keyboard gesture and cause the visible bounce.
+    }
+
+    private func followPendingMediaLoad() {
+        guard let id = followMediaMessageID,
+              model.visibleMessages.last?.id == id else { return }
+        followMediaMessageID = nil
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(for: .milliseconds(80))
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -534,15 +587,12 @@ struct TimelineView: View {
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
             pendingScroll = PendingScroll(id: id, anchor: .top)
-            // Flash: three pulses, then fade out.
-            for _ in 0..<3 {
-                try? await Task.sleep(for: .milliseconds(200))
-                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = false }
-                try? await Task.sleep(for: .milliseconds(200))
-                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = true }
-            }
-            try? await Task.sleep(for: .milliseconds(200))
-            withAnimation(.easeOut(duration: 0.45)) { highlightOn = false }
+            // One soft highlight rather than an intrusive repeated yellow flash.
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, jumpTargetID == id else { return }
+            pendingScroll = PendingScroll(id: id, anchor: .top)
+            try? await Task.sleep(for: .milliseconds(400))
+            withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }
         }
     }
 
