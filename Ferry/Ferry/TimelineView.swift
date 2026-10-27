@@ -11,6 +11,7 @@ struct TimelineView: View {
     @State private var showSearch = false
     @State private var showDeviceManagement = false
     @State private var mediaPresentation: MediaPresentation? = nil
+    @State private var mediaTapProbe = "idle"
     @State private var showNewAssistant = false
     @State private var showReviewList = false
     private struct MediaPresentation: Identifiable {
@@ -218,6 +219,15 @@ struct TimelineView: View {
             }
         }
         .animation(.easeInOut(duration: 0.28), value: showAlbumPicker)
+        .overlay(alignment: .bottomLeading) {
+            // DEBUG ONLY: temporary, non-hittable accessibility event trace.
+            Text("FERRY_TRACE " + mediaTapProbe)
+                .font(.system(size: 2))
+                .frame(width: 110, height: 4)
+                .opacity(0.05)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("ferry-nav-trace")
+        }
         // Keep the chat media pager in the same view tree as the transcript.
         // This avoids a second UIKit fullScreenCover coordinator swallowing the
         // original bubble tap and allows the chat to emerge during drag-dismiss.
@@ -226,6 +236,7 @@ struct TimelineView: View {
                 MediaGalleryView(model: model,
                                  initialMessageID: presentation.initialMessageID,
                                  onDismiss: {
+                                     mediaTapProbe = "closed"
                                      withAnimation(.easeOut(duration: 0.18)) {
                                          mediaPresentation = nil
                                      }
@@ -281,7 +292,10 @@ struct TimelineView: View {
                                            isFavorite: model.localStore.isFavorite(message.id),
                                            onToggleFavorite: { await model.toggleFavorite(message) },
                                            copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
-                                           onOpenGallery: { openMediaGallery(message.id) },
+                                           onOpenGallery: {
+                                                mediaTapProbe = "messageAction:" + message.id
+                                                openMediaGallery(message.id)
+                                            },
                                            onSendEditedImage: { image in sendEditedImage(image, sourceMessage: message) },
                                            selectionMode: selectionMode,
                                            isSelected: selectedIDs.contains(message.id),
@@ -528,6 +542,7 @@ struct TimelineView: View {
     }
 
     private func openMediaGallery(_ messageID: String) {
+        mediaTapProbe = "opening:" + messageID + ":count:" + String(model.mediaMessages.count)
         withAnimation(.easeOut(duration: 0.18)) {
             mediaPresentation = MediaPresentation(initialMessageID: messageID)
         }

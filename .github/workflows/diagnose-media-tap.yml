@@ -1,0 +1,31 @@
+name: Diagnose Media Tap (single UI test)
+
+on:
+  push:
+    branches:
+      - diag/ios-media-tap-event-20261028
+
+permissions:
+  contents: read
+
+jobs:
+  media-tap-test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
+      - name: Test only media tap (no IPA archive)
+        run: |
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -only-testing:FerryUITests/FerryUITests/testChatBubbleOpensPagerWithTopRightMediaGrid \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO

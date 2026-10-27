@@ -46,6 +46,10 @@ final class FerryUITests: XCTestCase {
         let imageBubble = app.descendants(matching: .any)["bubble.image"].firstMatch
         XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
         tap(imageBubble)
+        let touch = app.buttons["bubble.image"].firstMatch
+        print("FERRY_PROBE_NATIVE_VALUE " + String(describing: touch.value))
+        let nav = app.staticTexts["ferry-nav-trace"].firstMatch
+        print("FERRY_PROBE_NAV " + (nav.exists ? nav.label : "not visible"))
         print("FERRY_DIAG_PAGER_AFTER_TAP\n\(app.debugDescription)")
         let grid = app.buttons["viewer-open-gallery"].firstMatch
         XCTAssertTrue(grid.waitForExistence(timeout: 8),

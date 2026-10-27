@@ -672,6 +672,10 @@ private struct MediaTapButton: UIViewRepresentable {
         button.isAccessibilityElement = true
         button.accessibilityIdentifier = identifier
         button.accessibilityLabel = label
+        button.accessibilityValue = "armed"
+        button.addTarget(context.coordinator, action: #selector(Coordinator.didDown(_:)), for: .touchDown)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.didCancel(_:)), for: .touchCancel)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.didOutside(_:)), for: .touchUpOutside)
         button.addTarget(context.coordinator, action: #selector(Coordinator.didTap(_:)), for: .touchUpInside)
         return button
     }
@@ -686,6 +690,18 @@ private struct MediaTapButton: UIViewRepresentable {
         var onTap: () -> Void
         init(onTap: @escaping () -> Void) { self.onTap = onTap }
 
-        @objc func didTap(_ sender: UIButton) { onTap() }
+        @objc func didDown(_ sender: UIButton) {
+            sender.accessibilityValue = "touchDown"
+        }
+        @objc func didCancel(_ sender: UIButton) {
+            sender.accessibilityValue = "touchCancel"
+        }
+        @objc func didOutside(_ sender: UIButton) {
+            sender.accessibilityValue = "touchUpOutside"
+        }
+        @objc func didTap(_ sender: UIButton) {
+            sender.accessibilityValue = "touchUpInside"
+            onTap()
+        }
     }
 }
