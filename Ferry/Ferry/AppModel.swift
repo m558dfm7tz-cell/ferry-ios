@@ -376,7 +376,11 @@ final class AppModel {
         guard !body.isEmpty else { return draftText }
         // An explicit leading mention already says where the message should go.
         if body.hasPrefix("@") || body.hasPrefix("＠") { return draftText }
-        return catalog.wakeTag(forAssistantName: assistant.name) + " " + body
+        // Display-only renaming must never alter the Windows helper wake tag.
+        let wakeName = assistant.isBuiltIn
+            ? (AssistantStore.builtIn.first(where: { $0.id == assistant.id })?.name ?? assistant.name)
+            : assistant.name
+        return catalog.wakeTag(forAssistantName: wakeName) + " " + body
     }
 
     /// Send `text` as an ordinary outgoing message; true when the server
@@ -457,11 +461,22 @@ final class AppModel {
     /// while the assistant still resolves, and its custom avatar media is
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
+        if AssistantStore.builtIn.contains(where: { $0.id == id }) {
+            assistantStore.hideBuiltIn(id: id)
+            clearUnread(forAssistant: id)
+            unreadAssistantIDs.remove(id)
+            if selectedAssistantID == id { selectAssistant(nil) }
+            return
+        }
         let name = assistantStore.custom.first(where: { $0.id == id })?.name
         removeAssistantLocally(id: id)
         if let name {
             enqueueDeletion(PendingDeletion(kind: .assistant, name: name))
         }
+    }
+
+    func restoreBuiltInAssistants() {
+        assistantStore.restoreBuiltIns()
     }
 
     /// Remove one assistant's grouping and avatar from this phone (used both by

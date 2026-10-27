@@ -267,7 +267,9 @@ struct TimelineView: View {
                                      onSelect: { model.selectAssistant($0) },
                                      onAdd: { showNewAssistant = true },
                                      onUpdate: { model.assistantStore.update($0) },
-                                     onDelete: { model.deleteAssistant(id: $0) })
+                                     onDelete: { model.deleteAssistant(id: $0) },
+                                     canRestoreBuiltIns: !model.assistantStore.hiddenBuiltInIDs.isEmpty,
+                                     onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
                     if model.showsReviewEntry {
                         ReviewEntryRow(count: model.reviewStore.unseenCount) {
                             showReviewList = true

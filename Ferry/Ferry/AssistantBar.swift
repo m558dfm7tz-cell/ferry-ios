@@ -79,6 +79,12 @@ final class AssistantStore {
     private let defaults: UserDefaults
     private(set) var spaceKey: SpaceKey?
     private static let customKey = "ferry.local.customAssistants"
+    private static let builtInEditsKey = "ferry.local.builtInEdits"
+    private static let hiddenBuiltInsKey = "ferry.local.hiddenBuiltIns"
+    private(set) var builtInEdits: [String: Assistant] = [:]
+    private(set) var hiddenBuiltInIDs: Set<String> = []
+    private var builtInEditsScopedKey: String { Self.builtInEditsKey + "." + (spaceKey?.value ?? "") }
+    private var hiddenBuiltInsScopedKey: String { Self.hiddenBuiltInsKey + "." + (spaceKey?.value ?? "") }
 
     private var scopedKey: String { Self.customKey + "." + (spaceKey?.value ?? "") }
 
@@ -106,6 +112,13 @@ final class AssistantStore {
     func activate(space: SpaceKey) {
         guard space != spaceKey else { return }
         spaceKey = space
+        if let data = defaults.data(forKey: builtInEditsScopedKey),
+           let value = try? JSONDecoder().decode([String: Assistant].self, from: data) {
+            builtInEdits = value
+        } else {
+            builtInEdits = [:]
+        }
+        hiddenBuiltInIDs = Set(defaults.stringArray(forKey: hiddenBuiltInsScopedKey) ?? [])
         if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([Assistant].self, from: data) {
             custom = decoded
@@ -119,8 +132,33 @@ final class AssistantStore {
         }
     }
 
-    /// All assistants: fixed first, then custom.
-    var assistants: [Assistant] { Self.builtIn + custom }
+    /// Built-in identities stay stable even after a display-only rename.
+    /// Hidden entries disappear from the bar; their messages remain in 全部.
+    var assistants: [Assistant] {
+        Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) }.map { base in
+            guard let edited = builtInEdits[base.id] else { return base }
+            return Assistant(id: base.id, name: edited.name, avatarText: edited.avatarText,
+                             colorIndex: edited.colorIndex, isBuiltIn: true,
+                             matchKeywords: Array(Set(base.matchKeywords + [base.name, edited.name])))
+        } + custom
+    }
+
+    func hideBuiltIn(id: String) {
+        guard Self.builtIn.contains(where: { $0.id == id }) else { return }
+        hiddenBuiltInIDs.insert(id)
+        defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+    }
+
+    func restoreBuiltIns() {
+        hiddenBuiltInIDs.removeAll()
+        defaults.removeObject(forKey: hiddenBuiltInsScopedKey)
+    }
+
+    private func persistBuiltInEdits() {
+        if let data = try? JSONEncoder().encode(builtInEdits) {
+            defaults.set(data, forKey: builtInEditsScopedKey)
+        }
+    }
 
     /// Resolve the assistant a message belongs to.
     ///
@@ -164,9 +202,9 @@ final class AssistantStore {
     func assistant(named name: String) -> Assistant? {
         let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return nil }
-        return assistants.first {
-            $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame ||
-            ($0.id == "helper" && $0.matchKeywords.contains {
+        return assistants.first { assistant in
+            assistant.name.localizedCaseInsensitiveCompare(target) == .orderedSame ||
+            (assistant.isBuiltIn && assistant.matchKeywords.contains {
                 $0.localizedCaseInsensitiveCompare(target) == .orderedSame
             })
         }
@@ -190,9 +228,20 @@ final class AssistantStore {
         return assistant
     }
 
-    /// Apply edits made in the long-press menu (name / avatar letter / colour).
-    /// Built-in assistants are ignored — only custom ones can be edited.
+    /// Apply edits to custom assistants or display-only edits to built-ins.
+    /// Built-in sender/wake matching always retains its canonical identity.
     func update(_ assistant: Assistant) {
+        if assistant.isBuiltIn {
+            guard Self.builtIn.contains(where: { $0.id == assistant.id }) else { return }
+            let name = assistant.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            builtInEdits[assistant.id] = Assistant(
+                id: assistant.id, name: name,
+                avatarText: Self.sanitizedAvatarText(assistant.avatarText, fallbackName: name),
+                colorIndex: assistant.colorIndex, isBuiltIn: true, matchKeywords: [])
+            persistBuiltInEdits()
+            return
+        }
         guard !assistant.isBuiltIn,
               let index = custom.firstIndex(where: { $0.id == assistant.id }) else { return }
         let trimmedName = assistant.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -297,6 +346,8 @@ struct AssistantBarView: View {
     let onUpdate: (Assistant) -> Void
     /// Delete a custom assistant (confirmation happens here, before the call).
     let onDelete: (String) -> Void
+    let canRestoreBuiltIns: Bool
+    let onRestoreBuiltIns: () -> Void
 
     @State private var editingAssistant: Assistant?
     @State private var renamingAssistant: Assistant?
@@ -341,7 +392,8 @@ struct AssistantBarView: View {
                                    onCancel: { renamingAssistant = nil })
             }
         }
-        .alert("删除助手", isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
+        .alert(pendingDelete?.isBuiltIn == true ? "隐藏头像" : "删除助手",
+               isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
             Button("删除", role: .destructive) {
                 let id = assistant.id
                 pendingDelete = nil
@@ -349,7 +401,9 @@ struct AssistantBarView: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { assistant in
-            Text("确定删除「\(assistant.name)」吗？只删除这个助手分类，消息不会被删除，会回到“全部”里。")
+            Text(assistant.isBuiltIn
+                 ? "只隐藏「\(assistant.name)」的顶部头像，消息仍保留在“全部”。长按“全部”可恢复。"
+                 : "确定删除「\(assistant.name)」吗？只删除这个助手分类，消息不会被删除，会回到“全部”里。")
         }
     }
 
@@ -386,25 +440,26 @@ struct AssistantBarView: View {
         .accessibilityIdentifier(accessibilityID)
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
         .contextMenu {
+            if assistant == nil && canRestoreBuiltIns {
+                Button("恢复隐藏的头像", systemImage: "arrow.counterclockwise") {
+                    onRestoreBuiltIns()
+                }
+            }
             if let assistant {
                 Button {
                     editingAssistant = assistant
                 } label: {
                     Label("更换头像", systemImage: "photo")
                 }
-                // Only custom assistants can be renamed or deleted; the four
-                // built-in ones keep their existing single-item menu.
-                if !assistant.isBuiltIn {
-                    Button {
-                        renamingAssistant = assistant
-                    } label: {
-                        Label("改名字", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) {
-                        pendingDelete = assistant
-                    } label: {
-                        Label("删除助手", systemImage: "trash")
-                    }
+                Button {
+                    renamingAssistant = assistant
+                } label: {
+                    Label("编辑信息", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    pendingDelete = assistant
+                } label: {
+                    Label(assistant.isBuiltIn ? "隐藏头像" : "删除助手", systemImage: "trash")
                 }
             }
         }
@@ -634,7 +689,9 @@ struct EditAssistantSheet: View {
                 } header: {
                     Text("助手信息")
                 } footer: {
-                    Text("名字同时作为消息归类的匹配关键字。头像图片/视频请用长按菜单里的“更换头像”。")
+                    Text(assistant.isBuiltIn
+                         ? "内置助手改名只影响手机显示，电脑端原有唤醒词与消息归类保持不变。"
+                         : "名字同时作为消息归类的匹配关键字。头像图片/视频请用长按菜单里的“更换头像”。")
                 }
 
                 Section("头像颜色") {
