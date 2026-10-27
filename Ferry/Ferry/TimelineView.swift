@@ -196,9 +196,9 @@ struct TimelineView: View {
         } message: { alert in
             switch alert {
             case .delete:
-                Text("确定从本机删除选中的 \(selectedIDs.count) 条消息吗？其他设备仍会保留这些消息。")
+                Text("确定删除选中的 \(selectedIDs.count) 条消息吗？删除会同步到 Ferry 服务端及其他设备；对应原始附件也会被删除。")
             case .clearAll:
-                Text("确定清空本机全部消息吗？此操作仅在本机隐藏，不会删除服务器上的消息。")
+                Text("确定清空 Ferry 服务端全部聊天记录吗？这会影响所有设备，并删除消息关联的原始附件。")
             }
         }
         .overlay {

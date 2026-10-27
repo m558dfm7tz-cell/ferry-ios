@@ -508,8 +508,11 @@ final class AppModel {
             _ = try await client.deleteAllMessages(endpoint: endpoint, token: token)
         case .favorite:
             if let id = item.ids.first {
-                let opAt = Int64(Date().timeIntervalSince1970 * 1000)
-                _ = try await client.deleteFavorite(endpoint: endpoint, token: token, messageID: id, opAt: opAt)
+                // Legacy pre-upgrade outbox entries have no tap timestamp.
+                // Treat them as old, not as newly issued cancels that could
+                // overwrite a more recent favorite created on Windows.
+                _ = try await client.deleteFavorite(endpoint: endpoint, token: token,
+                                                    messageID: id, opAt: 1)
             }
         case .assistant:
             // Read-modify-write so the phone's PUT never clobbers the shared
@@ -1194,12 +1197,9 @@ final class AppModel {
                 removeMessageLocally(id: change.itemID)
             }
         case "favorite":
-            // Never overwrite a locally pending user decision from an older
-            // remote event. The periodic authoritative GET resolves it after
-            // the queued action has been acknowledged by Go.
-            if !favoriteActions.contains(where: { $0.messageID == change.itemID }) {
-                localStore.removeFavorite(change.itemID)
-            }
+            // Change events may have arrived late, after a more recent add.
+            // Fetch the current server snapshot instead of blindly clearing
+            // a star and its offline file using a stale delete notification.
             lastFavoritesFetch = nil
         default:
             break
