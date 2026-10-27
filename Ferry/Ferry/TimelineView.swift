@@ -241,7 +241,7 @@ struct TimelineView: View {
 
     private var transcriptView: some View {
                 ScrollViewReader { proxy in
-                    ScrollView {
+                    let baseTranscript = ScrollView {
                         transcriptContents
                     // Extra top inset so the transcript scrolls *under* the
                     // floating (background-less) assistant bar and shows through
@@ -255,7 +255,8 @@ struct TimelineView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { dismissKeyboard() }
                 }
-                .defaultScrollAnchor(.bottom)
+                let messageObserved = baseTranscript
+                    .defaultScrollAnchor(.bottom)
                 .onChange(of: pendingScroll) { _, request in
                     guard let request else { return }
                     proxy.scrollTo(request.id, anchor: request.anchor)
@@ -293,7 +294,8 @@ struct TimelineView: View {
                 .onChange(of: model.scrollToBottomToken) { _, _ in
                     scrollToBottomAnchor()
                 }
-                .onChange(of: model.images.count) { _, _ in
+                let mediaObserved = messageObserved
+                    .onChange(of: model.images.count) { _, _ in
                     followPendingMediaLoad()
                 }
                 .onChange(of: model.videoThumbnails.count) { _, _ in
@@ -303,7 +305,8 @@ struct TimelineView: View {
                     // Background/resume must not reset a user reading older messages.
                     if phase == .active && atBottom { scrollToBottomAnchor() }
                 }
-                .onScrollGeometryChange(for: ScrollState.self) { geometry in
+                let geometryObserved = mediaObserved
+                    .onScrollGeometryChange(for: ScrollState.self) { geometry in
                     ScrollState(
                         atBottom: geometry.contentOffset.y + geometry.containerSize.height
                             >= geometry.contentSize.height - 120,
@@ -328,7 +331,8 @@ struct TimelineView: View {
                         if keyboardVisible { keyboardWasAtBottom = false }
                     }
                 }
-                .scrollDismissesKeyboard(.interactively)
+                let keyboardAware = geometryObserved
+                    .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden)
                 .background(Color.chatBackground.ignoresSafeArea())
                 // Keyboard follow: see followKeyboard(_:) for the root cause.
@@ -338,7 +342,7 @@ struct TimelineView: View {
                 .onReceive(keyboardWillHidePublisher) { note in
                     restoreAfterKeyboard(note)
                 }
-                .overlay(alignment: .bottomTrailing) {
+                keyboardAware.overlay(alignment: .bottomTrailing) {
                     if !atBottom {
                         Button {
                             scrollToBottom()
