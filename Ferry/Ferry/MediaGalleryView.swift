@@ -47,7 +47,7 @@ struct MediaGalleryView: View {
     }
 
     @ViewBuilder private func cell(for message: MessagePayload) -> some View {
-        if PreviewRouter.isImage(message.file?.mediaType ?? "") {
+        if (message.file.map { PreviewRouter.isImage($0) } ?? false) {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 Image(uiImage: decoded)
                     .resizable().scaledToFill()
@@ -91,7 +91,7 @@ struct MediaGalleryView: View {
             .frame(width: 104, height: 104)
             .overlay { ProgressView() }
             .task {
-                if PreviewRouter.isImage(message.file?.mediaType ?? "") {
+                if (message.file.map { PreviewRouter.isImage($0) } ?? false) {
                     await model.loadImage(for: message)
                 } else {
                     await model.loadVideoThumbnail(for: message)
@@ -181,7 +181,7 @@ private struct MediaPagerView: View {
     @ViewBuilder private func page(for message: MessagePayload) -> some View {
         let mediaType = message.file?.mediaType ?? ""
         let name = message.file?.name ?? ""
-        if PreviewRouter.isImage(mediaType) {
+        if PreviewRouter.isImage(mediaType, name: name) {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
                             load: { await model.fileData(for: message) },
