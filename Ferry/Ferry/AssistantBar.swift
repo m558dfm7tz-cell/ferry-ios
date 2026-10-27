@@ -101,8 +101,9 @@ final class AssistantStore {
                   matchKeywords: ["情报员"]),
         Assistant(id: "muse", name: "muse联络员", avatarText: "M", colorIndex: 1, isBuiltIn: true,
                   matchKeywords: ["muse"]),
-        Assistant(id: "helper", name: "助理", avatarText: "助", colorIndex: 2, isBuiltIn: true,
-                  matchKeywords: ["FerryHelper", "助理"]),
+        Assistant(id: "helper", name: "助手", avatarText: "助", colorIndex: 2, isBuiltIn: true,
+                  // Old phone-only names remain non-visible aliases for history.
+                  matchKeywords: ["助手", "FerryHelper", "助理"]),
     ]
 
     init(defaults: UserDefaults = .standard) {
@@ -120,6 +121,14 @@ final class AssistantStore {
             builtInEdits = value
         } else {
             builtInEdits = [:]
+        }
+        // Migrate the old helper display name without resetting avatar media
+        // or any messages. The stable local identity remains "helper".
+        if let previous = builtInEdits["helper"], previous.name == "助理" {
+            builtInEdits["helper"] = Assistant(id: "helper", name: "助手",
+                 avatarText: previous.avatarText, colorIndex: previous.colorIndex,
+                 isBuiltIn: true, matchKeywords: [])
+            persistBuiltInEdits()
         }
         hiddenBuiltInIDs = Set(defaults.stringArray(forKey: hiddenBuiltInsScopedKey) ?? [])
         deletedBuiltInIDs = Set(defaults.stringArray(forKey: deletedBuiltInsScopedKey) ?? [])
@@ -194,7 +203,15 @@ final class AssistantStore {
     /// Own messages without a tag stay unattributed: they keep the plain
     /// right-aligned layout and are only listed under 全部.
     func assistant(for message: MessagePayload) -> Assistant? {
-        guard message.isCurrentDevice else { return matchingAssistant(senderName: message.senderName) }
+        // The Go server and FerryHelper use an explicit assistant identity.
+        // Prefer it over sender device-name heuristics so Windows responses
+        // addressed to 助手 display in the dedicated conversation.
+        if let name = message.assistant, let exact = assistant(named: name) {
+            return exact
+        }
+        guard message.isCurrentDevice else {
+            return matchingAssistant(senderName: message.senderName)
+        }
         return mentionedAssistant(inMessage: message)
     }
 

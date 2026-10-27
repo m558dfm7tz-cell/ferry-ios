@@ -50,9 +50,11 @@ struct MessagePayload: Codable, Equatable, Identifiable, Sendable {
     let createdAt: String
     let text: String?
     let file: FileInfo?
+    // Present in newer Go responses; missing on older servers/messages.
+    var assistant: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, sequence, kind, text, file
+        case id, sequence, kind, text, file, assistant
         case senderName = "sender_name"
         case senderKind = "sender_kind"
         case isCurrentDevice = "is_current_device"

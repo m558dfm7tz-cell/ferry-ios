@@ -543,7 +543,7 @@ final class AppModel {
     /// server host. Silently no-ops when there is no endpoint yet (and never
     /// fetches in `-uiTestMock` mode because the endpoint is nil there).
     func refreshCommandCatalog() {
-        catalog.refresh(host: endpoint?.baseURL.host)
+        catalog.refresh(endpoint: endpoint, token: token)
     }
 
     /// Disk cache is separated by Ferry space so identical message IDs from

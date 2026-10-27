@@ -116,8 +116,8 @@ struct TimelineView: View {
                     SelectionBar(onClearAll: { selectionAlert = .clearAll })
                 } else {
                     ComposerView(model: model, focused: $composerFocused,
-                                 showPlus: $showAttachmentPanel,
-                                 showImagePicker: $showAlbumPicker)
+                                 showImagePicker: $showAlbumPicker,
+                                 showPlus: $showAttachmentPanel)
                 }
             }
             .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))

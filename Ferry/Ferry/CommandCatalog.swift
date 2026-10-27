@@ -259,17 +259,24 @@ struct LocalCommandCatalogProvider: CommandCatalogProvider {
             .appendingPathComponent("command-catalog.json")
     }
 
-    /// Built-in default catalog (fallback when no cache and the remote is
-    /// unreachable). FerryHelper's real list overrides this once fetched.
+    /// Offline fallback mirrors actual FerryHelper CommandRegistry
+    /// rather than offering non-existent translation/OCR/summary commands.
     static let builtIn: [MentionTarget] = [
         MentionTarget(id: "desktop", title: "电脑", alias: "电脑", aliases: ["PC", "desktop"],
                       subtitle: "唤醒电脑", insertText: "@电脑 ", icon: "desktopcomputer"),
-        MentionTarget(id: "helper", title: "助手", alias: "FerryHelper", icon: "sparkles", commands: [
-            CommandItem(id: "translate", title: "翻译", insertText: "/翻译 ", subtitle: "翻译文本", icon: "character.book.closed", aliases: ["translate"]),
-            CommandItem(id: "ocr", title: "识别文字", insertText: "/识别文字 ", subtitle: "识别图片文字", icon: "text.viewfinder", aliases: ["OCR"]),
-            CommandItem(id: "summary", title: "总结", insertText: "/总结 ", subtitle: "总结内容", icon: "doc.text", aliases: ["摘要"]),
-            CommandItem(id: "search", title: "搜索", insertText: "/搜索 ", subtitle: "搜索信息", icon: "magnifyingglass", aliases: ["search"]),
-            CommandItem(id: "remind", title: "提醒", insertText: "/提醒 ", subtitle: "设置提醒", icon: "bell", aliases: ["remind"]),
+        MentionTarget(id: "助手", title: "助手", alias: "FerryHelper", icon: "sparkles", commands: [
+            CommandItem(id: "截图", title: "截图", insertText: "/截图",
+                        subtitle: "截取电脑屏幕并发送", icon: "camera.viewfinder"),
+            CommandItem(id: "找", title: "找文件", insertText: "/找 ",
+                        subtitle: "按文件名、路径、日期和类型查找", icon: "magnifyingglass",
+                        aliases: ["查找"], requiresArgument: true),
+            CommandItem(id: "发文件", title: "发文件", insertText: "/发文件 ",
+                        subtitle: "发送白名单目录中的指定文件", icon: "folder",
+                        requiresArgument: true),
+            CommandItem(id: "帮助", title: "帮助", insertText: "/帮助",
+                        subtitle: "查看电脑支持的指令", icon: "questionmark.circle"),
+            CommandItem(id: "命令列表", title: "命令列表", insertText: "/命令列表",
+                        subtitle: "查看完整指令清单", icon: "list.bullet"),
         ]),
     ]
 }
@@ -335,10 +342,10 @@ final class CommandCatalogStore {
     /// (FerryHelper unreachable, or a locally created assistant) — which is the
     /// same shape FerryHelper's own default config uses.
     func wakeTag(forAssistantName name: String) -> String {
-        if name == "助理",
-           let helper = targets.first(where: { $0.id == "helper" || $0.matchesAssistant("FerryHelper") || $0.matchesAssistant("助理") }) {
-            if let tag = Self.extractedWakeTag(from: helper.insertText) { return tag }
-            return "@" + (helper.alias ?? helper.title)
+        // FerryHelper's built-in command interpreter explicitly recognizes
+        // @助手, not @助理 or @FerryHelper.
+        if name == "助手" || name == "助理" || name == "FerryHelper" {
+            return "@助手"
         }
         if let target = targets.first(where: { $0.matchesAssistant(name) }),
            let tag = Self.extractedWakeTag(from: target.insertText) {
@@ -492,7 +499,8 @@ struct AssistantTaskPanel: View {
 
     private var target: MentionTarget? {
         model.catalog.targets.first {
-            $0.id == "helper" || $0.matchesAssistant("FerryHelper") || $0.matchesAssistant("助理")
+            $0.id == "助手" || $0.id == "helper" ||
+            $0.matchesAssistant("助手") || $0.matchesAssistant("FerryHelper")
         }
     }
 
@@ -515,17 +523,15 @@ struct AssistantTaskPanel: View {
     /// synthesize flags that are not declared by the Windows command catalog.
     private var offersDate: Bool {
         guard let chosen else { return false }
-        let title = (chosen.title + " " + (chosen.subtitle ?? "")).lowercased()
-        return title.contains("文件") || title.contains("查找") ||
-               title.contains("搜索") || title.contains("日期") ||
-               title.contains("find") || title.contains("search")
+        // Only /找 accepts a standalone date; /发文件 expects a filename.
+        return chosen.insertText.trimmingCharacters(in: .whitespaces).hasPrefix("/找")
     }
 
     private var preparedText: String? {
         guard let chosen else { return nil }
         let verb = chosen.insertText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !verb.isEmpty else { return nil }
-        var text = verb.hasPrefix("@") ? verb : model.catalog.wakeTag(forAssistantName: "助理") + " " + verb
+        var text = verb.hasPrefix("@") ? verb : model.catalog.wakeTag(forAssistantName: "助手") + " " + verb
         let arguments = argument.trimmingCharacters(in: .whitespacesAndNewlines)
         if chosen.requiresArgument && arguments.isEmpty && !includeDate { return nil }
         if !arguments.isEmpty { text += " " + arguments }
@@ -542,7 +548,7 @@ struct AssistantTaskPanel: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Image(systemName: "desktopcomputer").foregroundStyle(.cyan)
-                Text("电脑助理").font(.subheadline.weight(.semibold))
+                Text("电脑助手").font(.subheadline.weight(.semibold))
                 Spacer()
                 Button {
                     model.refreshCommandCatalog()
@@ -555,7 +561,7 @@ struct AssistantTaskPanel: View {
                 .accessibilityLabel("刷新电脑命令")
             }
             if commands.isEmpty {
-                Text("尚未读取到电脑助理的可用命令。连接电脑后刷新，也可以在下方使用 @ 指令。")
+                Text("尚未读取到电脑助手的可用命令。连接电脑后刷新，也可以在下方使用 @助手 指令。")
                     .font(.footnote).foregroundStyle(.secondary)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
