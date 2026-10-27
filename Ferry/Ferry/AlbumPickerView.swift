@@ -64,6 +64,7 @@ struct AlbumPickerView: View {
     @State private var liveEnabled: [String: Bool] = [:]
 
     private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 3), count: 4)
+    @State private var gridCellSide: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -144,7 +145,9 @@ struct AlbumPickerView: View {
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.top, 4)
-        .simultaneousGesture(topBarDismissGesture)
+        .contentShape(Rectangle())
+        // Header buttons must not steal a genuine downward swipe.
+        .highPriorityGesture(topBarDismissGesture)
     }
 
     private var albumCapsule: some View {
@@ -179,29 +182,36 @@ struct AlbumPickerView: View {
     }
 
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 3) {
-                ForEach(assets, id: \.localIdentifier) { asset in
-                    PickerGridCell(
-                        asset: asset,
-                        sequence: selectionIndex(for: asset),
-                        isSelectable: isSelectable(asset),
-                        imageManager: imageManager,
-                        onTapCircle: { toggle(asset) },
-                        onTapThumbnail: { openPreview(at: asset) }
-                    )
+        GeometryReader { geometry in
+            // An explicit 1:1 frame is required here: aspectRatio(.fit) on
+            // the content alone still lets tall PHAsset images size the row.
+            let side = max(1, (geometry.size.width - 9) / 4)
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 3) {
+                    ForEach(assets, id: \.localIdentifier) { asset in
+                        PickerGridCell(
+                            asset: asset,
+                            side: side,
+                            sequence: selectionIndex(for: asset),
+                            isSelectable: isSelectable(asset),
+                            imageManager: imageManager,
+                            onTapCircle: { toggle(asset) },
+                            onTapThumbnail: { openPreview(at: asset) }
+                        )
+                        .frame(width: side, height: side)
+                    }
                 }
             }
+            .onScrollGeometryChange(for: CGFloat.self) { scroll in
+                scroll.contentOffset.y + scroll.contentInsets.top
+            } action: { _, distanceFromTop in
+                gridAtTop = distanceFromTop <= 2
+                // Overscroll bounce must not be treated as having browsed;
+                // disable grid dismissal only after a real downward browse.
+                if distanceFromTop > 22 { gridHasBeenScrolled = true }
+            }
+            .simultaneousGesture(dismissDragGesture)
         }
-        // Track the top edge so pull-to-close only engages at the very top;
-        // anywhere else a downward drag is ordinary scrolling.
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentOffset.y <= 0
-        } action: { _, isAtTop in
-            gridAtTop = isAtTop
-            if !isAtTop { gridHasBeenScrolled = true }
-        }
-        .simultaneousGesture(dismissDragGesture)
     }
 
     /// Pull-down-to-close: when the grid is at the top, a downward drag moves
@@ -498,9 +508,13 @@ struct AlbumPickerView: View {
 
         imageManager.stopCachingImagesForAllAssets()
         assets = list
-        // Warm the thumbnail cache for the whole album so scrolling is smooth.
+        gridHasBeenScrolled = false
+        gridAtTop = true
+        // Preheat only the first visible rows, not thousands of full albums.
+        // Caching every asset previously delayed picker opening and used memory.
+        let preheat = Array(list.prefix(64))
         let thumb = CGSize(width: 200, height: 200)
-        imageManager.startCachingImages(for: list, targetSize: thumb, contentMode: .aspectFill, options: nil)
+        imageManager.startCachingImages(for: preheat, targetSize: thumb, contentMode: .aspectFill, options: nil)
     }
 
     // MARK: - Selection
@@ -633,6 +647,7 @@ private final class LibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserve
 /// One selectable thumbnail cell.
 private struct PickerGridCell: View {
     let asset: PHAsset
+    let side: CGFloat
     let sequence: Int?
     let isSelectable: Bool
     let imageManager: PHCachingImageManager
@@ -640,6 +655,7 @@ private struct PickerGridCell: View {
     let onTapThumbnail: () -> Void
 
     @State private var thumbnail: UIImage?
+    @State private var thumbnailRequest: PHImageRequestID?
 
     var body: some View {
         ZStack {
@@ -648,9 +664,11 @@ private struct PickerGridCell: View {
                 Image(uiImage: thumbnail)
                     .resizable()
                     .scaledToFill()
+                    .frame(width: side, height: side)
+                    .clipped()
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .frame(width: side, height: side)
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 3))
         .contentShape(Rectangle())
@@ -660,6 +678,12 @@ private struct PickerGridCell: View {
         }
         .overlay(alignment: .bottomLeading) { bottomBadges }
         .onAppear(perform: loadThumbnail)
+        .onDisappear {
+            if let thumbnailRequest {
+                imageManager.cancelImageRequest(thumbnailRequest)
+                self.thumbnailRequest = nil
+            }
+        }
     }
 
     private var selectionCircle: some View {
@@ -693,10 +717,13 @@ private struct PickerGridCell: View {
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
         let target = CGSize(width: 200, height: 200)
-        _ = imageManager.requestImage(for: asset, targetSize: target, contentMode: .aspectFill, options: options) { image, _ in
-            guard let image else { return }
+        guard thumbnail == nil, thumbnailRequest == nil else { return }
+        let request = imageManager.requestImage(for: asset, targetSize: target,
+                                                 contentMode: .aspectFill, options: options) { image, info in
+            guard let image, (info?[PHImageCancelledKey] as? Bool) != true else { return }
             DispatchQueue.main.async { thumbnail = image }
         }
+        thumbnailRequest = request
     }
 }
 
@@ -1056,7 +1083,9 @@ private struct AlbumPreviewView: View {
             if let base {
                 image = base
             } else {
-                image = await loadFullImage(for: asset, manager: imageManager)
+                // Editing needs the prepared working resolution, not a huge
+                // HEIC original decoded before the editor downsizes it again.
+                image = await loadImage(for: asset, manager: imageManager, maxDimension: 3072)
             }
             guard let image else { return }
             editorInput = EditorInput(asset: asset, image: image)
