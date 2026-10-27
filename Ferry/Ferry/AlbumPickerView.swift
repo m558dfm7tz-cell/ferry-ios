@@ -75,6 +75,7 @@ struct AlbumPickerView: View {
                                  liveEnabled: $liveEnabled,
                                  imageManager: imageManager,
                                  onSend: send,
+                                 onSendEdited: sendEditedFromPreview,
                                  onClose: { previewContext = nil })
                     .zIndex(1)
             } else {
@@ -513,6 +514,24 @@ struct AlbumPickerView: View {
 
     // MARK: - Send
 
+    /// The editor's yellow Send button sends its rendered image immediately,
+    /// using the same uploader queue as the ordinary picker send. Do not save
+    /// an edit merely to return to preview or enqueue an unedited original.
+    private func sendEditedFromPreview(_ edited: UIImage) {
+        guard !isSending else { return }
+        guard let data = edited.jpegData(compressionQuality: 0.92) else {
+            sendError = "无法编码编辑后的图片，请重试。"
+            return
+        }
+        let name = MediaLoader.generatedName(prefix: "编辑照片", mime: "image/jpeg")
+        if let error = model.uploader.enqueue(data: data, name: name, mediaType: "image/jpeg") {
+            sendError = error
+            return
+        }
+        model.requestScrollToBottom()
+        dismiss()
+    }
+
     private func send() {
         guard !selected.isEmpty, !isSending else { return }
         isSending = true
@@ -704,6 +723,7 @@ private struct AlbumPreviewView: View {
     @Binding var liveEnabled: [String: Bool]
     let imageManager: PHCachingImageManager
     let onSend: () -> Void
+    let onSendEdited: (UIImage) -> Void
     let onClose: () -> Void
 
     @State private var currentID: String?
@@ -731,6 +751,7 @@ private struct AlbumPreviewView: View {
          liveEnabled: Binding<[String: Bool]>,
          imageManager: PHCachingImageManager,
          onSend: @escaping () -> Void,
+         onSendEdited: @escaping (UIImage) -> Void,
          onClose: @escaping () -> Void) {
         self.displayAssets = displayAssets
         self.startIndex = startIndex
@@ -740,6 +761,7 @@ private struct AlbumPreviewView: View {
         self._liveEnabled = liveEnabled
         self.imageManager = imageManager
         self.onSend = onSend
+        self.onSendEdited = onSendEdited
         self.onClose = onClose
         let initial = displayAssets.indices.contains(startIndex)
             ? displayAssets[startIndex].localIdentifier
@@ -770,13 +792,11 @@ private struct AlbumPreviewView: View {
         .simultaneousGesture(edgeSwipeBackDrag)
         .statusBarHidden()
         .fullScreenCover(item: $editorInput) { input in
-            ImageEditorView(image: input.image, confirmTitle: "完成",
+            ImageEditorView(image: input.image, confirmTitle: "发送",
                             onFinish: { edited in
-                                editedImages[input.asset.localIdentifier] = edited
-                                // Editing produces a static image, so the
-                                // paired video no longer matches: auto-off 实况.
-                                liveEnabled.removeValue(forKey: input.asset.localIdentifier)
-                                editorInput = nil
+                                // Send only this edited photo, never the unedited
+                                // original or other selected photos by accident.
+                                onSendEdited(edited)
                             },
                             onCancel: { editorInput = nil })
         }
