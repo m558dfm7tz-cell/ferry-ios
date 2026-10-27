@@ -149,7 +149,7 @@ struct ComposerTextView: UIViewRepresentable {
         private var lastAppliedInsertionID: UUID?
         private var attachmentMenu: FerryAttachmentInputView?
 
-        func attachmentInputView() -> FerryAttachmentInputView {
+        fileprivate func attachmentInputView() -> FerryAttachmentInputView {
             if let attachmentMenu { return attachmentMenu }
             let menu = FerryAttachmentInputView()
             attachmentMenu = menu
