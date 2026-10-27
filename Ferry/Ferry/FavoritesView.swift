@@ -149,8 +149,8 @@ private struct FavoriteRow: View {
     let favorite: FavoriteMessage
     let localURL: URL?
     let onOpen: () async -> Void
-    let onUnfavorite: () async -> Void
     let onLocate: () async -> Void
+    let onUnfavorite: () async -> Void
 
     @State private var showToast = false
     @State private var toastText = ""
