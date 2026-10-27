@@ -619,6 +619,11 @@ private struct LinkedText: View {
     let text: String
     let linkColor: Color
 
+    // Constructing NSDataDetector in every row body caused frame drops during
+    // rapid transcript scrolling. It is immutable and shared on the main UI.
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue)
+
     var body: some View {
         Text(attributed)
             .environment(\.openURL, OpenURLAction { url in .systemAction(url) })
@@ -626,9 +631,7 @@ private struct LinkedText: View {
 
     private var attributed: AttributedString {
         var result = AttributedString(text)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return result
-        }
+        guard let detector = Self.linkDetector else { return result }
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         let matches = detector.matches(in: text, options: [], range: nsRange)
         for match in matches {

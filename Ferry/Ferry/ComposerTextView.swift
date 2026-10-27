@@ -39,7 +39,12 @@ struct ComposerTextView: UIViewRepresentable {
         textView.textColor = textColor
         textView.tintColor = tintColor
         textView.backgroundColor = .clear
-        textView.textContainerInset = .zero
+        // Center the placeholder on the *first* visible frame too; the old
+        // zero inset relied on a later async measurement and jumped on resume.
+        let oneLine = textView.font?.lineHeight ?? 20
+        let centerInset = max(0, (minHeight - oneLine) / 2)
+        textView.textContainerInset = UIEdgeInsets(top: centerInset, left: 0,
+                                                   bottom: centerInset, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         textView.isScrollEnabled = alwaysScrolls
         textView.keyboardDismissMode = .interactive
@@ -54,6 +59,15 @@ struct ComposerTextView: UIViewRepresentable {
         textView.placeholderLabel.isHidden = !text.isEmpty
         textView.placeholderLabel.isUserInteractionEnabled = false
         textView.addSubview(textView.placeholderLabel)
+        textView.onWidthChanged = { [weak textView] in
+            guard let textView else { return }
+            // A reused UITextView can change width when the scene resumes.
+            // Recompute text metrics once, avoiding per-frame relayout loops.
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView else { return }
+                context.coordinator.refreshLayout(textView)
+            }
+        }
 
         // Set the initial height once the view has a valid width.
         DispatchQueue.main.async {
@@ -239,9 +253,15 @@ struct ComposerTextView: UIViewRepresentable {
 /// `UITextView` subclass that hosts a placeholder label (shown when empty).
 final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
+    var onWidthChanged: (() -> Void)?
+    private var lastLaidOutWidth: CGFloat = 0
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if bounds.width > 0 && abs(bounds.width - lastLaidOutWidth) > 1 {
+            lastLaidOutWidth = bounds.width
+            onWidthChanged?()
+        }
         let origin = CGPoint(x: textContainerInset.left + textContainer.lineFragmentPadding,
                              y: textContainerInset.top)
         placeholderLabel.frame = CGRect(origin: origin,
