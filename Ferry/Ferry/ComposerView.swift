@@ -9,7 +9,7 @@ struct ComposerView: View {
     var focused: FocusState<Bool>.Binding
 
     @State private var showImagePicker = false
-    @State private var showPlus = false
+    @Binding var showPlus: Bool
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var showEditor = false
@@ -41,15 +41,6 @@ struct ComposerView: View {
             if model.selectedAssistantID == "helper" {
                 AssistantTaskPanel(model: model)
             }
-            if showPlus {
-                PlusPanel(onFile: {
-                    showPlus = false
-                    showFileImporter = true
-                }, onCamera: {
-                    showPlus = false
-                    openCamera()
-                })
-            }
             if mentionContext != nil {
                 MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
@@ -59,12 +50,28 @@ struct ComposerView: View {
                     .frame(maxWidth: 320, alignment: .leading)
             }
             inputBar
+            if showPlus {
+                PlusPanel(onFile: {
+                    showPlus = false
+                    showFileImporter = true
+                }, onCamera: {
+                    showPlus = false
+                    openCamera()
+                })
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
-        // Material extends through the home-indicator inset rather than leaving
-        // the bottom strip transparent over passing chat messages.
+        // No full-width opaque glass rectangle around the input capsule.
+        // Messages fade gently beneath the original independent input field.
         .background {
-            Rectangle().fill(.regularMaterial).ignoresSafeArea(edges: .bottom)
+            LinearGradient(colors: [
+                Color.chatBackground.opacity(0),
+                Color.chatBackground.opacity(0.67),
+                Color.chatBackground
+            ], startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
         }
         .onAppear { refreshPasteAvailability() }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
@@ -295,7 +302,7 @@ struct ComposerView: View {
     }
 
     private var plusButton: some View {
-        Button { showPlus = true } label: {
+        Button { withAnimation(.easeOut(duration: 0.18)) { showPlus.toggle() } } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
                 .frame(width: barButtonSize, height: barButtonSize)

@@ -199,7 +199,9 @@ private struct MediaPagerView: View {
             if case .some(.some(let decoded)) = model.images[message.id] {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
                             load: { await model.fileData(for: message) },
-                            onOpenGallery: onReturnToGrid,
+                            // The top-right grid control already exists;
+                            // don't display a second one in the action strip.
+                            onOpenGallery: nil, onClose: onReturnToGrid,
                             onEditFinished: { edited in sendEdited(edited, originalName: name) })
             } else {
                 Color.black.overlay { ProgressView() }

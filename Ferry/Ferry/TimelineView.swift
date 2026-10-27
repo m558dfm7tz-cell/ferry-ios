@@ -15,6 +15,9 @@ struct TimelineView: View {
     @State private var showReviewList = false
     @State private var galleryInitialID: String?
     @State private var atBottom = true
+    @State private var isFollowingTail = true
+    @State private var transcriptUserDragging = false
+    @State private var showAttachmentPanel = false
     @State private var selectionMode = false
     @State private var selectedIDs: Set<String> = []
     @State private var selectionAlert: SelectionAlert?
@@ -107,7 +110,8 @@ struct TimelineView: View {
                 if selectionMode {
                     SelectionBar(onClearAll: { selectionAlert = .clearAll })
                 } else {
-                    ComposerView(model: model, focused: $composerFocused)
+                    ComposerView(model: model, focused: $composerFocused,
+                                 showPlus: $showAttachmentPanel)
                 }
             }
             .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
@@ -224,9 +228,8 @@ struct TimelineView: View {
                                     // the row a jump landed on, so anchoring
                                     // the row to the top of the scroll view
                                     // leaves it just below the bar.
-                                    .padding(.top, message.id == jumpTargetID &&
-                                                     message.id != model.visibleMessages.first?.id
-                                             ? jumpTopInset : 0)
+                                    // Jump positioning is a scroll anchor, not
+                                    // permanent padding on the target message.
                                     .contentShape(Rectangle())
                                     .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
@@ -274,16 +277,12 @@ struct TimelineView: View {
                         scrollToBottomAnchor()
                         return
                     }
-                    if atBottom {
-                        // Media loads asynchronously and changes cell heights,
-                        // so remember the intent to follow that new message.
-                        if let message = model.visibleMessages.last, let file = message.file,
-                           PreviewRouter.isImage(file) || PreviewRouter.isVideo(file) {
-                            followMediaMessageID = message.id
-                        }
+                    // The last cell loading can temporarily make geometry say
+                    // !atBottom without a single user scroll. Track user
+                    // intention separately so *every* new photo follows.
+                    if isFollowingTail {
                         scrollToBottomAnchor()
                     } else {
-                        followMediaMessageID = nil
                         withAnimation { showNewPill = true }
                     }
                 }
@@ -302,8 +301,9 @@ struct TimelineView: View {
                     followPendingMediaLoad()
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    // Background/resume must not reset a user reading older messages.
-                    if phase == .active && atBottom { scrollToBottomAnchor() }
+                    // SwiftUI restores the geometry when the scene returns.
+                    // Avoid a second forced re-anchor which caused two bounces.
+                    if phase != .active { keyboardFollowTask?.cancel() }
                 }
                 let geometryObserved = mediaObserved
                     .onScrollGeometryChange(for: ScrollState.self) { geometry in
@@ -327,8 +327,12 @@ struct TimelineView: View {
                 }
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting {
-                        followMediaMessageID = nil
+                        transcriptUserDragging = true
+                        isFollowingTail = false
                         if keyboardVisible { keyboardWasAtBottom = false }
+                    } else if phase == .idle && transcriptUserDragging {
+                        transcriptUserDragging = false
+                        isFollowingTail = atBottom
                     }
                 }
                 let keyboardAware = geometryObserved
@@ -503,6 +507,9 @@ struct TimelineView: View {
     /// UITextView (not a SwiftUI TextField), so clear the focus binding and also
     /// resign the first responder directly via the responder chain.
     private func dismissKeyboard() {
+        if showAttachmentPanel {
+            withAnimation(.easeOut(duration: 0.18)) { showAttachmentPanel = false }
+        }
         composerFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                          to: nil, from: nil, for: nil)
@@ -541,6 +548,7 @@ struct TimelineView: View {
     }
 
     private func scrollToBottom() {
+        isFollowingTail = true
         showNewPill = false
         scrollToBottomAnchor()
     }
@@ -552,11 +560,12 @@ struct TimelineView: View {
     }
 
     private func followPendingMediaLoad() {
-        guard let id = followMediaMessageID,
-              model.visibleMessages.last?.id == id else { return }
-        followMediaMessageID = nil
+        guard isFollowingTail, !transcriptUserDragging else { return }
+        // LazyVStack remeasures an image on the next layout pass. Following
+        // every media load (not only the first) fixes consecutive photo sends.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(80))
+            guard isFollowingTail, !transcriptUserDragging else { return }
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -603,11 +612,13 @@ struct TimelineView: View {
             // One layout pass for the reserved gap before anchoring to it.
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            pendingScroll = PendingScroll(id: id, anchor: .top)
+            pendingScroll = PendingScroll(id: id,
+                anchor: model.visibleMessages.first?.id == id ? .top : .center)
             // One soft highlight rather than an intrusive repeated yellow flash.
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled, jumpTargetID == id else { return }
-            pendingScroll = PendingScroll(id: id, anchor: .top)
+            pendingScroll = PendingScroll(id: id,
+                anchor: model.visibleMessages.first?.id == id ? .top : .center)
             try? await Task.sleep(for: .milliseconds(400))
             withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }
         }

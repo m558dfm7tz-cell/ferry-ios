@@ -13,6 +13,8 @@ struct ImageViewer: View {
     /// Opens the grid of every image and video in this chat. Nil hides the
     /// entry (e.g. when the viewer is already opened from that grid).
     var onOpenGallery: (() -> Void)? = nil
+    /// Called when an image is dismissed inside the full-screen media pager.
+    var onClose: (() -> Void)? = nil
     /// Called with the edited copy when the user finishes editing from the
     /// viewer. Nil hides the 编辑 entry.
     var onEditFinished: ((UIImage) -> Void)? = nil
@@ -22,11 +24,20 @@ struct ImageViewer: View {
     @State private var toastText = ""
     @State private var showOCR = false
     @State private var showEditor = false
+    @State private var verticalDragOffset: CGFloat = 0
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            ZoomableImageView(image: image, onDismiss: { dismiss() }).ignoresSafeArea()
+            ZoomableImageView(image: image,
+                              onDismiss: { if let onClose { onClose() } else { dismiss() } },
+                              onDragChange: { translation in
+                                  if translation == 0 {
+                                      withAnimation(.easeOut(duration: 0.22)) { verticalDragOffset = 0 }
+                                  } else {
+                                      verticalDragOffset = translation
+                                  }
+                              }).ignoresSafeArea()
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
@@ -65,6 +76,9 @@ struct ImageViewer: View {
             .padding(20)
         }
         .overlay { if showToast { toastView } }
+        .offset(y: verticalDragOffset)
+        .scaleEffect(max(0.88, 1 - abs(verticalDragOffset) / 2000))
+        .opacity(max(0.55, 1 - abs(verticalDragOffset) / 1100))
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
         }
@@ -165,22 +179,26 @@ struct ImageGridView: View {
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     let onDismiss: () -> Void
+    var onDragChange: ((CGFloat) -> Void)? = nil
 
     func makeUIView(context: Context) -> ZoomableImageUIView {
         let view = ZoomableImageUIView()
         view.image = image
         view.onDismiss = onDismiss
+        view.onDragChange = onDragChange
         return view
     }
 
     func updateUIView(_ uiView: ZoomableImageUIView, context: Context) {
         if uiView.image !== image { uiView.image = image }
         uiView.onDismiss = onDismiss
+        uiView.onDragChange = onDragChange
     }
 }
 
 final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var onDismiss: (() -> Void)?
+    var onDragChange: ((CGFloat) -> Void)?
 
     var image: UIImage? {
         get { imageView.image }
@@ -297,19 +315,16 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         let translation = pan.translation(in: self)
         switch pan.state {
         case .changed:
-            scrollView.transform = CGAffineTransform(translationX: 0, y: translation.y)
-            let progress = min(1, abs(translation.y) / 240)
-            imageView.alpha = 1 - progress * 0.75
+            // Move the whole SwiftUI preview (including actions) with the
+            // finger, rather than only fading its UIImageView.
+            onDragChange?(translation.y)
         case .ended, .cancelled, .failed:
             let velocity = pan.velocity(in: self).y
             let shouldDismiss = abs(translation.y) > 120 || abs(velocity) > 900
             if shouldDismiss {
                 onDismiss?()
             } else {
-                UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut], animations: {
-                    self.scrollView.transform = .identity
-                    self.imageView.alpha = 1
-                })
+                onDragChange?(0)
             }
         default:
             break
