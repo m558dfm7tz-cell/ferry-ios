@@ -92,18 +92,23 @@ struct TimelineView: View {
                 VStack(spacing: 0) {
                     AssistantBarView(assistants: model.assistantStore.assistants,
                                      transferMode: model.routeIsolationEnabled,
+                                     allowCustomHide: model.routeIsolationEnabled,
                                      showUnclassifiedHistory: model.hasUnclassifiedHistory,
                                      selectedID: $model.selectedAssistantID,
                                      unreadIDs: model.unreadAssistantIDs,
                                      avatarStore: model.avatarStore,
                                      onSelect: { model.selectAssistant($0) },
                                      onAdd: { showNewAssistant = true },
-                                     onUpdate: { model.assistantStore.update($0) },
+                                     onUpdate: { model.updateAssistant($0) },
                                      onDelete: { model.deleteAssistant(id: $0) },
                                      onHide: { model.hideBuiltInAssistant(id: $0) },
-                                     canRestoreDeletedBuiltIns: !model.assistantStore.deletedBuiltInIDs.isEmpty,
+                                     canRestoreDeletedBuiltIns: model.routeIsolationEnabled
+                                         ? model.assistantStore.hasDeletedServerProfiles
+                                         : !model.assistantStore.deletedBuiltInIDs.isEmpty,
                                      onRestoreDeletedBuiltIns: { model.resetDeletedBuiltInAssistants() },
-                                     canRestoreBuiltIns: !model.assistantStore.hiddenBuiltInIDs.isEmpty,
+                                     canRestoreBuiltIns: model.routeIsolationEnabled
+                                         ? model.assistantStore.hasHiddenServerProfiles
+                                         : !model.assistantStore.hiddenBuiltInIDs.isEmpty,
                                      onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
                     if model.showsReviewEntry {
                         ReviewEntryRow(count: model.reviewStore.unseenCount) {
@@ -151,7 +156,7 @@ struct TimelineView: View {
         }
         .sheet(isPresented: $showNewAssistant) {
             NewAssistantSheet { name, avatarText, colorIndex in
-                model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+                model.addAssistant(name: name, avatarText: avatarText, colorIndex: colorIndex)
             }
         }
         .sheet(isPresented: $showReviewList) {

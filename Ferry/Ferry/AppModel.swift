@@ -36,6 +36,7 @@ final class AppModel {
     /// Stable server profile identities, to be supplied by future verified
     /// assistant-profiles API. Never manufacture custom server identifiers.
     private var verifiedRouteNamesByID: [String: String] = [:]
+    private var lastProfileRefresh: Date?
 
     /// The selection is captured before sending. Unknown profile IDs must
     /// fail closed rather than being sent as a normal transfer.
@@ -64,6 +65,49 @@ final class AppModel {
         }
         return .assistant(name: routeName, id: assistant.id)
     }
+    /// V2 stays disabled unless both the Go server and *running* helper
+    /// positively confirm the guard, and their profile list is consistent.
+    private func configureVerifiedRouting(generation current: UUID) async {
+        guard current == generation, let endpoint, let token else { return }
+        guard let capabilities = try? await client.capabilities(endpoint: endpoint, token: token),
+              capabilities.permitsIsolatedTransfer,
+              let snapshot = try? await client.assistantProfiles(endpoint: endpoint, token: token),
+              !snapshot.profiles.isEmpty else { return }
+
+        // Never activate with missing/contradictory built-in identities.
+        let ids = Set(snapshot.profiles.map(\.id))
+        guard ids.count == snapshot.profiles.count,
+              AssistantStore.builtIn.allSatisfy({ expected in
+                  snapshot.profiles.contains(where: {
+                      $0.id == expected.id && $0.routeName == expected.name && !$0.deleted
+                  })
+              }), current == generation else { return }
+
+        assistantStore.adoptServerProfiles(snapshot.profiles)
+        verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
+            snapshot.profiles.map { ($0.id, $0.routeName) })
+        lastProfileRefresh = Date()
+        routeIsolationEnabled = true
+    }
+
+    private func refreshServerProfiles(force: Bool = false) async {
+        guard routeIsolationEnabled, let endpoint, let token else { return }
+        if !force, let lastProfileRefresh,
+           Date().timeIntervalSince(lastProfileRefresh) < 12 { return }
+        lastProfileRefresh = Date()
+        guard let snapshot = try? await client.assistantProfiles(endpoint: endpoint, token: token) else { return }
+        guard routeIsolationEnabled else { return }
+        let ids = Set(snapshot.profiles.map(\.id))
+        guard ids.count == snapshot.profiles.count else { return }
+        assistantStore.adoptServerProfiles(snapshot.profiles)
+        verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
+            snapshot.profiles.map { ($0.id, $0.routeName) })
+        if let selected = selectedAssistantID,
+           assistantStore.serverProfile(id: selected)?.deleted == true {
+            selectAssistant(nil)
+        }
+    }
+
     static let unclassifiedHistoryID = "unresolved-assistants"
 
     private func isKnownConversation(_ id: String) -> Bool {
@@ -274,6 +318,7 @@ final class AppModel {
             accessPassword = ""
             phase = .connected
             uploader.configure(endpoint: endpoint, token: claim.token)
+            await configureVerifiedRouting(generation: current)
             await loadInitial(generation: current)
             await reconcile(generation: current)
             startPolling()
@@ -544,6 +589,10 @@ final class AppModel {
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
         guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
+        if routeIsolationEnabled {
+            mutateServerProfile(id: id, changes: ["deleted": "true"])
+            return
+        }
         if AssistantStore.builtIn.contains(where: { $0.id == id }) {
             assistantStore.deleteBuiltIn(id: id)
             avatarStore.reset(for: id)
@@ -560,17 +609,96 @@ final class AppModel {
     }
 
     func restoreBuiltInAssistants() {
+        if routeIsolationEnabled {
+            Task {
+                for profile in assistantStore.serverProfiles ?? []
+                    where profile.hidden && !profile.deleted {
+                    await mutateServerProfileNow(id: profile.id, changes: ["hidden": "false"])
+                }
+            }
+            return
+        }
         assistantStore.restoreBuiltIns()
     }
 
     func hideBuiltInAssistant(id: String) {
         guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
+        if routeIsolationEnabled {
+            mutateServerProfile(id: id, changes: ["hidden": "true"])
+            return
+        }
         assistantStore.hideBuiltIn(id: id)
         if selectedAssistantID == id { selectAssistant(nil) }
     }
 
     func resetDeletedBuiltInAssistants() {
+        if routeIsolationEnabled {
+            Task {
+                guard let endpoint, let token else { return }
+                for profile in assistantStore.serverProfiles ?? [] where profile.deleted {
+                    do {
+                        _ = try await client.restoreAssistantProfile(endpoint: endpoint, token: token,
+                                                                      id: profile.id, revision: profile.revision)
+                    } catch {
+                        statusMessage = "恢复助手失败：\(error.localizedDescription)"
+                    }
+                }
+                await refreshServerProfiles(force: true)
+            }
+            return
+        }
         assistantStore.resetDeletedBuiltIns()
+    }
+
+    func addAssistant(name: String, avatarText: String, colorIndex: Int) {
+        if !routeIsolationEnabled {
+            _ = assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+            return
+        }
+        Task {
+            guard let endpoint, let token else { return }
+            do {
+                _ = try await client.createAssistantProfile(endpoint: endpoint, token: token,
+                                                             displayName: name, avatarText: avatarText,
+                                                             colorIndex: colorIndex)
+                await refreshServerProfiles(force: true)
+            } catch {
+                statusMessage = "新建助手失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func updateAssistant(_ assistant: Assistant) {
+        if !routeIsolationEnabled {
+            assistantStore.update(assistant)
+            return
+        }
+        mutateServerProfile(id: assistant.id, changes: [
+            "display_name": assistant.name,
+            "avatar_text": assistant.avatarText,
+            "color_index": String(assistant.colorIndex)
+        ])
+    }
+
+    private func mutateServerProfile(id: String, changes: [String: String]) {
+        Task { await mutateServerProfileNow(id: id, changes: changes) }
+    }
+
+    private func mutateServerProfileNow(id: String, changes: [String: String]) async {
+        guard routeIsolationEnabled,
+              let profile = assistantStore.serverProfile(id: id),
+              let endpoint, let token else { return }
+        do {
+            _ = try await client.patchAssistantProfile(endpoint: endpoint, token: token,
+                                                       id: id, revision: profile.revision,
+                                                       changes: changes)
+            await refreshServerProfiles(force: true)
+            if changes["deleted"] == "true" || changes["hidden"] == "true",
+               selectedAssistantID == id { selectAssistant(nil) }
+        } catch {
+            statusMessage = "助手资料更新失败：\(error.localizedDescription)"
+            await refreshServerProfiles(force: true)
+        }
     }
 
     /// Remove one assistant's grouping and avatar from this phone (used both by
@@ -836,6 +964,8 @@ final class AppModel {
         selectedAssistantID = nil
         routeIsolationEnabled = false
         verifiedRouteNamesByID = [:]
+        assistantStore.adoptServerProfiles(nil)
+        lastProfileRefresh = nil
         unreadAssistantIDs = []
         unreadMessageIDs = []
         // 已看 state is phone-local and keyed by item id, so it survives a
@@ -864,6 +994,7 @@ final class AppModel {
             statusMessage = nil
             activate(space: space(for: endpoint.origin))
             uploader.configure(endpoint: endpoint, token: token)
+            await configureVerifiedRouting(generation: current)
             await loadInitial(generation: current)
             await reconcile(generation: current)
             startPolling()
@@ -921,6 +1052,10 @@ final class AppModel {
             return
         } catch {
             // Best-effort: retried on the next poll tick.
+        }
+        if routeIsolationEnabled {
+            await refreshServerProfiles()
+            return
         }
         do {
             let state = try await client.assistantState(endpoint: endpoint, token: token)
@@ -995,7 +1130,9 @@ final class AppModel {
         if let payload = try? await client.favorites(endpoint: endpoint, token: token) {
             await reconcileFavorites(payload.favorites)
         }
-        if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
+        if routeIsolationEnabled {
+            await refreshServerProfiles(force: true)
+        } else if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
             await adoptServerAssistants(state)
         }
         if let page = try? await client.changes(endpoint: endpoint, token: token, since: 0) {
