@@ -6,7 +6,7 @@ import UIKit
 /// the right, with a WeChat-style panel (文件 / 拍摄) and per-item upload queue.
 struct ComposerView: View {
     @Bindable var model: AppModel
-    var focused: FocusState<Bool>.Binding
+    var focused: Binding<Bool>
 
     @Binding var showImagePicker: Bool
     @Binding var showPlus: Bool
@@ -611,7 +611,7 @@ struct ExpandEditorView: View {
     let onSend: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?

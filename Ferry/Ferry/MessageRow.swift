@@ -288,57 +288,54 @@ struct MessageRow: View {
     }
 
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
-        Button {
-            if !selectionMode {
-                // Open the unified chat-scoped pager on this exact message.
-                // The pager handles left/right media and the top-right grid.
+        Image(uiImage: decoded)
+            .resizable().scaledToFit()
+            .frame(maxWidth: 240, maxHeight: 320)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            // Attach the short tap directly to the visual media surface, not
+            // a Button wrapped by SwiftUI's context-menu interaction host.
+            .onTapGesture {
+                guard !selectionMode else { return }
                 onOpenGallery()
             }
-        } label: {
-            Image(uiImage: decoded)
-                .resizable().scaledToFit()
-                .frame(maxWidth: 240, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityIdentifier("bubble.image")
-        .contextMenu { mediaMenu }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("bubble.image")
+            .contextMenu { mediaMenu }
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
-        Button {
-            guard !selectionMode else { return }
-            onOpenGallery()
-        } label: {
-            ZStack {
-                if let thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable().scaledToFill()
-                } else {
-                    Color(white: 0.16)
-                }
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .shadow(radius: 4)
+        ZStack {
+            if let thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable().scaledToFill()
+            } else {
+                Color(white: 0.16)
             }
-            .frame(width: 220, height: 150)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
-                if videoDuration > 0 {
-                    Text(TimeText.mmss(videoDuration))
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.black.opacity(0.6),
-                                    in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .padding(6)
-                }
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.white.opacity(0.9))
+                .shadow(radius: 4)
+        }
+        .frame(width: 220, height: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if videoDuration > 0 {
+                Text(TimeText.mmss(videoDuration))
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.black.opacity(0.6),
+                                in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .padding(6)
             }
         }
-        .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onTapGesture {
+            guard !selectionMode else { return }
+            onOpenGallery()
+        }
+        .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("bubble.video")
         .contextMenu { mediaMenu }
     }

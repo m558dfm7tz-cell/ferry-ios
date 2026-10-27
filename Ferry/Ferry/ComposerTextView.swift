@@ -13,7 +13,7 @@ struct ComposerTextView: UIViewRepresentable {
     @Binding var height: CGFloat
     @Binding var insertCommand: TextInsertion?
     let placeholder: String
-    let isFocused: FocusState<Bool>.Binding
+    let isFocused: Binding<Bool>
     let maxLines: Int
     let textColor: UIColor
     let tintColor: UIColor
@@ -134,7 +134,7 @@ struct ComposerTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         private var text: Binding<String>
         private var height: Binding<CGFloat>
-        private let isFocused: FocusState<Bool>.Binding
+        private let isFocused: Binding<Bool>
         private let maxLines: Int
         private let alwaysScrolls: Bool
         private let minHeight: CGFloat
@@ -156,7 +156,7 @@ struct ComposerTextView: UIViewRepresentable {
             return menu
         }
 
-        init(text: Binding<String>, height: Binding<CGFloat>, isFocused: FocusState<Bool>.Binding,
+        init(text: Binding<String>, height: Binding<CGFloat>, isFocused: Binding<Bool>,
              maxLines: Int, alwaysScrolls: Bool, minHeight: CGFloat,
              onMentionChange: ((MentionContext?) -> Void)?) {
             self.text = text
@@ -168,10 +168,10 @@ struct ComposerTextView: UIViewRepresentable {
             self.onMentionChange = onMentionChange
         }
 
-        /// Keep the SwiftUI focus binding in sync with *actual* UIKit taps.
-        /// A native UITextView gains first-responder status without a SwiftUI
-        /// FocusState transition. Leaving the binding false made subsequent
-        /// keyboard/attachment handoffs race against stale focus state.
+        /// Keep the shared state in sync with UIKit's actual first responder.
+        /// FocusState cannot represent the focus of a UIViewRepresentable unless
+        /// a native SwiftUI focusable target participates in that FocusState.
+        /// A plain Binding<Bool> avoids SwiftUI resetting focus behind UIKit.
         func textViewDidBeginEditing(_ textView: UITextView) {
             lastKnownFocus = true
             DispatchQueue.main.async { [weak textView] in

@@ -4,7 +4,7 @@ import UIKit
 struct TimelineView: View {
     @Bindable var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var showFavorites = false
     @State private var showDateJump = false
     @State private var showSettings = false
