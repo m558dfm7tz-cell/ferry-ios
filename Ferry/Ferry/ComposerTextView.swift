@@ -265,7 +265,7 @@ final class ComposerUITextView: UITextView {
             onWidthChanged?()
         }
         let origin = CGPoint(x: textContainerInset.left + textContainer.lineFragmentPadding,
-                             y: textContainerInset.top)
+                             y: max(0, (bounds.height - placeholderLabel.font.lineHeight) / 2))
         placeholderLabel.frame = CGRect(origin: origin,
                                         size: CGSize(width: bounds.width - origin.x * 2,
                                                      height: placeholderLabel.font.lineHeight))
