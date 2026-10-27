@@ -48,6 +48,8 @@ struct AlbumPickerView: View {
     /// down to close.
     @State private var dismissDrag: CGFloat = 0
     @State private var gridDragStartedAtTop = false
+    /// After browsing below the first row, only the top bar may dismiss by drag.
+    @State private var gridHasBeenScrolled = false
     @State private var gridDragInProgress = false
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
@@ -61,7 +63,7 @@ struct AlbumPickerView: View {
     /// Default off, set per-asset, auto-off when the photo is edited.
     @State private var liveEnabled: [String: Bool] = [:]
 
-    private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 1), count: 4)
+    private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 3), count: 4)
 
     var body: some View {
         ZStack {
@@ -142,6 +144,7 @@ struct AlbumPickerView: View {
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.top, 4)
+        .simultaneousGesture(topBarDismissGesture)
     }
 
     private var albumCapsule: some View {
@@ -177,7 +180,7 @@ struct AlbumPickerView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 1) {
+            LazyVGrid(columns: columns, spacing: 3) {
                 ForEach(assets, id: \.localIdentifier) { asset in
                     PickerGridCell(
                         asset: asset,
@@ -196,6 +199,7 @@ struct AlbumPickerView: View {
             geometry.contentOffset.y <= 0
         } action: { _, isAtTop in
             gridAtTop = isAtTop
+            if !isAtTop { gridHasBeenScrolled = true }
         }
         .simultaneousGesture(dismissDragGesture)
     }
@@ -213,7 +217,9 @@ struct AlbumPickerView: View {
                     gridDragInProgress = true
                     gridDragStartedAtTop = gridAtTop
                 }
-                guard gridDragStartedAtTop, gridAtTop, value.translation.height > 0 else {
+                guard gridDragStartedAtTop, !gridHasBeenScrolled,
+                      gridAtTop, value.translation.height > 0,
+                      value.translation.height > abs(value.translation.width) else {
                     if dismissDrag != 0 { dismissDrag = 0 }
                     return
                 }
@@ -224,8 +230,24 @@ struct AlbumPickerView: View {
                     gridDragStartedAtTop = false
                     gridDragInProgress = false
                 }
-                let shouldClose = gridDragStartedAtTop && (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
+                let shouldClose = gridDragStartedAtTop && !gridHasBeenScrolled &&
+                    (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
                 withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
+                if shouldClose { requestClose() }
+            }
+    }
+
+    /// The header remains an explicit pull-to-close handle after scrolling.
+    private var topBarDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                guard value.translation.height > 0,
+                      value.translation.height > abs(value.translation.width) else { return }
+                dismissDrag = value.translation.height
+            }
+            .onEnded { value in
+                let shouldClose = dismissDrag > 110 || value.predictedEndTranslation.height > 230
+                withAnimation(.easeOut(duration: 0.2)) { dismissDrag = 0 }
                 if shouldClose { requestClose() }
             }
     }
@@ -630,6 +652,7 @@ private struct PickerGridCell: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 3))
         .contentShape(Rectangle())
         .onTapGesture(perform: onTapThumbnail)
         .overlay(alignment: .topTrailing) {
