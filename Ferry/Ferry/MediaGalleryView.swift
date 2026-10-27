@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Media gallery: a grid of every loaded image + video message. Tapping a cell
 /// opens a full-screen pager (TabView `.page`) positioned on that item, with
@@ -11,14 +12,27 @@ struct MediaGalleryView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
-    @State private var consumedInitialSelection = false
+    /// Freeze this chat's media identity for the life of the viewer; a server
+    /// refresh cannot silently repopulate the pager with another chat's media.
+    @State private var scopedMessages: [MessagePayload]
+
+    init(model: AppModel, initialMessageID: String?) {
+        self.model = model
+        self.initialMessageID = initialMessageID
+        let scope = model.mediaMessages
+        _scopedMessages = State(initialValue: scope)
+        // Select before the FIRST frame: avoids flashing the entire grid when
+        // the user first taps a bubble after opening Ferry.
+        _selectedMessage = State(initialValue:
+            initialMessageID.flatMap { id in scope.first(where: { $0.id == id }) })
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 3)]
 
     var body: some View {
         Group {
             if let selectedMessage {
-                MediaPagerView(messages: model.mediaMessages, startID: selectedMessage.id,
+                MediaPagerView(messages: scopedMessages, startID: selectedMessage.id,
                                model: model,
                                onReturnToGrid: { self.selectedMessage = nil },
                                onCloseViewer: {
@@ -29,25 +43,19 @@ struct MediaGalleryView: View {
                 mediaGrid
             }
         }
-        .onAppear {
-            guard !consumedInitialSelection else { return }
-            consumedInitialSelection = true
-            guard let id = initialMessageID,
-                  let message = model.mediaMessages.first(where: { $0.id == id }) else { return }
-            selectedMessage = message
-        }
+
     }
 
     private var mediaGrid: some View {
         NavigationStack {
             ScrollView {
-                if model.mediaMessages.isEmpty {
+                if scopedMessages.isEmpty {
                     ContentUnavailableView("暂无媒体", systemImage: "photo.on.rectangle.angled",
                                            description: Text("图片和视频消息会显示在这里。"))
                         .padding(.top, 120)
                 } else {
                     LazyVGrid(columns: columns, spacing: 3) {
-                        ForEach(model.mediaMessages) { message in
+                        ForEach(scopedMessages) { message in
                             cell(for: message)
                         }
                     }
@@ -126,8 +134,16 @@ private struct MediaPagerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
     @State private var videoURLs: [String: URL] = [:]
+    @State private var verticalDrag: CGFloat = 0
     @State private var showToast = false
     @State private var toastText = ""
+
+    private var safeTop: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 44
+    }
 
     init(messages: [MessagePayload], startID: String, model: AppModel,
          onReturnToGrid: @escaping () -> Void,
@@ -141,16 +157,26 @@ private struct MediaPagerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .opacity(max(0, 1 - Double(abs(verticalDrag) / 380)))
+                .ignoresSafeArea()
             TabView(selection: $currentIndex) {
                 ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                    page(for: message)
-                        .tag(index)
+                    Group {
+                        if abs(index - currentIndex) <= 1 {
+                            page(for: message, isCurrent: index == currentIndex)
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .tag(index)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .background(Color.clear)
             .ignoresSafeArea()
         }
+        .onChange(of: currentIndex) { _, _ in verticalDrag = 0 }
         .overlay(alignment: .topTrailing) {
             Button { onReturnToGrid() } label: {
                 Image(systemName: "square.grid.2x2")
@@ -160,8 +186,18 @@ private struct MediaPagerView: View {
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("返回网格")
-            .padding(.top, 4)
+            .accessibilityLabel("此聊天全部图片和视频")
+            .accessibilityIdentifier("viewer-open-gallery")
+            .padding(.top, max(12, safeTop + 6))
+            .padding(.trailing, 16)
+        }
+        .overlay(alignment: .top) {
+            Text("\(currentIndex + 1) / \(messages.count)")
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(.top, max(12, safeTop + 18))
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("media-pager-position")
         }
         .overlay { if showToast { toastView } }
         .statusBarHidden()
@@ -201,7 +237,7 @@ private struct MediaPagerView: View {
         }
     }
 
-    @ViewBuilder private func page(for message: MessagePayload) -> some View {
+    @ViewBuilder private func page(for message: MessagePayload, isCurrent: Bool) -> some View {
         let mediaType = message.file?.mediaType ?? ""
         let name = message.file?.name ?? ""
         if PreviewRouter.isImage(mediaType, name: name) {
@@ -212,16 +248,26 @@ private struct MediaPagerView: View {
                             // The top-right grid control already exists;
                             // don't display a second one in the action strip.
                             onOpenGallery: nil, onClose: onCloseViewer,
+                            onVerticalDrag: { verticalDrag = $0 },
                             onEditFinished: { edited in sendEdited(edited, sourceMessage: message) })
             } else {
                 Color.black.overlay { ProgressView() }
                     .task { await model.loadImage(for: message) }
             }
         } else if PreviewRouter.isVideo(mediaType, name: name) {
-            if let url = videoURLs[message.id] {
+            if !isCurrent {
+                Color.clear.overlay {
+                    if case .some(.some(let thumbnail)) = model.videoThumbnails[message.id] {
+                        Image(uiImage: thumbnail).resizable().scaledToFit()
+                    } else {
+                        Image(systemName: "play.rectangle")
+                            .font(.largeTitle).foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+            } else if let url = videoURLs[message.id] {
                 VideoPlayerView(url: url, name: name, mediaType: mediaType)
             } else {
-                Color.black.overlay { ProgressView() }
+                Color.clear.overlay { ProgressView().tint(.white) }
                     .task { await prepareVideo(message) }
             }
         } else {
