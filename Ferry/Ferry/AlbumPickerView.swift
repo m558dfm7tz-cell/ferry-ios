@@ -565,7 +565,7 @@ struct AlbumPickerView: View {
 
         imageManager.stopCachingImagesForAllAssets()
         assets = list
-        gridHasBeenScrolled = false
+        gridDragStartedAtTop = false
         gridAtTop = true
         // Preheat only the first visible rows, not thousands of full albums.
         // Caching every asset previously delayed picker opening and used memory.
