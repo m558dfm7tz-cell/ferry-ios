@@ -139,7 +139,8 @@ struct MessageRow: View {
         case .image:
             if let image = preview.image {
                 ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
-                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview,
+                            load: loadFile, loadFileURL: loadFileURL,
+                            onOpenGallery: openMediaGalleryFromPreview,
                             onEditFinished: sendEditedFromPreview)
             }
         case .video:
