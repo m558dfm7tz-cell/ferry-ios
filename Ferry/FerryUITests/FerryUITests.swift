@@ -46,6 +46,7 @@ final class FerryUITests: XCTestCase {
         let imageBubble = app.descendants(matching: .any)["bubble.image"].firstMatch
         XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
         tap(imageBubble)
+        print("FERRY_DIAG_PAGER_AFTER_TAP\n\(app.debugDescription)")
         let grid = app.buttons["viewer-open-gallery"].firstMatch
         XCTAssertTrue(grid.waitForExistence(timeout: 8),
                       "chat image should open its own pager with a gallery shortcut")
@@ -70,6 +71,7 @@ final class FerryUITests: XCTestCase {
         tap(input)
         XCTAssertTrue(plus.waitForExistence(timeout: 8))
         tap(plus)
+        print("FERRY_DIAG_PLUS_AFTER_TAP\n\(app.debugDescription)")
 
         let files = app.buttons["composer-attachment-file"].firstMatch
         let camera = app.buttons["composer-attachment-camera"].firstMatch
@@ -130,6 +132,7 @@ final class FerryUITests: XCTestCase {
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 8), "composer input should exist")
         tap(composer)
+        print("FERRY_DIAG_COMPOSER_AFTER_TAP\n\(app.debugDescription)")
 
         // Wait until the composer actually has keyboard focus before typing. On
         // CI the software keyboard may not appear (hardware keyboard), so accept
