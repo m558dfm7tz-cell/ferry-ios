@@ -294,6 +294,33 @@ struct RemoteCommandCatalogFetcher {
         self.session = URLSession(configuration: config)
     }
 
+    /// Prefer the authenticated Go relay; only the fallback uses port 42830.
+    func fetch(endpoint: ServerEndpoint, token: String?) async throws
+        -> (raw: Data, targets: [MentionTarget]) {
+        var request = URLRequest(url: endpoint.url(
+            path: "/api/v1/assistant-commands", queryItems: []))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            let remote = try JSONDecoder().decode(RemoteCommandCatalog.self, from: data)
+            guard let targets = RemoteCommandCatalog.map(remote), !targets.isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return (data, targets)
+        } catch {
+            guard let host = endpoint.baseURL.host else { throw error }
+            return try await fetch(host: host)
+        }
+    }
+
     func fetch(host: String) async throws -> (raw: Data, targets: [MentionTarget]) {
         var components = URLComponents()
         components.scheme = "http"
@@ -365,8 +392,8 @@ final class CommandCatalogStore {
     /// throttled to once per 60 s. Failures are silent (os.Logger debug only,
     /// never a user-facing error or a secret) and leave the cached/built-in
     /// catalog in place.
-    func refresh(host: String?) {
-        guard let host, !host.isEmpty, !isFetching else { return }
+    func refresh(endpoint: ServerEndpoint?, token: String?) {
+        guard let endpoint, !isFetching else { return }
         if let lastFetch, Date().timeIntervalSince(lastFetch) < Self.throttle { return }
         lastFetch = Date()
         isFetching = true
@@ -374,7 +401,8 @@ final class CommandCatalogStore {
             guard let self else { return }
             defer { self.isFetching = false }
             do {
-                let (raw, targets) = try await self.fetcher.fetch(host: host)
+                let (raw, targets) = try await self.fetcher.fetch(
+                    endpoint: endpoint, token: token)
                 Self.saveRaw(raw)
                 self.targets = targets
             } catch {
