@@ -1,0 +1,89 @@
+name: Fast iOS UI Tests
+
+on:
+  push:
+    branches:
+      - fix/ios-build128-media-keyboard-20261028
+    paths-ignore:
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      test_scope:
+        description: 'Single media test or all UI tests'
+        type: choice
+        options: [media, all]
+        default: media
+
+concurrency:
+  group: ferry-fast-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16.4
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
+
+      - name: Restore incremental simulator objects
+        uses: actions/cache/restore@v4
+        id: compiler-cache
+        with:
+          path: |
+            .ci-derived-data/Build
+            .ci-derived-data/SourcePackages
+          key: ferry-ui-dd-macos15-xcode164-v1-${{ github.sha }}
+          restore-keys: |
+            ferry-ui-dd-macos15-xcode164-v1-
+
+      - name: Run selected UI tests without building IPA
+        env:
+          NSUnbufferedIO: "YES"
+          TEST_SCOPE: ${{ inputs.test_scope || 'media' }}
+        run: |
+          set -o pipefail
+          ONLY=()
+          if [ "$TEST_SCOPE" != "all" ]; then
+            ONLY=(-only-testing:FerryUITests/FerryUITests/testChatBubbleOpensPagerWithTopRightMediaGrid)
+          fi
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath "$GITHUB_WORKSPACE/.ci-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ferry-ui.xcresult" \
+            -parallel-testing-enabled NO \
+            "${ONLY[@]}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/ferry-ui.log"
+
+      - name: Save compiled output even if tests fail
+        if: always() && steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ci-derived-data/Build
+            .ci-derived-data/SourcePackages
+          key: ferry-ui-dd-macos15-xcode164-v1-${{ github.sha }}
+
+      - name: Save test failure details
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferry-quick-ui-diagnostics
+          path: |
+            ${{ runner.temp }}/ferry-ui.log
+            ${{ runner.temp }}/ferry-ui.xcresult
+          retention-days: 3
+          if-no-files-found: warn
