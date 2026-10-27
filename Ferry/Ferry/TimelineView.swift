@@ -179,7 +179,8 @@ struct TimelineView: View {
                     scrollToBottomAnchor()
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { scrollToBottomAnchor() }
+                    // Background/resume must not reset a user reading older messages.
+                    if phase == .active && atBottom { scrollToBottomAnchor() }
                 }
                 .onScrollGeometryChange(for: ScrollState.self) { geometry in
                     ScrollState(
@@ -246,13 +247,14 @@ struct TimelineView: View {
                 }
             }
             .toolbar { toolbarContent }
-            .safeAreaInset(edge: .bottom) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if selectionMode {
                     SelectionBar(onClearAll: { selectionAlert = .clearAll })
                 } else {
                     ComposerView(model: model, focused: $composerFocused)
                 }
             }
+            .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
         }
         .sheet(isPresented: $showSearch) {
             SearchView(model: model, onSelect: { id in jumpToMessage(id) })
