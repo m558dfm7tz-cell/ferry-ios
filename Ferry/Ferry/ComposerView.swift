@@ -23,10 +23,6 @@ struct ComposerView: View {
     @State private var editTarget: ImageEditTarget?
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
-    /// The attachment destination the plus panel asked for. It is opened only
-    /// after the panel has finished dismissing — see the `.sheet` below.
-    private enum PendingAttachment { case file, camera }
-    @State private var pendingAttachment: PendingAttachment?
     @State private var didWarmUpAttachments = false
 
     /// A queued image opened in the editor. `id` is the upload item it will
@@ -45,6 +41,15 @@ struct ComposerView: View {
             if model.selectedAssistantID == "helper" {
                 AssistantTaskPanel(model: model)
             }
+            if showPlus {
+                PlusPanel(onFile: {
+                    showPlus = false
+                    showFileImporter = true
+                }, onCamera: {
+                    showPlus = false
+                    openCamera()
+                })
+            }
             if mentionContext != nil {
                 MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
@@ -56,6 +61,11 @@ struct ComposerView: View {
             inputBar
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
+        // Material extends through the home-indicator inset rather than leaving
+        // the bottom strip transparent over passing chat messages.
+        .background {
+            Rectangle().fill(.regularMaterial).ignoresSafeArea(edges: .bottom)
+        }
         .onAppear { refreshPasteAvailability() }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
@@ -63,16 +73,8 @@ struct ComposerView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshPasteAvailability()
         }
-        // Previously the panel called `dismiss()` and then presented the file
-        // importer / camera in the same run-loop turn. UIKit drops or defers a
-        // presentation that arrives while another dismissal is still animating,
-        // which is what made the next screen appear "a beat late". Record the
-        // choice instead and open it from `onDismiss`, i.e. once the panel is
-        // really gone.
-        .sheet(isPresented: $showPlus, onDismiss: { openPendingAttachment() }) {
-            PlusPanel(onFile: { pendingAttachment = .file },
-                      onCamera: { pendingAttachment = .camera })
-        }
+        // The two options are inline, so selecting one needs no sheet-dismiss
+        // animation before UIKit can present the camera or document picker.
         .onChange(of: showPlus) { _, isShown in
             guard isShown, !didWarmUpAttachments else { return }
             didWarmUpAttachments = true
@@ -324,17 +326,6 @@ struct ComposerView: View {
         Color(red: 0.93, green: 0.94, blue: 0.96)
     }
 
-    /// Opens whatever the plus panel picked. Runs from the sheet's `onDismiss`,
-    /// so the panel is fully gone before the next presentation starts.
-    private func openPendingAttachment() {
-        guard let pending = pendingAttachment else { return }
-        pendingAttachment = nil
-        switch pending {
-        case .file: showFileImporter = true
-        case .camera: openCamera()
-        }
-    }
-
     private func openCamera() {
         if UIImagePickerController.isSourceTypeAvailable(.camera) {
             showCamera = true
@@ -525,22 +516,13 @@ private enum AttachmentWarmup {
 struct PlusPanel: View {
     let onFile: () -> Void
     let onCamera: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         HStack(spacing: 16) {
-            // Record the choice first, then dismiss: the parent opens the real
-            // picker once this panel has finished animating away.
-            panelButton("文件", systemImage: "folder") {
-                onFile(); dismiss()
-            }
-            panelButton("拍摄", systemImage: "camera") {
-                onCamera(); dismiss()
-            }
+            panelButton("文件", systemImage: "folder", action: onFile)
+            panelButton("拍摄", systemImage: "camera", action: onCamera)
         }
-        .padding(24)
-        .presentationDetents([.height(180)])
-        .presentationDragIndicator(.visible)
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
     }
 
     private func panelButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {

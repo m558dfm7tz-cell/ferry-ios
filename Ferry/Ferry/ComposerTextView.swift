@@ -191,7 +191,11 @@ struct ComposerTextView: UIViewRepresentable {
                 textView.isScrollEnabled = shouldScroll
             }
             // Vertically center the text within the taller single-line bar.
-            let extra = max(0, clamped - contentHeight)
+            // UIKit can report a taller empty sizeThatFits than the visible
+            // placeholder glyph. Center against the actual font line height
+            // on single-line bars to prevent an off-center initial placeholder.
+            let visibleHeight = min(clamped, max(lineHeight, contentHeight))
+            let extra = max(0, clamped - visibleHeight)
             let top = extra / 2
             let insets = UIEdgeInsets(top: top, left: 0, bottom: extra - top, right: 0)
             if textView.textContainerInset != insets {
