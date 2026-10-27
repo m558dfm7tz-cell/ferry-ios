@@ -109,7 +109,9 @@ struct AttachmentActions: View {
         busy = true
         defer { busy = false }
         if let loadFileURL {
-            if let url = await loadFileURL() { shareItem = ShareItem(url: url) }
+            if let url = await loadFileURL() {
+                shareItem = ShareItem(url: AttachmentSupport.namedShareURL(for: url, name: name))
+            }
             return
         }
         guard let data = await load() else { return }
@@ -120,6 +122,27 @@ struct AttachmentActions: View {
 }
 
 enum AttachmentSupport {
+    /// Preserve the original filename in the system share sheet without
+    /// loading/rewriting the entire cached file. Linking is O(1) on APFS.
+    static func namedShareURL(for cachedURL: URL, name: String) -> URL {
+        let leaf = (name as NSString).lastPathComponent
+        guard !leaf.isEmpty else { return cachedURL }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ferry-share-" + UUID().uuidString, isDirectory: true)
+        let target = directory.appendingPathComponent(leaf)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.linkItem(at: cachedURL, to: target)
+            } catch {
+                try FileManager.default.copyItem(at: cachedURL, to: target)
+            }
+            return target
+        } catch {
+            return cachedURL
+        }
+    }
+
     static func writeTemporaryFile(_ data: Data, name: String) -> URL? {
         let leaf = (name as NSString).lastPathComponent
         let safe = leaf.isEmpty ? "file" : leaf
