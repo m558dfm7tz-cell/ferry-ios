@@ -1301,6 +1301,19 @@ final class AppModel {
     /// by the date-jump feature. The query matches the text body or file name
     /// (case-insensitive, Chinese OK). `messages` already excludes locally
     /// hidden/cleared messages, so results respect those too.
+    /// Load an older favorited message before jumping across conversations.
+    /// No server-side mutation; preserve the existing global pagination cursor.
+    func ensureMessageLoaded(id: String) async -> Bool {
+        if messages.contains(where: { $0.id == id }) { return true }
+        var count = 0
+        while hasOlder && count < Self.maxHistoryPages && !Task.isCancelled {
+            guard await loadOlder() else { break }
+            count += 1
+            if messages.contains(where: { $0.id == id }) { return true }
+        }
+        return false
+    }
+
     func searchMessages(query: String, filter: SearchFilter, maxPages: Int = 40) async -> [MessagePayload] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         // File-type filters (图片/视频/文件) may list their whole category

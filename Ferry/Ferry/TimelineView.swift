@@ -128,7 +128,7 @@ struct TimelineView: View {
             SearchView(model: model, onSelect: { id in jumpToMessage(id) })
         }
         .sheet(isPresented: $showFavorites) {
-            FavoritesView(model: model)
+            FavoritesView(model: model, onLocate: { id in jumpToMessage(id) })
         }
         .sheet(isPresented: $showDateJump) {
             DateJumpSheet(model: model,
