@@ -9,6 +9,8 @@ protocol FerryServicing {
     func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload
     func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data
     func attachmentFile(endpoint: ServerEndpoint, token: String, path: String, filename: String?) async throws -> URL
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
@@ -20,6 +22,15 @@ protocol FerryServicing {
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
     func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
+}
+
+// Test mocks and legacy adapters may implement only the original API.
+// Routing is never silently dropped when an unsupported adapter is used.
+extension FerryServicing {
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload {
+        throw URLError(.unsupportedURL)
+    }
 }
 
 struct FerryClient: FerryServicing {
@@ -83,6 +94,15 @@ struct FerryClient: FerryServicing {
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload {
         try await json(endpoint: endpoint, path: "/api/v1/messages/text", method: "POST", token: token,
                        body: try JSONSerialization.data(withJSONObject: ["text": text]))
+    }
+
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload {
+        var body = destination.fields
+        body["text"] = text
+        return try await json(endpoint: endpoint, path: "/api/v1/messages/text",
+                              method: "POST", token: token,
+                              body: try JSONSerialization.data(withJSONObject: body))
     }
 
     /// `POST /api/v1/files/{id}/download-link`: returns a short-lived (≈90 s)

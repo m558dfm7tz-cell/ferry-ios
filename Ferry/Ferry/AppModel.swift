@@ -36,6 +36,24 @@ final class AppModel {
     /// Stable server profile identities, to be supplied by future verified
     /// assistant-profiles API. Never manufacture custom server identifiers.
     private var verifiedRouteNamesByID: [String: String] = [:]
+
+    /// The selection is captured before sending. Unknown profile IDs must
+    /// fail closed rather than being sent as a normal transfer.
+    private func destinationForSelection() -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let selectedAssistantID else { return .transfer }
+        guard let assistant = assistantStore.assistants.first(where: { $0.id == selectedAssistantID }) else {
+            return nil
+        }
+        if assistant.isBuiltIn,
+           let base = AssistantStore.builtIn.first(where: { $0.id == assistant.id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let routeName = verifiedRouteNamesByID[assistant.id], !routeName.isEmpty else {
+            return nil
+        }
+        return .assistant(name: routeName, id: assistant.id)
+    }
     static let unclassifiedHistoryID = "unresolved-assistants"
 
     private func isKnownConversation(_ id: String) -> Bool {
@@ -132,6 +150,8 @@ final class AppModel {
         deviceName = UIDevice.current.name
         localStore = LocalDataStore(defaults: defaults)
         reviewStore = ReviewStore(defaults: defaults)
+        uploader.destinationProvider = { [weak self] in self?.destinationForSelection() }
+        uploader.routingEnabled = { [weak self] in self?.routeIsolationEnabled == true }
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
         notifier.onRoute = { [weak self] route in self?.apply(notificationRoute: route) }
@@ -402,6 +422,9 @@ final class AppModel {
     /// starts with an "@…" mention is left alone, so an explicit mention (or
     /// the mention picker's own insertion) is never double-tagged.
     func outgoingText(_ draftText: String) -> String {
+        // Once route is verified, preserve the user's text verbatim; the
+        // assistant target is represented by explicit request fields.
+        if routeIsolationEnabled { return draftText }
         guard let selectedAssistantID,
               let assistant = assistantStore.assistants.first(where: { $0.id == selectedAssistantID }) else {
             return draftText
@@ -424,13 +447,24 @@ final class AppModel {
     func sendText(_ text: String) async -> Bool {
         guard let endpoint, let token, !isSending else { return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let destination = destinationForSelection()
+        if routeIsolationEnabled && destination == nil {
+            statusMessage = "助手身份尚未同步，取消发送以防消息误归类。"
+            return false
+        }
         let current = generation
         isSending = true
         defer {
             if current == generation { isSending = false }
         }
         do {
-            let message = try await client.sendText(endpoint: endpoint, token: token, text: text)
+            let message: MessagePayload
+            if let destination {
+                message = try await client.sendText(endpoint: endpoint, token: token,
+                                                    text: text, destination: destination)
+            } else {
+                message = try await client.sendText(endpoint: endpoint, token: token, text: text)
+            }
             guard current == generation else { return false }
             append(message)
             return true
@@ -777,6 +811,8 @@ final class AppModel {
         dayIndexStarted = false
         countedMessageIDs = []
         selectedAssistantID = nil
+        routeIsolationEnabled = false
+        verifiedRouteNamesByID = [:]
         unreadAssistantIDs = []
         unreadMessageIDs = []
         // 已看 state is phone-local and keyed by item id, so it survives a
