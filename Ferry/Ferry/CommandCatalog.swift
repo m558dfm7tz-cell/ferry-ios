@@ -522,6 +522,7 @@ struct AssistantTaskPanel: View {
     @Bindable var model: AppModel
 
     @State private var chosenID: String?
+    @State private var showTaskSheet = false
     @State private var argument = ""
     @State private var includeDate = false
     @State private var date = Date()
@@ -561,7 +562,8 @@ struct AssistantTaskPanel: View {
         guard let chosen else { return nil }
         let verb = chosen.insertText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !verb.isEmpty else { return nil }
-        var text = verb.hasPrefix("@") ? verb : model.catalog.wakeTag(forAssistantName: "助手") + " " + verb
+        var text = verb.hasPrefix("@") || model.routeIsolationEnabled
+            ? verb : model.catalog.wakeTag(forAssistantName: "助手") + " " + verb
         let arguments = argument.trimmingCharacters(in: .whitespacesAndNewlines)
         if chosen.requiresArgument && arguments.isEmpty && !includeDate { return nil }
         if !arguments.isEmpty { text += " " + arguments }
@@ -575,24 +577,29 @@ struct AssistantTaskPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Image(systemName: "desktopcomputer").foregroundStyle(.cyan)
-                Text("电脑助手").font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "desktopcomputer")
+                    .foregroundStyle(.cyan)
+                Text("电脑助手")
+                    .font(.subheadline.weight(.semibold))
+                Text("快捷命令")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     model.refreshCommandCatalog()
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15))
-                        .frame(width: 32, height: 32)
+                        .font(.system(size: 14))
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("刷新电脑命令")
             }
             if commands.isEmpty {
-                Text("尚未读取到电脑助手的可用命令。连接电脑后刷新，也可以在下方使用 @助手 指令。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                Text("暂无可用命令，点击右侧刷新。")
+                    .font(.caption).foregroundStyle(.secondary)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -601,44 +608,68 @@ struct AssistantTaskPanel: View {
                                 chosenID = command.id
                                 argument = ""
                                 includeDate = false
+                                showTaskSheet = true
                             } label: {
                                 Text(command.title)
                                     .font(.footnote.weight(.medium))
-                                    .padding(.horizontal, 12).padding(.vertical, 9)
-                                    .background(chosenID == command.id
-                                        ? Color.accentColor.opacity(0.27) : Color.white.opacity(0.09),
-                                        in: Capsule())
+                                    .padding(.horizontal, 13)
+                                    .frame(height: 36)
+                                    .background(Color.white.opacity(0.10),
+                                                in: Capsule())
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("helper-command-\(command.id)")
                         }
                     }
                 }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityIdentifier("computer-assistant-commands")
+        .sheet(isPresented: $showTaskSheet) {
+            taskEditor
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private var taskEditor: some View {
+        NavigationStack {
+            Form {
                 if let chosen {
-                    if let subtitle = chosen.subtitle, !subtitle.isEmpty {
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    TextField(chosen.requiresArgument ? "输入所需参数" : "附加参数（可选）",
-                              text: $argument)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .padding(.horizontal, 11).padding(.vertical, 7)
-                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    if offersDate {
-                        Toggle("指定日期", isOn: $includeDate).font(.footnote)
-                        if includeDate {
-                            DatePicker("日期", selection: $date, displayedComponents: .date)
-                                .datePickerStyle(.compact)
+                    Section {
+                        if let subtitle = chosen.subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
                                 .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
+                        if chosen.requiresArgument || offersDate {
+                            TextField(chosen.requiresArgument ? "输入所需参数" : "附加参数（可选）",
+                                      text: $argument)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        if offersDate {
+                            Toggle("指定日期", isOn: $includeDate)
+                            if includeDate {
+                                DatePicker("日期", selection: $date,
+                                           displayedComponents: .date)
+                                    .datePickerStyle(.compact)
+                            }
+                        }
+                    } header: {
+                        Text("命令参数")
                     }
-                    HStack(spacing: 10) {
-                        Button("填入输入框") {
+                    Section {
+                        Button("填入聊天输入框") {
                             guard let preparedText else { return }
                             model.draft = preparedText
+                            showTaskSheet = false
                         }
                         .disabled(preparedText == nil)
-                        .buttonStyle(.bordered)
+
                         Button {
                             guard let preparedText, !executing else { return }
                             executing = true
@@ -649,20 +680,31 @@ struct AssistantTaskPanel: View {
                                     chosenID = nil
                                     argument = ""
                                     includeDate = false
+                                    showTaskSheet = false
                                     model.requestScrollToBottom()
                                 }
                             }
                         } label: {
-                            if executing { ProgressView() } else { Text("执行任务") }
+                            if executing {
+                                HStack {
+                                    ProgressView()
+                                    Text("正在执行…")
+                                }
+                            } else {
+                                Label("执行任务", systemImage: "paperplane.fill")
+                            }
                         }
                         .disabled(preparedText == nil || executing)
-                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
+            .navigationTitle(chosen?.title ?? "电脑助手")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showTaskSheet = false }
+                }
+            }
         }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityIdentifier("computer-assistant-commands")
     }
 }

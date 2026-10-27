@@ -255,7 +255,6 @@ struct TimelineView: View {
                                     // Jump positioning is a scroll anchor, not
                                     // permanent padding on the target message.
                                     .contentShape(Rectangle())
-                                    .onTapGesture { dismissKeyboard() }
                                     .id(message.id)
                             }
                         }
@@ -505,7 +504,10 @@ struct TimelineView: View {
     /// lands right above the composer. Someone reading older history is left
     /// where they are.
     private func followKeyboard(_ note: Notification) {
-        if !keyboardVisible { keyboardWasAtBottom = atBottom }
+        // A keyboard height-change notification is not another keyboard opening.
+        // Scheduling on each one previously caused repeated jumps.
+        guard !keyboardVisible else { return }
+        keyboardWasAtBottom = isFollowingTail && atBottom
         keyboardVisible = true
         guard keyboardWasAtBottom else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
@@ -517,6 +519,7 @@ struct TimelineView: View {
             // itself 120ms later to catch LazyVStack height changes; during the
             // keyboard animation that second scroll lands while the new layout
             // is still settling and was the main source of the dropped frames.
+            guard keyboardVisible, isFollowingTail, !transcriptUserDragging else { return }
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -524,15 +527,17 @@ struct TimelineView: View {
     /// A keyboard shrink changes viewport height again; restore the bottom only
     /// if it was being followed before the keyboard appeared.
     private func restoreAfterKeyboard(_ note: Notification) {
-        let shouldFollow = keyboardWasAtBottom
+        guard keyboardVisible else { return }
+        let shouldFollow = keyboardWasAtBottom && isFollowingTail
         keyboardVisible = false
         keyboardWasAtBottom = false
         keyboardFollowTask?.cancel()
         guard shouldFollow else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         keyboardFollowTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(max(duration, 0.1)))
-            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(max(duration, 0.1) + 0.05))
+            guard !Task.isCancelled, isFollowingTail, !transcriptUserDragging,
+                  !showAlbumPicker, !showAttachmentPanel, jumpHoldingID == nil else { return }
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -577,7 +582,8 @@ struct TimelineView: View {
     }
 
     private func onReachTop() {
-        guard !model.isLoadingOlder, model.hasOlder else { return }
+        guard !model.isLoadingOlder, model.hasOlder,
+              !keyboardVisible, jumpHoldingID == nil else { return }
         Task { await model.loadOlder() }
     }
 
