@@ -38,6 +38,40 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(copyLinkItem.waitForExistence(timeout: 5), "video bubble context menu should appear")
     }
 
+    /// Direct bubble tap opens the tapped photo, supports mixed-media
+    /// horizontal paging and keeps the chat-wide gallery on the top right.
+    @MainActor
+    func testChatBubbleOpensPagerWithTopRightMediaGrid() throws {
+        let imageBubble = app.buttons["bubble.image"].firstMatch
+        XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
+        tap(imageBubble)
+        let grid = app.buttons["viewer-open-gallery"].firstMatch
+        XCTAssertTrue(grid.waitForExistence(timeout: 8),
+                      "chat photo should open full-screen preview first")
+        XCTAssertTrue(app.staticTexts["1 / 2"].waitForExistence(timeout: 5))
+        app.swipeLeft()
+        XCTAssertTrue(app.staticTexts["2 / 2"].waitForExistence(timeout: 6))
+        tap(grid)
+        XCTAssertTrue(app.navigationBars["媒体"].waitForExistence(timeout: 8))
+    }
+
+    /// A tap in the composer restores the system keyboard from the
+    /// replacement inputView, without bringing up a second floating panel.
+    @MainActor
+    func testPlusAttachmentKeyboardHandoff() throws {
+        let input = app.textViews["composer-input"].firstMatch
+        let plus = app.buttons["添加"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        tap(input)
+        tap(plus)
+        let file = app.buttons["composer-attachment-file"].firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["composer-attachment-camera"].exists)
+        tap(input)
+        XCTAssertFalse(file.waitForExistence(timeout: 2),
+                       "attachment input must switch back to software keyboard")
+    }
+
     /// Device-management removal flow in mock mode: open 设备管理, verify the
     /// current-device tag, swipe a non-current device, tap 移除, and confirm the
     /// confirmation alert appears before cancelling.
