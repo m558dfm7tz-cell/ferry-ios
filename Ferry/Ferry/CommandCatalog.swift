@@ -14,17 +14,19 @@ struct CommandItem: Codable, Identifiable, Equatable {
     var subtitle: String?
     var icon: String?
     var aliases: [String]
+    var requiresArgument: Bool
 
-    enum CodingKeys: String, CodingKey { case id, title, insertText, subtitle, icon, aliases }
+    enum CodingKeys: String, CodingKey { case id, title, insertText, subtitle, icon, aliases, requiresArgument }
 
     init(id: String, title: String, insertText: String, subtitle: String? = nil,
-         icon: String? = nil, aliases: [String] = []) {
+         icon: String? = nil, aliases: [String] = [], requiresArgument: Bool = false) {
         self.id = id
         self.title = title
         self.insertText = insertText
         self.subtitle = subtitle
         self.icon = icon
         self.aliases = aliases
+        self.requiresArgument = requiresArgument
     }
 
     init(from decoder: Decoder) throws {
@@ -35,6 +37,7 @@ struct CommandItem: Codable, Identifiable, Equatable {
         subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
         icon = try c.decodeIfPresent(String.self, forKey: .icon)
         aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        requiresArgument = try c.decodeIfPresent(Bool.self, forKey: .requiresArgument) ?? false
     }
 }
 
@@ -134,7 +137,8 @@ struct RemoteCommandCatalog: Decodable {
         let commands = group.commands.map { command in
             CommandItem(id: command.name, title: command.name,
                         insertText: command.insert_text ?? "",
-                        subtitle: command.description, icon: nil, aliases: command.aliases ?? [])
+                        subtitle: command.description, icon: nil, aliases: command.aliases ?? [],
+                        requiresArgument: command.requires_argument ?? false)
         }
         if commands.count == 1 {
             let command = commands[0]
@@ -331,6 +335,11 @@ final class CommandCatalogStore {
     /// (FerryHelper unreachable, or a locally created assistant) — which is the
     /// same shape FerryHelper's own default config uses.
     func wakeTag(forAssistantName name: String) -> String {
+        if name == "助理",
+           let helper = targets.first(where: { $0.id == "helper" || $0.matchesAssistant("FerryHelper") || $0.matchesAssistant("助理") }) {
+            if let tag = Self.extractedWakeTag(from: helper.insertText) { return tag }
+            return "@" + (helper.alias ?? helper.title)
+        }
         if let target = targets.first(where: { $0.matchesAssistant(name) }),
            let tag = Self.extractedWakeTag(from: target.insertText) {
             return tag
