@@ -37,6 +37,7 @@ struct TimelineView: View {
     /// overlapping re-anchors on top of each other.
     @State private var keyboardFollowTask: Task<Void, Never>?
     @State private var jumpTask: Task<Void, Never>?
+    @State private var jumpHoldingID: String?
     @State private var keyboardVisible = false
     @State private var keyboardWasAtBottom = false
     @State private var followMediaMessageID: String?
@@ -270,11 +271,12 @@ struct TimelineView: View {
                 .onChange(of: model.messages.first?.id) { oldFirst, newFirst in
                     // Older page prepended: keep the previous first message at
                     // the top so the content does not visually jump.
-                    guard didInitialScroll, let oldFirst, oldFirst != newFirst else { return }
+                    guard jumpHoldingID == nil, didInitialScroll,
+                          let oldFirst, oldFirst != newFirst else { return }
                     pendingScroll = PendingScroll(id: oldFirst, anchor: .top)
                 }
                 .onChange(of: model.visibleMessages.last?.id) { _, newLast in
-                    guard newLast != nil else { return }
+                    guard newLast != nil, jumpHoldingID == nil else { return }
                     if !didInitialScroll {
                         didInitialScroll = true
                         scrollToBottomAnchor()
@@ -290,10 +292,14 @@ struct TimelineView: View {
                     }
                 }
                 .onChange(of: model.selectedAssistantID) { _, _ in
+                    guard jumpHoldingID == nil else { return }
                     clearJumpTarget()
+                    isFollowingTail = true
                     scrollToBottomAnchor()
                 }
                 .onChange(of: model.scrollToBottomToken) { _, _ in
+                    guard jumpHoldingID == nil else { return }
+                    isFollowingTail = true
                     scrollToBottomAnchor()
                 }
                 let mediaObserved = messageObserved
@@ -563,12 +569,12 @@ struct TimelineView: View {
     }
 
     private func followPendingMediaLoad() {
-        guard isFollowingTail, !transcriptUserDragging else { return }
+        guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
         // LazyVStack remeasures an image on the next layout pass. Following
         // every media load (not only the first) fixes consecutive photo sends.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(80))
-            guard isFollowingTail, !transcriptUserDragging else { return }
+            guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
             pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
         }
     }
@@ -604,12 +610,19 @@ struct TimelineView: View {
         let expectedFilter = jumpFilter(for: id)
         if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
         jumpTask?.cancel()
+        jumpHoldingID = id
+        isFollowingTail = false
+        didInitialScroll = true
+        keyboardFollowTask?.cancel()
         jumpTask = Task { @MainActor in
             // Let the date-jump sheet finish dismissing before scrolling.
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
             // The user picked another assistant meanwhile: drop the jump.
-            guard model.selectedAssistantID == expectedFilter else { return }
+            guard model.selectedAssistantID == expectedFilter else {
+                if jumpHoldingID == id { jumpHoldingID = nil }
+                return
+            }
             jumpTargetID = id
             highlightOn = true
             // One layout pass for the reserved gap before anchoring to it.
@@ -624,6 +637,7 @@ struct TimelineView: View {
                 anchor: model.visibleMessages.first?.id == id ? .top : .center)
             try? await Task.sleep(for: .milliseconds(400))
             withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }
+            if jumpHoldingID == id { jumpHoldingID = nil }
         }
     }
 
