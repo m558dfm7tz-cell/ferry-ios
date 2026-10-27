@@ -42,6 +42,9 @@ struct ComposerView: View {
         VStack(spacing: 8) {
             statusArea
             uploadQueue
+            if model.selectedAssistantID == "helper" {
+                AssistantTaskPanel(model: model)
+            }
             if mentionContext != nil {
                 MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
