@@ -338,11 +338,8 @@ struct TimelineView: View {
                     // keyboard. A gesture attached to the whole message stack
                     // competes with its child buttons (media bubbles) and the
                     // composer inset. Keep native controls as the hit targets.
-                    .background {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { dismissKeyboard() }
-                    }
+                    // Diagnostic: no whole-transcript tap recognizer. It may
+                    // cancel native touches delivered to nested media bubbles.
                 }
                 let messageObserved = baseTranscript
                     .defaultScrollAnchor(.bottom)
