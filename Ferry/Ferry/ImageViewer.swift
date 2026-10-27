@@ -16,6 +16,8 @@ struct ImageViewer: View {
     var onOpenGallery: (() -> Void)? = nil
     /// Called when an image is dismissed inside the full-screen media pager.
     var onClose: (() -> Void)? = nil
+    /// Pass vertical drag progress through to the parent pager's backdrop.
+    var onVerticalDrag: ((CGFloat) -> Void)? = nil
     /// Called with the edited copy when the user finishes editing from the
     /// viewer. Nil hides the 编辑 entry.
     var onEditFinished: ((UIImage) -> Void)? = nil
@@ -41,6 +43,7 @@ struct ImageViewer: View {
             ZoomableImageView(image: image,
                               onDismiss: { if let onClose { onClose() } else { dismiss() } },
                               onDragChange: { translation in
+                                  onVerticalDrag?(translation)
                                   if translation == 0 {
                                       withAnimation(.easeOut(duration: 0.22)) { verticalDragOffset = 0 }
                                   } else {
