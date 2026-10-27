@@ -111,14 +111,14 @@ final class AppModel {
     }
 
     var imageMessages: [MessagePayload] {
-        messages.filter { $0.file?.mediaType.hasPrefix("image/") == true }
+        messages.filter { $0.file.map { PreviewRouter.isImage($0) } ?? false }
     }
 
     /// Every loaded image + video message (non-hidden), for the media gallery.
     var mediaMessages: [MessagePayload] {
         messages.filter {
             guard let file = $0.file else { return false }
-            return PreviewRouter.isImage(file.mediaType) || PreviewRouter.isVideo(file)
+            return PreviewRouter.isImage(file) || PreviewRouter.isVideo(file)
         }
     }
 
@@ -521,7 +521,7 @@ final class AppModel {
     }
 
     func loadImage(for message: MessagePayload) async {
-        guard let file = message.file, file.mediaType.hasPrefix("image/") else { return }
+        guard let file = message.file, PreviewRouter.isImage(file) else { return }
         guard images[message.id] == nil, !loadingImages.contains(message.id) else { return }
         guard let endpoint, let token else { return }
         let current = generation
