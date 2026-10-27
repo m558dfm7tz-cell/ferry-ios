@@ -24,6 +24,9 @@ struct ComposerView: View {
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
     @State private var didWarmUpAttachments = false
+    @State private var keyboardPresented = false
+    @State private var pendingAlbumAfterKeyboard = false
+    @State private var pendingPlusAfterKeyboard = false
 
     /// A queued image opened in the editor. `id` is the upload item it will
     /// replace when the edit is confirmed.
@@ -74,6 +77,23 @@ struct ComposerView: View {
             .allowsHitTesting(false)
         }
         .onAppear { refreshPasteAvailability() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardPresented = true
+            if showPlus { showPlus = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardPresented = false
+            if pendingAlbumAfterKeyboard {
+                pendingAlbumAfterKeyboard = false
+                withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+            } else if pendingPlusAfterKeyboard {
+                pendingPlusAfterKeyboard = false
+                withAnimation(.easeOut(duration: 0.18)) { showPlus = true }
+            }
+        }
+        .onChange(of: focused.wrappedValue) { _, active in
+            if active { showPlus = false }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
         }
@@ -230,9 +250,14 @@ struct ComposerView: View {
     private var inputBar: some View {
         HStack(spacing: 10) {
             Button {
-                focused.wrappedValue = false
                 showPlus = false
-                withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+                pendingPlusAfterKeyboard = false
+                if focused.wrappedValue || keyboardPresented {
+                    pendingAlbumAfterKeyboard = true
+                    dismissComposerKeyboard()
+                } else {
+                    withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+                }
             } label: {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 24, weight: .light))
@@ -273,7 +298,7 @@ struct ComposerView: View {
                                  if context != nil { model.refreshCommandCatalog() }
                              },
                              accessibilityIdentifier: "composer-input")
-                .frame(height: textFieldHeight)
+                .frame(height: max(44, textFieldHeight), alignment: .center)
                 // Hard guarantee that long text can never be painted outside
                 // the capsule: the text view is sized by `textFieldHeight`, and
                 // clipping keeps a stale intermediate height from overflowing.
@@ -302,14 +327,24 @@ struct ComposerView: View {
         .background(capsuleColor, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
+    private func dismissComposerKeyboard() {
+        focused.wrappedValue = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+
     private var plusButton: some View {
         Button {
-            if focused.wrappedValue {
-                focused.wrappedValue = false
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                                to: nil, from: nil, for: nil)
+            if showPlus {
+                pendingPlusAfterKeyboard = false
+                withAnimation(.easeOut(duration: 0.18)) { showPlus = false }
+            } else if focused.wrappedValue || keyboardPresented {
+                pendingPlusAfterKeyboard = true
+                pendingAlbumAfterKeyboard = false
+                dismissComposerKeyboard()
+            } else {
+                withAnimation(.easeOut(duration: 0.18)) { showPlus = true }
             }
-            withAnimation(.easeOut(duration: 0.18)) { showPlus.toggle() }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
