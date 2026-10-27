@@ -102,7 +102,6 @@ struct AlbumPickerView: View {
                 if showAlbumList { albumListOverlay }
             }
         }
-        .statusBarHidden()
         .task { await resolvePermission() }
         .alert("发送失败", isPresented: sendErrorBinding) {
             Button("好", role: .cancel) {}
@@ -153,10 +152,20 @@ struct AlbumPickerView: View {
 
             Color.clear.frame(width: 44, height: 44)
         }
-        .padding(.top, 4)
+        .padding(.top, max(16, Self.topSystemInset + 10))
+        .padding(.bottom, 10)
+        .frame(minHeight: 76)
         .contentShape(Rectangle())
         // Header buttons must not steal a genuine downward swipe.
         .highPriorityGesture(topBarDismissGesture)
+    }
+
+    // Prevent the album header from entering the Dynamic Island / notch.
+    private static var topSystemInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 44
     }
 
     private var albumCapsule: some View {
@@ -313,8 +322,9 @@ struct AlbumPickerView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .frame(height: 52)
-        .background(Color.black.opacity(0.9))
+        .frame(height: 64)
+        .padding(.bottom, 18)
+        .background(Color.black.opacity(0.92))
     }
 
     private var sendButton: some View {
@@ -969,8 +979,9 @@ private struct AlbumPreviewView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .frame(height: 52)
-        .background(Color.black.opacity(0.9))
+        .frame(height: 64)
+        .padding(.bottom, 18)
+        .background(Color.black.opacity(0.92))
     }
 
     private var sendButton: some View {
