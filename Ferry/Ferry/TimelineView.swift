@@ -211,7 +211,13 @@ struct TimelineView: View {
                                            image: model.images[message.id],
                                            videoThumbnail: model.videoThumbnails[message.id],
                                            videoDuration: model.videoDurations[message.id] ?? 0,
-                                           loadImage: { await model.loadImage(for: message) },
+                                           loadImage: {
+                                                if case .some(.none) = model.images[message.id] {
+                                                    await model.retryImage(for: message)
+                                                } else {
+                                                    await model.loadImage(for: message)
+                                                }
+                                           },
                                            loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
                                            loadFile: { await model.fileData(for: message) },
                                            loadFileURL: { await model.fileURL(for: message) },
