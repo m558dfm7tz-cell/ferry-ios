@@ -325,6 +325,53 @@ struct ServerCustomAssistant: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case name, avatarText, colorIndex }
 }
 
+/// Runtime capability handshake, including the active helper guard.
+struct FerryCapabilities: Decodable, Sendable {
+    let protocolVersion: Int
+    let messageRouteV1: Bool
+    let assistantIdentityV1: Bool
+    let assistantProfilesV1: Bool
+    let helperRouteGuardV1: Bool
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol"
+        case messageRouteV1 = "message_route_v1"
+        case assistantIdentityV1 = "assistant_identity_v1"
+        case assistantProfilesV1 = "assistant_profiles_v1"
+        case helperRouteGuardV1 = "helper_route_guard_v1"
+    }
+    var permitsIsolatedTransfer: Bool {
+        protocolVersion >= 2 && messageRouteV1 && assistantIdentityV1 &&
+            assistantProfilesV1 && helperRouteGuardV1
+    }
+}
+
+struct AssistantProfile: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let routeName: String
+    let displayName: String
+    let avatarText: String
+    let colorIndex: Int
+    let hidden: Bool
+    let deleted: Bool
+    let revision: Int64
+    enum CodingKeys: String, CodingKey {
+        case id, hidden, deleted, revision
+        case routeName = "route_name"
+        case displayName = "display_name"
+        case avatarText = "avatar_text"
+        case colorIndex = "color_index"
+    }
+}
+
+struct AssistantProfilesSnapshot: Decodable, Sendable {
+    let revision: Int64
+    let profiles: [AssistantProfile]
+}
+
+struct AssistantProfileResponse: Decodable, Sendable {
+    let profile: AssistantProfile
+}
+
 /// `GET/PUT /api/v1/assistant-state`: the server-authoritative assistant bar
 /// (selected filter, per-assistant read cursors, custom assistant list).
 struct AssistantStatePayload: Codable, Sendable {

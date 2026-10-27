@@ -2,6 +2,15 @@ import Foundation
 import UIKit
 
 protocol FerryServicing {
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool
     func join(endpoint: ServerEndpoint, password: String, name: String) async throws -> AccessClaim
     func currentDevice(endpoint: ServerEndpoint, token: String) async throws -> Device
@@ -27,6 +36,25 @@ protocol FerryServicing {
 // Test mocks and legacy adapters may implement only the original API.
 // Routing is never silently dropped when an unsupported adapter is used.
 extension FerryServicing {
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
+        throw URLError(.unsupportedURL)
+    }
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot {
+        throw URLError(.unsupportedURL)
+    }
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
     func sendText(endpoint: ServerEndpoint, token: String, text: String,
                   destination: MessageDestination) async throws -> MessagePayload {
         throw URLError(.unsupportedURL)
@@ -58,6 +86,52 @@ struct FerryClient: FerryServicing {
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 24 * 3600
         self.transferSession = URLSession(configuration: config)
+    }
+
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
+        try await json(endpoint: endpoint, path: "/api/v1/capabilities", token: token)
+    }
+
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot {
+        try await json(endpoint: endpoint, path: "/api/v1/assistant-profiles", token: token)
+    }
+
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile {
+        let fields: [String: Any] = ["display_name": displayName, "avatar_text": avatarText,
+                                     "color_index": colorIndex]
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles", method: "POST",
+            token: token, body: try JSONSerialization.data(withJSONObject: fields))
+        return response.profile
+    }
+
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile {
+        var fields: [String: Any] = ["if_revision": revision]
+        for (key, value) in changes {
+            if key == "hidden" || key == "deleted" {
+                fields[key] = value == "true"
+            } else if key == "color_index", let number = Int(value) {
+                fields[key] = number
+            } else {
+                fields[key] = value
+            }
+        }
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles/\(id)", method: "PATCH",
+            token: token, body: try JSONSerialization.data(withJSONObject: fields))
+        return response.profile
+    }
+
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile {
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles/\(id)/restore",
+            method: "POST", token: token,
+            body: try JSONSerialization.data(withJSONObject: ["if_revision": revision]))
+        return response.profile
     }
 
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool {
