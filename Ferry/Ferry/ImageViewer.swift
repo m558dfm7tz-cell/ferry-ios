@@ -16,6 +16,8 @@ struct ImageViewer: View {
     var onOpenGallery: (() -> Void)? = nil
     /// Called when an image is dismissed inside the full-screen media pager.
     var onClose: (() -> Void)? = nil
+    /// Pass vertical drag progress through to the parent pager's backdrop.
+    var onVerticalDrag: ((CGFloat) -> Void)? = nil
     /// Called with the edited copy when the user finishes editing from the
     /// viewer. Nil hides the 编辑 entry.
     var onEditFinished: ((UIImage) -> Void)? = nil
@@ -41,12 +43,19 @@ struct ImageViewer: View {
             ZoomableImageView(image: image,
                               onDismiss: { if let onClose { onClose() } else { dismiss() } },
                               onDragChange: { translation in
+                                  onVerticalDrag?(translation)
                                   if translation == 0 {
                                       withAnimation(.easeOut(duration: 0.22)) { verticalDragOffset = 0 }
                                   } else {
                                       verticalDragOffset = translation
                                   }
-                              }).ignoresSafeArea()
+                              })
+                .ignoresSafeArea()
+                // Drag ONLY the image surface. Title and action chrome are
+                // added afterwards, in the fixed viewport coordinate space.
+                .offset(y: verticalDragOffset)
+                .scaleEffect(previewScale)
+                .opacity(previewOpacity)
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
@@ -86,9 +95,6 @@ struct ImageViewer: View {
             .padding(20)
         }
         .overlay { if showToast { toastView } }
-        .offset(y: verticalDragOffset)
-        .scaleEffect(previewScale)
-        .opacity(previewOpacity)
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
         }
