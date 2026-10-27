@@ -18,6 +18,7 @@ struct TimelineView: View {
     @State private var isFollowingTail = true
     @State private var transcriptUserDragging = false
     @State private var showAttachmentPanel = false
+    @State private var showAlbumPicker = false
     @State private var selectionMode = false
     @State private var selectedIDs: Set<String> = []
     @State private var selectionAlert: SelectionAlert?
@@ -115,7 +116,8 @@ struct TimelineView: View {
                     SelectionBar(onClearAll: { selectionAlert = .clearAll })
                 } else {
                     ComposerView(model: model, focused: $composerFocused,
-                                 showPlus: $showAttachmentPanel)
+                                 showPlus: $showAttachmentPanel,
+                                 showImagePicker: $showAlbumPicker)
                 }
             }
             .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
@@ -181,7 +183,17 @@ struct TimelineView: View {
                 Text("确定清空本机全部消息吗？此操作仅在本机隐藏，不会删除服务器上的消息。")
             }
         }
+        .overlay {
+            if showAlbumPicker {
+                AlbumPickerView(model: model, onClose: {
+                    showAlbumPicker = false
+                })
+                .ignoresSafeArea()
+                .zIndex(10)
+            }
+        }
         .overlay { if showToast { toastView } }
+        .statusBarHidden(showAlbumPicker)
     }
 
     /// Split the lazy row hierarchy and scroll modifiers into smaller view
