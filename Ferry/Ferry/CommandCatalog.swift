@@ -134,6 +134,8 @@ struct RemoteCommandCatalog: Decodable {
     }
 
     static func map(group: RemoteCommandGroup) -> MentionTarget {
+        // Keep iOS navigation IDs stable while displaying Windows' "助手".
+        let key = group.assistant == "助手" ? "helper" : group.assistant
         let commands = group.commands.map { command in
             CommandItem(id: command.name, title: command.name,
                         insertText: command.insert_text ?? "",
@@ -142,11 +144,11 @@ struct RemoteCommandCatalog: Decodable {
         }
         if commands.count == 1 {
             let command = commands[0]
-            return MentionTarget(id: group.assistant, title: group.assistant, alias: group.assistant,
+            return MentionTarget(id: key, title: group.assistant, alias: group.assistant,
                                  aliases: command.aliases, subtitle: command.subtitle,
                                  insertText: command.insertText, icon: nil, commands: [])
         }
-        return MentionTarget(id: group.assistant, title: group.assistant, alias: group.assistant,
+        return MentionTarget(id: key, title: group.assistant, alias: group.assistant,
                              aliases: [], subtitle: nil, insertText: nil, icon: nil, commands: commands)
     }
 }
@@ -264,7 +266,7 @@ struct LocalCommandCatalogProvider: CommandCatalogProvider {
     static let builtIn: [MentionTarget] = [
         MentionTarget(id: "desktop", title: "电脑", alias: "电脑", aliases: ["PC", "desktop"],
                       subtitle: "唤醒电脑", insertText: "@电脑 ", icon: "desktopcomputer"),
-        MentionTarget(id: "助手", title: "助手", alias: "FerryHelper", icon: "sparkles", commands: [
+        MentionTarget(id: "helper", title: "助手", alias: "FerryHelper", icon: "sparkles", commands: [
             CommandItem(id: "截图", title: "截图", insertText: "/截图",
                         subtitle: "截取电脑屏幕并发送", icon: "camera.viewfinder"),
             CommandItem(id: "找", title: "找文件", insertText: "/找 ",

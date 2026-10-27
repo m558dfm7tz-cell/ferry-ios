@@ -395,6 +395,8 @@ struct AssistantBarView: View {
     @State private var renamingAssistant: Assistant?
     @State private var pendingDelete: Assistant?
     @State private var removeActionIsHide = false
+    @State private var avatarMenuTarget: Assistant?
+    @State private var isAvatarMenuPresented = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let avatarSize: CGFloat = 40
@@ -435,6 +437,45 @@ struct AssistantBarView: View {
                                    onCancel: { renamingAssistant = nil })
             }
         }
+        .confirmationDialog(
+            avatarMenuTarget.map { "管理「\($0.name)」" } ?? "管理头像",
+            isPresented: $isAvatarMenuPresented,
+            titleVisibility: .visible
+        ) {
+            if let assistant = avatarMenuTarget {
+                Button("更换头像") {
+                    presentAfterMenu { editingAssistant = assistant }
+                }
+                Button("编辑信息") {
+                    presentAfterMenu { renamingAssistant = assistant }
+                }
+                if assistant.isBuiltIn {
+                    Button("隐藏头像") {
+                        presentAfterMenu {
+                            removeActionIsHide = true
+                            pendingDelete = assistant
+                        }
+                    }
+                }
+                Button(assistant.isBuiltIn ? "删除头像分类" : "删除助手",
+                       role: .destructive) {
+                    presentAfterMenu {
+                        removeActionIsHide = false
+                        pendingDelete = assistant
+                    }
+                }
+            } else {
+                if canRestoreBuiltIns {
+                    Button("恢复隐藏的头像") { onRestoreBuiltIns() }
+                }
+                if canRestoreDeletedBuiltIns {
+                    Button("恢复内置默认头像") { onRestoreDeletedBuiltIns() }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只管理手机上的头像和分类，不删除历史聊天记录。")
+        }
         .alert(removeActionIsHide ? "隐藏头像" : "删除助手",
                isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
             Button(removeActionIsHide ? "隐藏" : "删除", role: .destructive) {
@@ -451,6 +492,15 @@ struct AssistantBarView: View {
             } else {
                 Text("删除「\(assistant.name)」的本地分类，历史消息仍保留在“全部”。")
             }
+        }
+    }
+
+    /// Wait one UI beat between closing the menu and presenting a sheet/alert.
+    private func presentAfterMenu(_ action: @escaping @MainActor () -> Void) {
+        isAvatarMenuPresented = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            action()
         }
     }
 
@@ -486,43 +536,15 @@ struct AssistantBarView: View {
         .accessibilityLabel(title)
         .accessibilityIdentifier(accessibilityID)
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
-        .contextMenu {
-            if assistant == nil {
-                if canRestoreBuiltIns {
-                    Button("恢复隐藏的头像", systemImage: "eye") { onRestoreBuiltIns() }
-                }
-                if canRestoreDeletedBuiltIns {
-                    Button("恢复内置默认头像", systemImage: "arrow.counterclockwise") {
-                        onRestoreDeletedBuiltIns()
-                    }
-                }
-            }
-            if let assistant {
-                Button {
-                    editingAssistant = assistant
-                } label: {
-                    Label("更换头像", systemImage: "photo")
-                }
-                Button {
-                    renamingAssistant = assistant
-                } label: {
-                    Label("编辑信息", systemImage: "pencil")
-                }
-                if assistant.isBuiltIn {
-                    Button {
-                        removeActionIsHide = true
-                        pendingDelete = assistant
-                    } label: {
-                        Label("隐藏头像", systemImage: "eye.slash")
-                    }
-                }
-                Button(role: .destructive) {
-                    removeActionIsHide = false
-                    pendingDelete = assistant
-                } label: {
-                    Label(assistant.isBuiltIn ? "删除头像分类" : "删除助手", systemImage: "trash")
-                }
-            }
+        // Explicit long-press action sheet avoids a contextMenu rendering
+        // only its first item on some iOS versions inside ScrollView.
+        .onLongPressGesture(minimumDuration: 0.55) {
+            avatarMenuTarget = assistant
+            isAvatarMenuPresented = true
+        }
+        .accessibilityAction(named: "管理头像") {
+            avatarMenuTarget = assistant
+            isAvatarMenuPresented = true
         }
     }
 
