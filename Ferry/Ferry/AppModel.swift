@@ -177,6 +177,13 @@ final class AppModel {
     private var outbox: [PendingDeletion] = []
     private var isFlushingOutbox = false
     private static let outboxPrefix = "ferry.outbox."
+    /// Dedicated per-space action log for both starring and unstarring.
+    private var favoriteActions: [PendingFavoriteAction] = []
+    private var isFlushingFavoriteActions = false
+    private var isRefreshingFavorites = false
+    private var lastFavoritesFetch: Date?
+    private static let favoritesQueuePrefix = "ferry.pendingFavorites."
+    private static let favoritesMigrationPrefix = "ferry.favoritesMigrationV2."
     private var generation = UUID()
     private var loadingImages: Set<String> = []
     private var loadingThumbnails: Set<String> = []
@@ -339,6 +346,8 @@ final class AppModel {
         avatarStore.activate(space: space)
         VideoThumbnailCache.setSpace(space)
         loadOutbox()
+        loadFavoriteActions()
+        lastFavoritesFetch = nil
     }
 
     /// Resolve the space for an origin on reconnect (token-only, no password).
@@ -381,6 +390,80 @@ final class AppModel {
             defaults.set(data, forKey: outboxKey)
         } else {
             defaults.removeObject(forKey: outboxKey)
+        }
+    }
+
+    private var favoriteQueueKey: String {
+        Self.favoritesQueuePrefix + (spaceKey?.value ?? "")
+    }
+
+    private func loadFavoriteActions() {
+        if let data = defaults.data(forKey: favoriteQueueKey),
+           let decoded = try? JSONDecoder().decode([PendingFavoriteAction].self, from: data) {
+            favoriteActions = decoded
+        } else {
+            favoriteActions = []
+        }
+    }
+
+    private func persistFavoriteActions() {
+        if let data = try? JSONEncoder().encode(favoriteActions) {
+            defaults.set(data, forKey: favoriteQueueKey)
+        }
+    }
+
+    /// Pre-existing phone-only stars are imported just once, at a deliberately
+    /// OLD timestamp. Newer server tombstones always win, so upgrading the
+    /// app cannot resurrect a favorite removed earlier on Windows.
+    private func migratePhoneFavoritesOnce() {
+        guard let spaceKey else { return }
+        let key = Self.favoritesMigrationPrefix + spaceKey.value
+        guard !defaults.bool(forKey: key) else { return }
+        for favorite in localStore.favorites {
+            let record = favoriteRecord(from: favorite, at: 1)
+            queueFavoriteAction(PendingFavoriteAction(kind: .add,
+                messageID: favorite.id, opAt: 1, record: record), flush: false)
+        }
+        // Queue is persisted before declaring migration complete.
+        defaults.set(true, forKey: key)
+    }
+
+    private func queueFavoriteAction(_ action: PendingFavoriteAction, flush: Bool = true) {
+        // Keep at most the most recent locally queued action per message.
+        // An already in-flight earlier action is safe: the Go server compares
+        // timestamps, and a later action eventually wins.
+        favoriteActions.removeAll { $0.messageID == action.messageID }
+        favoriteActions.append(action)
+        persistFavoriteActions()
+        if flush { Task { await flushFavoriteActions() } }
+    }
+
+    private func flushFavoriteActions() async {
+        guard !isFlushingFavoriteActions, !favoriteActions.isEmpty,
+              let endpoint, let token else { return }
+        isFlushingFavoriteActions = true
+        let current = generation
+        defer { isFlushingFavoriteActions = false }
+        while current == generation, !favoriteActions.isEmpty, !Task.isCancelled {
+            let action = favoriteActions[0]
+            do {
+                switch action.kind {
+                case .add:
+                    guard let record = action.record else { return }
+                    _ = try await client.putFavorite(endpoint: endpoint, token: token,
+                                                     messageID: action.messageID, record: record)
+                case .remove:
+                    _ = try await client.deleteFavorite(endpoint: endpoint, token: token,
+                                                        messageID: action.messageID, opAt: action.opAt)
+                }
+                guard current == generation else { return }
+                favoriteActions.removeAll { $0.id == action.id }
+                persistFavoriteActions()
+                lastFavoritesFetch = nil
+            } catch {
+                // Retain the timestamped action for a later retry.
+                return
+            }
         }
     }
 
@@ -860,13 +943,25 @@ final class AppModel {
     }
 
     func toggleFavorite(_ message: MessagePayload) async {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
         if localStore.isFavorite(message.id) {
             localStore.removeFavorite(message.id)
-            enqueueDeletion(PendingDeletion(kind: .favorite, ids: [message.id]))
+            queueFavoriteAction(PendingFavoriteAction(kind: .remove,
+                                                      messageID: message.id, opAt: now))
         } else {
-            var data: Data?
-            if message.file != nil { data = await fileData(for: message) }
-            localStore.addFavorite(message, fileData: data)
+            // Show the star and submit the immutable operation immediately.
+            // Large attachment downloads must not block server synchronization.
+            localStore.addFavorite(message, fileData: nil)
+            queueFavoriteAction(PendingFavoriteAction(kind: .add,
+                messageID: message.id, opAt: now,
+                record: favoriteRecord(from: FavoriteMessage(message: message,
+                                                             localFileName: nil), at: now)))
+            if message.file != nil {
+                let current = generation
+                if let data = await fileData(for: message), current == generation {
+                    localStore.attachFavoriteFile(message.id, data: data)
+                }
+            }
         }
     }
 
@@ -968,6 +1063,10 @@ final class AppModel {
         verifiedRouteNamesByID = [:]
         assistantStore.adoptServerProfiles(nil)
         lastProfileRefresh = nil
+        lastFavoritesFetch = nil
+        favoriteActions = []
+        isFlushingFavoriteActions = false
+        isRefreshingFavorites = false
         unreadAssistantIDs = []
         unreadMessageIDs = []
         // 已看 state is phone-local and keyed by item id, so it survives a
@@ -1015,6 +1114,8 @@ final class AppModel {
             while !Task.isCancelled {
                 await self?.refreshMessages(generation: current)
                 await self?.refreshChanges(generation: current)
+                await self?.flushFavoriteActions()
+                await self?.refreshFavorites(generation: current)
                 await self?.flushOutbox()
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -1089,7 +1190,13 @@ final class AppModel {
                 removeMessageLocally(id: change.itemID)
             }
         case "favorite":
-            localStore.removeFavorite(change.itemID)
+            // Never overwrite a locally pending user decision from an older
+            // remote event. The periodic authoritative GET resolves it after
+            // the queued action has been acknowledged by Go.
+            if !favoriteActions.contains(where: { $0.messageID == change.itemID }) {
+                localStore.removeFavorite(change.itemID)
+            }
+            lastFavoritesFetch = nil
         default:
             break
         }
@@ -1129,9 +1236,9 @@ final class AppModel {
     /// device removed, then advance the deletion-log cursor past history.
     private func reconcile(generation current: UUID) async {
         guard current == generation, let endpoint, let token else { return }
-        if let payload = try? await client.favorites(endpoint: endpoint, token: token) {
-            await reconcileFavorites(payload.favorites)
-        }
+        migratePhoneFavoritesOnce()
+        await flushFavoriteActions()
+        await refreshFavorites(generation: current, force: true)
         if routeIsolationEnabled {
             await refreshServerProfiles(force: true)
         } else if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
@@ -1142,37 +1249,34 @@ final class AppModel {
         }
     }
 
-    /// Unify the phone's favorites with the shared server list. Phone-local
-    /// favorites the server doesn't know about are pushed first (so nothing is
-    /// lost), then the phone adopts the merged list: favorites removed on
-    /// another device disappear, and favorites starred elsewhere appear (their
-    /// media type is inferred from the server's file-kind; bytes are re-fetched
-    /// from the server when opened).
-    private func reconcileFavorites(_ serverFavorites: [ServerFavorite]) async {
-        let serverIDs = Set(serverFavorites.map(\.id))
-        for local in localStore.favorites where !serverIDs.contains(local.id) {
-            await pushFavorite(local)
-        }
-        guard let endpoint, let token,
-              let payload = try? await client.favorites(endpoint: endpoint, token: token) else { return }
-        let merged = payload.favorites
-        let mergedIDs = Set(merged.map(\.id))
-        for local in localStore.favorites where !mergedIDs.contains(local.id) {
-            localStore.removeFavorite(local.id)
-        }
-        let localIDs = Set(localStore.favorites.map(\.id))
-        for server in merged where !localIDs.contains(server.id) {
-            localStore.addFavorite(messagePayload(from: server), fileData: nil)
+    /// The server is authoritative. Local queued actions alone are exempt
+    /// until the corresponding PUT/DELETE has completed successfully.
+    private func refreshFavorites(generation current: UUID, force: Bool = false) async {
+        guard current == generation, let endpoint, let token, !isRefreshingFavorites else { return }
+        if !force, let previous = lastFavoritesFetch,
+           Date().timeIntervalSince(previous) < 3 { return }
+        isRefreshingFavorites = true
+        defer { isRefreshingFavorites = false }
+        do {
+            let payload = try await client.favorites(endpoint: endpoint, token: token)
+            guard current == generation else { return }
+            let serverIDs = Set(payload.favorites.map(\.id))
+            let pendingIDs = Set(favoriteActions.map(\.messageID))
+            for local in localStore.favorites
+                where !serverIDs.contains(local.id) && !pendingIDs.contains(local.id) {
+                localStore.removeFavorite(local.id)
+            }
+            for server in payload.favorites
+                where !pendingIDs.contains(server.id) && !localStore.isFavorite(server.id) {
+                localStore.addFavorite(messagePayload(from: server), fileData: nil)
+            }
+            lastFavoritesFetch = Date()
+        } catch {
+            // Keep the last visible snapshot, and retry on the next poll.
         }
     }
 
-    private func pushFavorite(_ local: FavoriteMessage) async {
-        guard let endpoint, let token else { return }
-        _ = try? await client.putFavorite(endpoint: endpoint, token: token,
-                                          messageID: local.id, record: favoriteRecord(from: local))
-    }
-
-    private func favoriteRecord(from local: FavoriteMessage) -> FavoriteRecord {
+    private func favoriteRecord(from local: FavoriteMessage, at opAt: Int64) -> FavoriteRecord {
         let message = local.message
         let isFile = message.kind == .file
         return FavoriteRecord(id: message.id,
@@ -1183,7 +1287,7 @@ final class AppModel {
                               sender: message.senderName,
                               senderKind: message.senderKind,
                               createdAt: message.createdAt,
-                              favoritedAt: Int64(Date().timeIntervalSince1970 * 1000))
+                              favoritedAt: opAt)
     }
 
     private func messagePayload(from server: ServerFavorite) -> MessagePayload {

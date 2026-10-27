@@ -405,7 +405,7 @@ struct FavoritesPayload: Decodable, Sendable {
 }
 
 /// Body of `PUT /api/v1/favorites/{id}` (a favorite snapshot to star on).
-struct FavoriteRecord: Encodable, Sendable {
+struct FavoriteRecord: Codable, Sendable {
     let id: String
     let kind: String
     let fileKind: String
@@ -420,6 +420,26 @@ struct FavoriteRecord: Encodable, Sendable {
 struct PutFavoriteResponse: Decodable, Sendable {
     let applied: Bool
     let favorite: ServerFavorite
+}
+
+/// Persisted, immutable favorite action. Using the tap-time timestamp rather
+/// than making one at retry prevents an old offline action from overruling a
+/// newer cancel/restore performed on another device.
+struct PendingFavoriteAction: Codable, Sendable, Identifiable {
+    enum Kind: String, Codable, Sendable { case add, remove }
+    let id: UUID
+    let kind: Kind
+    let messageID: String
+    let opAt: Int64
+    let record: FavoriteRecord?
+
+    init(kind: Kind, messageID: String, opAt: Int64, record: FavoriteRecord? = nil) {
+        id = UUID()
+        self.kind = kind
+        self.messageID = messageID
+        self.opAt = opAt
+        self.record = record
+    }
 }
 
 /// One deletion made on this phone that still needs to reach the server.
