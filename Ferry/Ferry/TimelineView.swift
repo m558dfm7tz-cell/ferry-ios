@@ -295,8 +295,6 @@ struct TimelineView: View {
                     // showing, the pinned 待查看 row underneath it.
                     .padding(.top, 20 + AssistantBarMetrics.height
                              + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
-                    .contentShape(Rectangle())
-                    .onTapGesture { dismissKeyboard() }
                 }
                 let messageObserved = baseTranscript
                     .defaultScrollAnchor(.bottom)
@@ -388,7 +386,14 @@ struct TimelineView: View {
                 let keyboardAware = geometryObserved
                     .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden)
-                .background(Color.chatBackground.ignoresSafeArea())
+                .background {
+                    // Only background taps dismiss the keyboard. The previous
+                    // ScrollView-wide onTapGesture could contend with tapping
+                    // an image bubble to open its full-screen pager.
+                    Color.chatBackground.ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { dismissKeyboard() }
+                }
                 // Keyboard follow: see followKeyboard(_:) for the root cause.
                 .onReceive(keyboardWillShowPublisher) { note in
                     followKeyboard(note)

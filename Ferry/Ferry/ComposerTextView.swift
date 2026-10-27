@@ -122,7 +122,14 @@ struct ComposerTextView: UIViewRepresentable {
             } else {
                 textView.inputView = nil
             }
-            if textView.isFirstResponder { textView.reloadInputViews() }
+            if wantsAttachment && !textView.isFirstResponder {
+                // A plain UITextView tap and the SwiftUI FocusState can briefly
+                // disagree. The attachment keyboard only appears for a real
+                // first responder, so establish it before the menu transition.
+                _ = textView.becomeFirstResponder()
+            } else if textView.isFirstResponder {
+                textView.reloadInputViews()
+            }
         } else if wantsAttachment {
             let menu = context.coordinator.attachmentInputView()
             menu.onFile = onAttachmentFile
@@ -168,12 +175,24 @@ struct ComposerTextView: UIViewRepresentable {
             self.onMentionChange = onMentionChange
         }
 
-        /// Drive the text view's first-responder state only on an explicit
-        /// transition of the focus binding (e.g. the expand editor focusing on
-        /// appear, or an explicit dismiss). The delegate deliberately does NOT
-        /// write back to the focus binding, so a plain tap that focuses the
-        /// text view can never be followed by SwiftUI writing `false` back and
-        /// dismissing the keyboard right after it appears.
+        /// A tap focuses UITextView through UIKit, outside SwiftUI's FocusState.
+        /// Mirror that transition back to the binding on the next run-loop so
+        /// keyboard -> plus -> keyboard never operates with stale focus state.
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, textView.isFirstResponder else { return }
+                self.isFocused.wrappedValue = true
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, !textView.isFirstResponder else { return }
+                self.isFocused.wrappedValue = false
+            }
+        }
+
+        /// Respect explicit focus transitions without stealing taps from UIKit.
         func applyFocus(_ wantsFocus: Bool, to textView: UITextView) {
             guard wantsFocus != lastKnownFocus else { return }
             lastKnownFocus = wantsFocus

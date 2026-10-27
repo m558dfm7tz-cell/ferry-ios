@@ -201,6 +201,7 @@ private struct MediaPagerView: View {
         }
         .overlay { if showToast { toastView } }
         .statusBarHidden()
+        .accessibilityIdentifier("chat-media-pager")
     }
 
     private var toastView: some View {

@@ -47,7 +47,10 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
         tap(imageBubble)
         let grid = app.buttons["viewer-open-gallery"].firstMatch
-        XCTAssertTrue(grid.waitForExistence(timeout: 8),
+        if !grid.waitForExistence(timeout: 8) {
+            print("Media pager accessibility tree after image tap:\n\(app.debugDescription)")
+        }
+        XCTAssertTrue(grid.exists,
                       "chat image should open its own pager with a gallery shortcut")
         XCTAssertTrue(app.staticTexts["1 / 2"].waitForExistence(timeout: 5),
                       "the tapped image should be the first media page")
@@ -73,7 +76,10 @@ final class FerryUITests: XCTestCase {
 
         let files = app.buttons["composer-attachment-file"].firstMatch
         let camera = app.buttons["composer-attachment-camera"].firstMatch
-        XCTAssertTrue(files.waitForExistence(timeout: 8))
+        if !files.waitForExistence(timeout: 8) {
+            print("Native attachment input accessibility tree:\n\(app.debugDescription)")
+        }
+        XCTAssertTrue(files.exists)
         XCTAssertTrue(camera.exists)
         tap(input)
         XCTAssertFalse(files.waitForExistence(timeout: 2),
