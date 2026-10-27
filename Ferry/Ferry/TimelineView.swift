@@ -96,6 +96,9 @@ struct TimelineView: View {
                                      onAdd: { showNewAssistant = true },
                                      onUpdate: { model.assistantStore.update($0) },
                                      onDelete: { model.deleteAssistant(id: $0) },
+                                     onHide: { model.hideBuiltInAssistant(id: $0) },
+                                     canRestoreDeletedBuiltIns: !model.assistantStore.deletedBuiltInIDs.isEmpty,
+                                     onRestoreDeletedBuiltIns: { model.resetDeletedBuiltInAssistants() },
                                      canRestoreBuiltIns: !model.assistantStore.hiddenBuiltInIDs.isEmpty,
                                      onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
                     if model.showsReviewEntry {

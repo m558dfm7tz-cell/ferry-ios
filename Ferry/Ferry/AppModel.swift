@@ -462,7 +462,8 @@ final class AppModel {
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
         if AssistantStore.builtIn.contains(where: { $0.id == id }) {
-            assistantStore.hideBuiltIn(id: id)
+            assistantStore.deleteBuiltIn(id: id)
+            avatarStore.reset(for: id)
             clearUnread(forAssistant: id)
             unreadAssistantIDs.remove(id)
             if selectedAssistantID == id { selectAssistant(nil) }
@@ -477,6 +478,15 @@ final class AppModel {
 
     func restoreBuiltInAssistants() {
         assistantStore.restoreBuiltIns()
+    }
+
+    func hideBuiltInAssistant(id: String) {
+        assistantStore.hideBuiltIn(id: id)
+        if selectedAssistantID == id { selectAssistant(nil) }
+    }
+
+    func resetDeletedBuiltInAssistants() {
+        assistantStore.resetDeletedBuiltIns()
     }
 
     /// Remove one assistant's grouping and avatar from this phone (used both by

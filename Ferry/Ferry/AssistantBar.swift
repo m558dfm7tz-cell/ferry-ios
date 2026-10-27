@@ -81,10 +81,13 @@ final class AssistantStore {
     private static let customKey = "ferry.local.customAssistants"
     private static let builtInEditsKey = "ferry.local.builtInEdits"
     private static let hiddenBuiltInsKey = "ferry.local.hiddenBuiltIns"
+    private static let deletedBuiltInsKey = "ferry.local.deletedBuiltIns"
     private(set) var builtInEdits: [String: Assistant] = [:]
     private(set) var hiddenBuiltInIDs: Set<String> = []
+    private(set) var deletedBuiltInIDs: Set<String> = []
     private var builtInEditsScopedKey: String { Self.builtInEditsKey + "." + (spaceKey?.value ?? "") }
     private var hiddenBuiltInsScopedKey: String { Self.hiddenBuiltInsKey + "." + (spaceKey?.value ?? "") }
+    private var deletedBuiltInsScopedKey: String { Self.deletedBuiltInsKey + "." + (spaceKey?.value ?? "") }
 
     private var scopedKey: String { Self.customKey + "." + (spaceKey?.value ?? "") }
 
@@ -119,6 +122,7 @@ final class AssistantStore {
             builtInEdits = [:]
         }
         hiddenBuiltInIDs = Set(defaults.stringArray(forKey: hiddenBuiltInsScopedKey) ?? [])
+        deletedBuiltInIDs = Set(defaults.stringArray(forKey: deletedBuiltInsScopedKey) ?? [])
         if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([Assistant].self, from: data) {
             custom = decoded
@@ -135,7 +139,7 @@ final class AssistantStore {
     /// Built-in identities stay stable even after a display-only rename.
     /// Hidden entries disappear from the bar; their messages remain in 全部.
     var assistants: [Assistant] {
-        Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) }.map { base in
+        Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) && !deletedBuiltInIDs.contains($0.id) }.map { base in
             guard let edited = builtInEdits[base.id] else { return base }
             return Assistant(id: base.id, name: edited.name, avatarText: edited.avatarText,
                              colorIndex: edited.colorIndex, isBuiltIn: true,
@@ -152,6 +156,24 @@ final class AssistantStore {
     func restoreBuiltIns() {
         hiddenBuiltInIDs.removeAll()
         defaults.removeObject(forKey: hiddenBuiltInsScopedKey)
+    }
+
+    /// Delete a built-in *local* conversation profile, not its messages nor
+    /// the remote Windows assistant. Reset local display customizations too.
+    func deleteBuiltIn(id: String) {
+        guard Self.builtIn.contains(where: { $0.id == id }) else { return }
+        deletedBuiltInIDs.insert(id)
+        hiddenBuiltInIDs.remove(id)
+        builtInEdits.removeValue(forKey: id)
+        defaults.set(Array(deletedBuiltInIDs).sorted(), forKey: deletedBuiltInsScopedKey)
+        defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+        persistBuiltInEdits()
+    }
+
+    /// Explicit factory reset, separate from restore-hidden.
+    func resetDeletedBuiltIns() {
+        deletedBuiltInIDs.removeAll()
+        defaults.removeObject(forKey: deletedBuiltInsScopedKey)
     }
 
     private func persistBuiltInEdits() {
@@ -346,12 +368,16 @@ struct AssistantBarView: View {
     let onUpdate: (Assistant) -> Void
     /// Delete a custom assistant (confirmation happens here, before the call).
     let onDelete: (String) -> Void
+    let onHide: (String) -> Void
+    let canRestoreDeletedBuiltIns: Bool
+    let onRestoreDeletedBuiltIns: () -> Void
     let canRestoreBuiltIns: Bool
     let onRestoreBuiltIns: () -> Void
 
     @State private var editingAssistant: Assistant?
     @State private var renamingAssistant: Assistant?
     @State private var pendingDelete: Assistant?
+    @State private var removeActionIsHide = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let avatarSize: CGFloat = 40
@@ -392,18 +418,22 @@ struct AssistantBarView: View {
                                    onCancel: { renamingAssistant = nil })
             }
         }
-        .alert(pendingDelete?.isBuiltIn == true ? "隐藏头像" : "删除助手",
+        .alert(removeActionIsHide ? "隐藏头像" : "删除助手",
                isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
-            Button("删除", role: .destructive) {
+            Button(removeActionIsHide ? "隐藏" : "删除", role: .destructive) {
                 let id = assistant.id
                 pendingDelete = nil
-                onDelete(id)
+                if removeActionIsHide { onHide(id) } else { onDelete(id) }
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { assistant in
-            Text(assistant.isBuiltIn
-                 ? "只隐藏「\(assistant.name)」的顶部头像，消息仍保留在“全部”。长按“全部”可恢复。"
-                 : "确定删除「\(assistant.name)」吗？只删除这个助手分类，消息不会被删除，会回到“全部”里。")
+            if removeActionIsHide {
+                Text("只隐藏「\(assistant.name)」的顶部头像，消息不删除。长按“全部”可恢复。")
+            } else if assistant.isBuiltIn {
+                Text("删除手机本地的「\(assistant.name)」头像分类及其自定义设置；所有历史消息仍保留在“全部”，电脑端助手不会删除。需要时可恢复内置默认头像。")
+            } else {
+                Text("删除「\(assistant.name)」的本地分类，历史消息仍保留在“全部”。")
+            }
         }
     }
 
@@ -440,9 +470,14 @@ struct AssistantBarView: View {
         .accessibilityIdentifier(accessibilityID)
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
         .contextMenu {
-            if assistant == nil && canRestoreBuiltIns {
-                Button("恢复隐藏的头像", systemImage: "arrow.counterclockwise") {
-                    onRestoreBuiltIns()
+            if assistant == nil {
+                if canRestoreBuiltIns {
+                    Button("恢复隐藏的头像", systemImage: "eye") { onRestoreBuiltIns() }
+                }
+                if canRestoreDeletedBuiltIns {
+                    Button("恢复内置默认头像", systemImage: "arrow.counterclockwise") {
+                        onRestoreDeletedBuiltIns()
+                    }
                 }
             }
             if let assistant {
@@ -456,10 +491,19 @@ struct AssistantBarView: View {
                 } label: {
                     Label("编辑信息", systemImage: "pencil")
                 }
+                if assistant.isBuiltIn {
+                    Button {
+                        removeActionIsHide = true
+                        pendingDelete = assistant
+                    } label: {
+                        Label("隐藏头像", systemImage: "eye.slash")
+                    }
+                }
                 Button(role: .destructive) {
+                    removeActionIsHide = false
                     pendingDelete = assistant
                 } label: {
-                    Label(assistant.isBuiltIn ? "隐藏头像" : "删除助手", systemImage: "trash")
+                    Label(assistant.isBuiltIn ? "删除头像分类" : "删除助手", systemImage: "trash")
                 }
             }
         }
