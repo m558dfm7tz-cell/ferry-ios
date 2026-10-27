@@ -567,7 +567,9 @@ final class AppModel {
     func loadImage(for message: MessagePayload) async {
         guard let file = message.file, PreviewRouter.isImage(file) else { return }
         guard images[message.id] == nil, !loadingImages.contains(message.id) else { return }
-        let cacheURL = mediaCacheURL(for: message)
+        // Reuse the same original-extension cache for image decoding and sharing.
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
         if let cacheURL, let cached = try? Data(contentsOf: cacheURL),
            let image = UIImage(data: cached) {
             images[message.id] = image
@@ -679,7 +681,10 @@ final class AppModel {
         do {
             // Reuse a downloaded attachment for share/save/preview so opening
             // the system share sheet never downloads the same file twice.
-            let cacheURL = mediaCacheURL(for: message, ext: "share")
+            let ext = (file.name as NSString).pathExtension.lowercased()
+            let suffix = ext.isEmpty ? "dat" : ext
+            let cacheURL = mediaCacheURL(for: message,
+                ext: PreviewRouter.isImage(file) ? suffix : "share." + suffix)
             if let cacheURL, FileManager.default.fileExists(atPath: cacheURL.path),
                let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
                (attrs[.size] as? NSNumber)?.int64Value == file.size {

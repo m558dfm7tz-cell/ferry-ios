@@ -626,9 +626,9 @@ struct TimelineView: View {
         // nowhere (search happily finds messages of every assistant), so move
         // to the page it belongs to — or 全部 when it belongs to none — first.
         let expectedFilter = jumpFilter(for: id)
-        if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
         jumpTask?.cancel()
         jumpHoldingID = id
+        if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
         isFollowingTail = false
         didInitialScroll = true
         keyboardFollowTask?.cancel()
