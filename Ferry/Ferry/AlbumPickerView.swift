@@ -251,8 +251,14 @@ struct AlbumPickerView: View {
                 }
                 let shouldClose = gridDragStartedAtTop && !gridHasBeenScrolled &&
                     (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
-                withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
-                if shouldClose { requestClose() }
+                if shouldClose && selected.isEmpty {
+                    // Removing the overlay directly from its dragged position
+                    // avoids snapping up before revealing the conversation.
+                    requestClose()
+                } else {
+                    withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
+                    if shouldClose { requestClose() }
+                }
             }
     }
 
@@ -266,8 +272,12 @@ struct AlbumPickerView: View {
             }
             .onEnded { value in
                 let shouldClose = dismissDrag > 110 || value.predictedEndTranslation.height > 230
-                withAnimation(.easeOut(duration: 0.2)) { dismissDrag = 0 }
-                if shouldClose { requestClose() }
+                if shouldClose && selected.isEmpty {
+                    requestClose()
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { dismissDrag = 0 }
+                    if shouldClose { requestClose() }
+                }
             }
     }
 
