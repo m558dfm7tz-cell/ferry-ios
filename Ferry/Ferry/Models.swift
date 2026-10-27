@@ -52,9 +52,13 @@ struct MessagePayload: Codable, Equatable, Identifiable, Sendable {
     let file: FileInfo?
     // Present in newer Go responses; missing on older servers/messages.
     var assistant: String? = nil
+    /// Absent from old server messages; do not infer it from text.
+    var route: String? = nil
+    var assistantID: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, sequence, kind, text, file, assistant
+        case id, sequence, kind, text, file, assistant, route
+        case assistantID = "assistant_id"
         case senderName = "sender_name"
         case senderKind = "sender_kind"
         case isCurrentDevice = "is_current_device"
@@ -67,6 +71,27 @@ struct MessagePayload: Codable, Equatable, Identifiable, Sendable {
     var timeText: String {
         guard let date = TimestampFormat.date(from: createdAt) else { return "" }
         return TimestampFormat.time.string(from: date)
+    }
+}
+
+/// Captured before an outgoing text/file message enters its send queue.
+/// Nil destination means legacy behavior, before protocol capability checks.
+struct MessageDestination: Equatable, Sendable {
+    let route: String
+    let assistant: String?
+    let assistantID: String?
+
+    static let transfer = MessageDestination(route: "transfer", assistant: nil, assistantID: nil)
+
+    static func assistant(name: String, id: String) -> MessageDestination {
+        MessageDestination(route: "assistant", assistant: name, assistantID: id)
+    }
+
+    var fields: [String: String] {
+        var result = ["route": route]
+        if let assistant { result["assistant"] = assistant }
+        if let assistantID { result["assistant_id"] = assistantID }
+        return result
     }
 }
 

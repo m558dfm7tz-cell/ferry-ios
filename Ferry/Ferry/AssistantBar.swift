@@ -92,6 +92,7 @@ final class AssistantStore {
     private var scopedKey: String { Self.customKey + "." + (spaceKey?.value ?? "") }
 
     /// Fixed assistants and their sender-name match keywords.
+    static let protectedAssistantIDs: Set<String> = ["chief", "helper"]
     static let builtIn: [Assistant] = [
         Assistant(id: "chief", name: "总管", avatarText: "总", colorIndex: 3, isBuiltIn: true,
                   matchKeywords: ["总管"]),
@@ -132,6 +133,15 @@ final class AssistantStore {
         }
         hiddenBuiltInIDs = Set(defaults.stringArray(forKey: hiddenBuiltInsScopedKey) ?? [])
         deletedBuiltInIDs = Set(defaults.stringArray(forKey: deletedBuiltInsScopedKey) ?? [])
+        // Older test builds could hide/delete protected avatars locally.
+        // Restore their visibility without altering any messages or media.
+        if !hiddenBuiltInIDs.isDisjoint(with: Self.protectedAssistantIDs) ||
+           !deletedBuiltInIDs.isDisjoint(with: Self.protectedAssistantIDs) {
+            hiddenBuiltInIDs.subtract(Self.protectedAssistantIDs)
+            deletedBuiltInIDs.subtract(Self.protectedAssistantIDs)
+            defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+            defaults.set(Array(deletedBuiltInIDs).sorted(), forKey: deletedBuiltInsScopedKey)
+        }
         if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([Assistant].self, from: data) {
             custom = decoded
@@ -157,7 +167,8 @@ final class AssistantStore {
     }
 
     func hideBuiltIn(id: String) {
-        guard Self.builtIn.contains(where: { $0.id == id }) else { return }
+        guard !Self.protectedAssistantIDs.contains(id),
+              Self.builtIn.contains(where: { $0.id == id }) else { return }
         hiddenBuiltInIDs.insert(id)
         defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
     }
@@ -170,7 +181,8 @@ final class AssistantStore {
     /// Delete a built-in *local* conversation profile, not its messages nor
     /// the remote Windows assistant. Reset local display customizations too.
     func deleteBuiltIn(id: String) {
-        guard Self.builtIn.contains(where: { $0.id == id }) else { return }
+        guard !Self.protectedAssistantIDs.contains(id),
+              Self.builtIn.contains(where: { $0.id == id }) else { return }
         deletedBuiltInIDs.insert(id)
         hiddenBuiltInIDs.remove(id)
         builtInEdits.removeValue(forKey: id)
@@ -202,6 +214,31 @@ final class AssistantStore {
     ///
     /// Own messages without a tag stay unattributed: they keep the plain
     /// right-aligned layout and are only listed under 全部.
+    /// Independent of avatar visibility: never classify a deleted or unknown
+    /// assistant as ordinary transfer. Unknown legacy messages remain findable.
+    func conversationID(for message: MessagePayload) -> String? {
+        if message.route == "transfer" { return nil }
+        if let id = message.assistantID, !id.isEmpty { return id }
+        if let name = message.assistant, !name.isEmpty {
+            return stableID(forName: name) ?? "unresolved:" + name
+        }
+        if message.route == "assistant" { return "unresolved:" + message.id }
+        if let legacy = mentionedAssistant(inMessage: message) { return legacy.id }
+        if !message.isCurrentDevice,
+           let legacy = matchingAssistant(senderName: message.senderName) {
+            return legacy.id
+        }
+        return "legacy-unclassified"
+    }
+
+    private func stableID(forName name: String) -> String? {
+        if let base = Self.builtIn.first(where: {
+            $0.name == name || $0.matchKeywords.contains(name)
+        }) { return base.id }
+        if let local = custom.first(where: { $0.name == name }) { return local.id }
+        return nil
+    }
+
     func assistant(for message: MessagePayload) -> Assistant? {
         // The Go server and FerryHelper use an explicit assistant identity.
         // Prefer it over sender device-name heuristics so Windows responses
@@ -376,6 +413,8 @@ enum AssistantBarMetrics {
 /// avatar editor (image / muted looping video / default).
 struct AssistantBarView: View {
     let assistants: [Assistant]
+    var transferMode: Bool = false
+    var showUnclassifiedHistory: Bool = false
     @Binding var selectedID: String?
     let unreadIDs: Set<String>
     let avatarStore: AssistantAvatarStore
@@ -404,13 +443,19 @@ struct AssistantBarView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 16) {
-                avatarButton(title: "全部", text: "全", color: Color(.systemGray),
+                avatarButton(title: transferMode ? "互传" : "全部",
+                             text: transferMode ? "互" : "全", color: Color(.systemGray),
                              id: nil, accessibilityID: "assistant-avatar-all")
                 ForEach(assistants) { assistant in
                     avatarButton(title: assistant.name, text: assistant.avatarText,
                                  color: assistant.color, id: assistant.id,
                                  accessibilityID: "assistant-avatar-\(assistant.id)",
                                  assistant: assistant)
+                }
+                if showUnclassifiedHistory {
+                    avatarButton(title: "未归类", text: "史", color: Color(.systemGray2),
+                                 id: "unresolved-assistants",
+                                 accessibilityID: "assistant-avatar-unclassified")
                 }
                 addButton
             }
@@ -449,7 +494,7 @@ struct AssistantBarView: View {
                 Button("编辑信息") {
                     presentAfterMenu { renamingAssistant = assistant }
                 }
-                if assistant.isBuiltIn {
+                if assistant.isBuiltIn && !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
                     Button("隐藏头像") {
                         presentAfterMenu {
                             removeActionIsHide = true
@@ -457,11 +502,13 @@ struct AssistantBarView: View {
                         }
                     }
                 }
-                Button(assistant.isBuiltIn ? "删除头像分类" : "删除助手",
-                       role: .destructive) {
-                    presentAfterMenu {
-                        removeActionIsHide = false
-                        pendingDelete = assistant
+                if !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
+                    Button(assistant.isBuiltIn ? "删除头像分类" : "删除助手",
+                           role: .destructive) {
+                        presentAfterMenu {
+                            removeActionIsHide = false
+                            pendingDelete = assistant
+                        }
                     }
                 }
             } else {
@@ -481,6 +528,7 @@ struct AssistantBarView: View {
             Button(removeActionIsHide ? "隐藏" : "删除", role: .destructive) {
                 let id = assistant.id
                 pendingDelete = nil
+                guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
                 if removeActionIsHide { onHide(id) } else { onDelete(id) }
             }
             Button("取消", role: .cancel) { pendingDelete = nil }

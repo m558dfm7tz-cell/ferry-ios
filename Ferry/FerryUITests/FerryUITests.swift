@@ -125,8 +125,8 @@ final class FerryUITests: XCTestCase {
         chief.press(forDuration: 1.0)
         XCTAssertTrue(app.buttons["更换头像"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["编辑信息"].exists)
-        XCTAssertTrue(app.buttons["隐藏头像"].exists)
-        XCTAssertTrue(app.buttons["删除头像分类"].exists)
+        XCTAssertFalse(app.buttons["隐藏头像"].exists)
+        XCTAssertFalse(app.buttons["删除头像分类"].exists)
         tap(app.buttons["取消"].firstMatch)
 
         let helper = app.buttons["assistant-avatar-helper"].firstMatch
@@ -139,8 +139,8 @@ final class FerryUITests: XCTestCase {
         helper.press(forDuration: 1.0)
         XCTAssertTrue(app.buttons["更换头像"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["编辑信息"].exists)
-        XCTAssertTrue(app.buttons["隐藏头像"].exists)
-        XCTAssertTrue(app.buttons["删除头像分类"].exists)
+        XCTAssertFalse(app.buttons["隐藏头像"].exists)
+        XCTAssertFalse(app.buttons["删除头像分类"].exists)
         tap(app.buttons["取消"].firstMatch)
     }
 
