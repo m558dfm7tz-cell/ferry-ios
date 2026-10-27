@@ -19,7 +19,7 @@ private enum BubbleMetrics {
     /// Selection circle (22) + the row HStack's gap (12).
     static let selectionAllowance: CGFloat = 34
     /// Free space kept on the side opposite the bubble.
-    static let oppositeGap: CGFloat = 32
+    static let oppositeGap: CGFloat = 52
     static let minWidth: CGFloat = 120
 
     static func maxWidth(screen: CGFloat, hasAvatar: Bool, selectionMode: Bool) -> CGFloat {
@@ -27,7 +27,7 @@ private enum BubbleMetrics {
         var cap = row - oppositeGap
         if hasAvatar { cap -= avatarAllowance }
         if selectionMode { cap -= selectionAllowance }
-        return max(min(screen * 0.75, cap), minWidth)
+        return max(min(screen * 0.70, cap), minWidth)
     }
 }
 
@@ -74,7 +74,7 @@ struct MessageRow: View {
                                selectionMode: selectionMode)
     }
 
-    private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
+    private var isImage: Bool { message.file.map { PreviewRouter.isImage($0) } ?? false }
     private var isVideo: Bool {
         guard let file = message.file else { return false }
         return PreviewRouter.isVideo(file)
@@ -83,7 +83,7 @@ struct MessageRow: View {
         let file = message.file
         let mime = file?.mediaType ?? ""
         let name = file?.name ?? ""
-        return PreviewRouter.isImage(mime) || PreviewRouter.isVideo(mime, name: name)
+        return PreviewRouter.isImage(mime, name: name) || PreviewRouter.isVideo(mime, name: name)
     }
     private var imageLoaded: Bool {
         if case .some(.some(_)) = image { return true }
@@ -118,7 +118,7 @@ struct MessageRow: View {
                 // Jump-to-message flash: pulses between a faint and a bright
                 // wash a few times, then fades out (driven by `highlightOn`).
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.yellow.opacity(highlightOn ? 0.42 : 0.10))
+                    .fill(Color.accentColor.opacity(highlightOn ? 0.18 : 0.03))
                     .animation(.easeInOut(duration: 0.2), value: highlightOn)
             }
         }
@@ -131,7 +131,10 @@ struct MessageRow: View {
             }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
-        .fullScreenCover(item: $previewItem) { preview in previewView(for: preview) }
+        .fullScreenCover(item: $previewItem) { preview in
+            previewView(for: preview)
+                .presentationBackground(.clear)
+        }
     }
 
     @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
@@ -139,7 +142,8 @@ struct MessageRow: View {
         case .image:
             if let image = preview.image {
                 ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
-                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview,
+                            load: loadFile, loadFileURL: loadFileURL,
+                            onOpenGallery: nil,
                             onEditFinished: sendEditedFromPreview)
             }
         case .video:
@@ -214,11 +218,22 @@ struct MessageRow: View {
         .animation(.easeInOut(duration: 0.15), value: copied)
     }
 
+    /// The old flexible frame stretched even a one-character message to
+    /// the full allowed width. Measure each line at Dynamic Type body size,
+    /// then cap only long text; reserve the separate 12pt bubble paddings.
+    private func textContentWidth(_ text: String) -> CGFloat {
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let longestLine = text.components(separatedBy: .newlines).reduce(CGFloat.zero) { longest, line in
+            max(longest, (line as NSString).size(withAttributes: [.font: font]).width)
+        }
+        return min(max(26, bubbleMaxWidth - 24), max(26, ceil(longestLine) + 5))
+    }
+
     @ViewBuilder private var content: some View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
-                .frame(maxWidth: bubbleMaxWidth, alignment: .leading)
+                .frame(width: textContentWidth(text), alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -230,13 +245,17 @@ struct MessageRow: View {
             case .some(.some(let decoded)):
                 imageBubble(decoded, file: file)
             case .some(.none):
-                FileCard(file: file, maxWidth: bubbleMaxWidth, isCurrent: isCurrent,
-                         isFavorite: isFavorite, saved: saved,
-                         onOpen: openFile,
-                         onSave: { Task { await save() } },
-                         onShare: { Task { await share() } },
-                         onFavorite: { Task { await onToggleFavorite() } },
-                         onCopyLink: { await copyTemporaryLink() })
+                // A temporary network/decode error must never permanently
+                // downgrade a previously valid image into a file card.
+                Button { Task { await loadImage() } } label: {
+                    RoundedRectangle(cornerRadius: 18).fill(.quaternary)
+                        .frame(width: 176, height: 118)
+                        .overlay {
+                            Label("重试图片", systemImage: "arrow.clockwise")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                }
+                .buttonStyle(.plain)
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
@@ -269,57 +288,61 @@ struct MessageRow: View {
     }
 
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
-        Button {
-            if !selectionMode {
-                previewItem = MessagePreview(kind: .image, name: file.name,
-                                             mediaType: file.mediaType, image: decoded)
-            }
-        } label: {
-            Image(uiImage: decoded)
-                .resizable().scaledToFit()
-                .frame(maxWidth: 240, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityIdentifier("bubble.image")
-        .contextMenu { mediaMenu }
+        Image(uiImage: decoded)
+            .resizable().scaledToFit()
+            .frame(maxWidth: 240, maxHeight: 320)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            // Treat the visual thumbnail as ONE tappable accessibility item;
+            // a context menu must not cause nested SF Symbols to inherit its ID.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .contextMenu { mediaMenu }
+            // A plain onTapGesture below contextMenu was losing the short
+            // touch to the context-menu/scroll recognizers on device. Prefer
+            // this short tap while preserving the long-press menu.
+            .highPriorityGesture(TapGesture().onEnded {
+                guard !selectionMode else { return }
+                onOpenGallery()
+            })
+            .accessibilityIdentifier("bubble.image")
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
-        Button {
-            openFile()
-        } label: {
-            ZStack {
-                if let thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable().scaledToFill()
-                } else {
-                    Color(white: 0.16)
-                }
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .shadow(radius: 4)
+        ZStack {
+            if let thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable().scaledToFill()
+            } else {
+                Color(white: 0.16)
             }
-            .frame(width: 220, height: 150)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
-                if videoDuration > 0 {
-                    Text(TimeText.mmss(videoDuration))
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.black.opacity(0.6),
-                                    in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .padding(6)
-                }
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.white.opacity(0.9))
+                .shadow(radius: 4)
+        }
+        .frame(width: 220, height: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if videoDuration > 0 {
+                Text(TimeText.mmss(videoDuration))
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.black.opacity(0.6),
+                                in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .padding(6)
             }
         }
-        .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityIdentifier("bubble.video")
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .contextMenu { mediaMenu }
+        .highPriorityGesture(TapGesture().onEnded {
+            guard !selectionMode else { return }
+            onOpenGallery()
+        })
+        .accessibilityIdentifier("bubble.video")
     }
 
     private func openFile() {
@@ -351,8 +374,6 @@ struct MessageRow: View {
                               background: Color(.systemFill)) { Task { await save() } }
             RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
                               background: Color(.systemFill)) { Task { await share() } }
-            RoundActionButton(systemName: "square.grid.2x2", label: "媒体",
-                              background: Color(.systemFill)) { onOpenGallery() }
         }
         .animation(.easeInOut(duration: 0.15), value: saved)
     }
@@ -426,10 +447,11 @@ struct MessageRow: View {
     }
 
     private func share() async {
-        guard let data = await loadFile() else { return }
-        if let url = AttachmentSupport.writeTemporaryFile(data, name: message.file?.name ?? "文件") {
-            shareItem = ShareItem(url: url)
-        }
+        // Stream/cached file URL avoids downloading the attachment into RAM
+        // and writing it again before the system share sheet can appear.
+        guard let url = await loadFileURL() else { return }
+        shareItem = ShareItem(url: AttachmentSupport.namedShareURL(
+            for: url, name: message.file?.name ?? "文件"))
     }
 
     private func copyText() async {
@@ -608,6 +630,11 @@ private struct LinkedText: View {
     let text: String
     let linkColor: Color
 
+    // Constructing NSDataDetector in every row body caused frame drops during
+    // rapid transcript scrolling. It is immutable and shared on the main UI.
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue)
+
     var body: some View {
         Text(attributed)
             .environment(\.openURL, OpenURLAction { url in .systemAction(url) })
@@ -615,9 +642,7 @@ private struct LinkedText: View {
 
     private var attributed: AttributedString {
         var result = AttributedString(text)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return result
-        }
+        guard let detector = Self.linkDetector else { return result }
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         let matches = detector.matches(in: text, options: [], range: nsRange)
         for match in matches {

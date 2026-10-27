@@ -4,17 +4,24 @@ import UIKit
 struct TimelineView: View {
     @Bindable var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var showFavorites = false
     @State private var showDateJump = false
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var showDeviceManagement = false
-    @State private var showMediaGallery = false
+    @State private var mediaPresentation: MediaPresentation? = nil
     @State private var showNewAssistant = false
     @State private var showReviewList = false
-    @State private var galleryInitialID: String?
+    private struct MediaPresentation: Identifiable {
+        let id = UUID()
+        let initialMessageID: String?
+    }
     @State private var atBottom = true
+    @State private var isFollowingTail = true
+    @State private var transcriptUserDragging = false
+    @State private var showAttachmentPanel = false
+    @State private var showAlbumPicker = false
     @State private var selectionMode = false
     @State private var selectedIDs: Set<String> = []
     @State private var selectionAlert: SelectionAlert?
@@ -34,6 +41,10 @@ struct TimelineView: View {
     /// overlapping re-anchors on top of each other.
     @State private var keyboardFollowTask: Task<Void, Never>?
     @State private var jumpTask: Task<Void, Never>?
+    @State private var jumpHoldingID: String?
+    @State private var keyboardVisible = false
+    @State private var keyboardWasAtBottom = false
+    @State private var followMediaMessageID: String?
 
     private static let bottomAnchorID = "timeline-bottom"
 
@@ -41,6 +52,8 @@ struct TimelineView: View {
     /// visible above the composer (see `followKeyboard(_:)`).
     private let keyboardWillShowPublisher = NotificationCenter.default
         .publisher(for: UIResponder.keyboardWillShowNotification)
+    private let keyboardWillHidePublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardWillHideNotification)
 
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
@@ -50,14 +63,24 @@ struct TimelineView: View {
         let nonce = UUID()
     }
 
-    /// Room the floating avatar bar — and, when it is showing, the pinned
-    /// 待查看 row underneath it — takes at the top of the transcript. A message
-    /// jumped to from the calendar or from search reserves exactly this much
-    /// above itself so it stops *below* the bar instead of behind it.
-    private var jumpTopInset: CGFloat {
-        AssistantBarMetrics.height
-            + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0)
-            + 12
+    /// A single gate for programmatic scroll. A keyboard/media callback must
+    /// never override a drag, or a search/date jump already in progress.
+    private enum ScrollReason {
+        case user, newMessage, keyboard, media, pagination, jump
+    }
+
+    private func queueScroll(to id: String, anchor: UnitPoint, reason: ScrollReason) {
+        switch reason {
+        case .user:
+            break
+        case .jump:
+            guard !transcriptUserDragging else { return }
+        case .pagination:
+            guard !transcriptUserDragging, !keyboardVisible, jumpHoldingID == nil else { return }
+        case .newMessage, .keyboard, .media:
+            guard isFollowingTail, !transcriptUserDragging, jumpHoldingID == nil else { return }
+        }
+        pendingScroll = PendingScroll(id: id, anchor: anchor)
     }
 
     private enum SelectionAlert: String, Identifiable {
@@ -78,166 +101,28 @@ struct TimelineView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 18) {
-                            if !model.visibleMessages.isEmpty { topLoader }
-                            if model.visibleMessages.isEmpty {
-                                if model.selectedAssistantID != nil {
-                                    ContentUnavailableView("该助手暂无消息", systemImage: "person.crop.circle.badge.questionmark",
-                                                           description: Text("这位助手还没有发过消息。"))
-                                        .padding(.top, 100)
-                                } else {
-                                    ContentUnavailableView("等待传输", systemImage: "shippingbox",
-                                                           description: Text("来自电脑的消息和文件会显示在这里。"))
-                                        .padding(.top, 100)
-                                }
-                            }
-                        ForEach(model.daySections) { section in
-                            Text(section.dayLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 6)
-                            ForEach(section.messages) { message in
-                                MessageRow(message: message,
-                                           image: model.images[message.id],
-                                           videoThumbnail: model.videoThumbnails[message.id],
-                                           videoDuration: model.videoDurations[message.id] ?? 0,
-                                           loadImage: { await model.loadImage(for: message) },
-                                           loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
-                                           loadFile: { await model.fileData(for: message) },
-                                           loadFileURL: { await model.fileURL(for: message) },
-                                           isCurrent: message.isCurrentDevice,
-                                           isFavorite: model.localStore.isFavorite(message.id),
-                                           onToggleFavorite: { await model.toggleFavorite(message) },
-                                           copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
-                                           onOpenGallery: { openMediaGallery(message.id) },
-                                           onSendEditedImage: { image in sendEditedImage(image) },
-                                           selectionMode: selectionMode,
-                                           isSelected: selectedIDs.contains(message.id),
-                                           isHighlighted: jumpTargetID == message.id,
-                                           highlightOn: highlightOn,
-                                           onToggleSelection: { toggleSelection(message.id) },
-                                           assistant: model.assistantStore.assistant(for: message),
-                                           assistantMedia: avatarMedia(for: message))
-                                    // Reserve the floating bar's height above
-                                    // the row a jump landed on, so anchoring
-                                    // the row to the top of the scroll view
-                                    // leaves it just below the bar.
-                                    .padding(.top, message.id == jumpTargetID ? jumpTopInset : 0)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { dismissKeyboard() }
-                                    .id(message.id)
-                            }
-                        }
-                        // Invisible bottom anchor: scrolling to this reaches the
-                        // true bottom regardless of LazyVStack content heights.
-                        Color.clear.frame(height: 1).id(Self.bottomAnchorID)
-                    }
-                    // Extra top inset so the transcript scrolls *under* the
-                    // floating (background-less) assistant bar and shows through
-                    // it, instead of being permanently hidden behind it.
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 20)
-                    // Reserve room for the floating avatar bar and, when it is
-                    // showing, the pinned 待查看 row underneath it.
-                    .padding(.top, 20 + AssistantBarMetrics.height
-                             + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
-                    .contentShape(Rectangle())
-                    .onTapGesture { dismissKeyboard() }
-                }
-                .defaultScrollAnchor(.bottom)
-                .onChange(of: pendingScroll) { _, request in
-                    guard let request else { return }
-                    proxy.scrollTo(request.id, anchor: request.anchor)
-                }
-                .onChange(of: model.messages.first?.id) { oldFirst, newFirst in
-                    // Older page prepended: keep the previous first message at
-                    // the top so the content does not visually jump.
-                    guard didInitialScroll, let oldFirst, oldFirst != newFirst else { return }
-                    pendingScroll = PendingScroll(id: oldFirst, anchor: .top)
-                }
-                .onChange(of: model.visibleMessages.last?.id) { _, newLast in
-                    guard newLast != nil else { return }
-                    if !didInitialScroll {
-                        didInitialScroll = true
-                        scrollToBottomAnchor()
-                        return
-                    }
-                    if atBottom {
-                        scrollToBottomAnchor()
-                    } else {
-                        withAnimation { showNewPill = true }
-                    }
-                }
-                .onChange(of: model.selectedAssistantID) { _, _ in
-                    clearJumpTarget()
-                    scrollToBottomAnchor()
-                }
-                .onChange(of: model.scrollToBottomToken) { _, _ in
-                    scrollToBottomAnchor()
-                }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { scrollToBottomAnchor() }
-                }
-                .onScrollGeometryChange(for: ScrollState.self) { geometry in
-                    ScrollState(
-                        atBottom: geometry.contentOffset.y + geometry.containerSize.height
-                            >= geometry.contentSize.height - 120,
-                        nearTop: geometry.contentOffset.y < 60
-                    )
-                } action: { old, state in
-                    // The transform above runs on every frame of any scroll and
-                    // of the keyboard animation (the visible height changes), so
-                    // only write when a value actually flips: an unconditional
-                    // @State write re-evaluated the whole body every frame.
-                    if state.atBottom != old.atBottom {
-                        atBottom = state.atBottom
-                        if state.atBottom { showNewPill = false }
-                    }
-                    // `onReachTop()` used to fire on every frame spent near the
-                    // top, spawning a load task each time.
-                    if state.nearTop, !old.nearTop { onReachTop() }
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .scrollContentBackground(.hidden)
-                .background(Color.chatBackground.ignoresSafeArea())
-                // Keyboard follow: see followKeyboard(_:) for the root cause.
-                .onReceive(keyboardWillShowPublisher) { note in
-                    followKeyboard(note)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if !atBottom {
-                        Button {
-                            scrollToBottom()
-                        } label: {
-                            VStack(spacing: 3) {
-                                Image(systemName: "arrow.down")
-                                    .font(.system(size: 20, weight: .bold))
-                                    .frame(width: 52, height: 52)
-                                    .background(.black.opacity(0.72), in: Circle())
-                                Text(showNewPill ? "有新消息" : "最新消息")
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 2)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 16).padding(.bottom, 12)
-                        .transition(.opacity)
-                    }
-                }
-            }
+                transcriptView
                 VStack(spacing: 0) {
                     AssistantBarView(assistants: model.assistantStore.assistants,
+                                     allowCustomHide: model.routeIsolationEnabled,
+                                     transferMode: model.routeIsolationEnabled,
+                                     showUnclassifiedHistory: model.hasUnclassifiedHistory,
                                      selectedID: $model.selectedAssistantID,
                                      unreadIDs: model.unreadAssistantIDs,
                                      avatarStore: model.avatarStore,
                                      onSelect: { model.selectAssistant($0) },
                                      onAdd: { showNewAssistant = true },
-                                     onUpdate: { model.assistantStore.update($0) },
-                                     onDelete: { model.deleteAssistant(id: $0) })
+                                     onUpdate: { model.updateAssistant($0) },
+                                     onDelete: { model.deleteAssistant(id: $0) },
+                                     onHide: { model.hideBuiltInAssistant(id: $0) },
+                                     canRestoreDeletedBuiltIns: model.routeIsolationEnabled
+                                         ? model.assistantStore.hasDeletedServerProfiles
+                                         : !model.assistantStore.deletedBuiltInIDs.isEmpty,
+                                     onRestoreDeletedBuiltIns: { model.resetDeletedBuiltInAssistants() },
+                                     canRestoreBuiltIns: model.routeIsolationEnabled
+                                         ? model.assistantStore.hasHiddenServerProfiles
+                                         : !model.assistantStore.hiddenBuiltInIDs.isEmpty,
+                                     onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
                     if model.showsReviewEntry {
                         ReviewEntryRow(count: model.reviewStore.unseenCount) {
                             showReviewList = true
@@ -246,19 +131,23 @@ struct TimelineView: View {
                 }
             }
             .toolbar { toolbarContent }
-            .safeAreaInset(edge: .bottom) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if selectionMode {
-                    SelectionBar(onClearAll: { selectionAlert = .clearAll })
+                    SelectionBar(canClearAll: !model.routeIsolationEnabled,
+                                 onClearAll: { selectionAlert = .clearAll })
                 } else {
-                    ComposerView(model: model, focused: $composerFocused)
+                    ComposerView(model: model, focused: $composerFocused,
+                                 showImagePicker: $showAlbumPicker,
+                                 showPlus: $showAttachmentPanel)
                 }
             }
+            .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
         }
         .sheet(isPresented: $showSearch) {
             SearchView(model: model, onSelect: { id in jumpToMessage(id) })
         }
         .sheet(isPresented: $showFavorites) {
-            FavoritesView(model: model)
+            FavoritesView(model: model, onLocate: { id in jumpToMessage(id) })
         }
         .sheet(isPresented: $showDateJump) {
             DateJumpSheet(model: model,
@@ -276,12 +165,13 @@ struct TimelineView: View {
                     }
             }
         }
-        .sheet(isPresented: $showMediaGallery) {
-            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+        .fullScreenCover(item: $mediaPresentation) { presentation in
+            MediaGalleryView(model: model, initialMessageID: presentation.initialMessageID)
+                .presentationBackground(.clear)
         }
         .sheet(isPresented: $showNewAssistant) {
             NewAssistantSheet { name, avatarText, colorIndex in
-                model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+                model.addAssistant(name: name, avatarText: avatarText, colorIndex: colorIndex)
             }
         }
         .sheet(isPresented: $showReviewList) {
@@ -310,12 +200,240 @@ struct TimelineView: View {
         } message: { alert in
             switch alert {
             case .delete:
-                Text("确定从本机删除选中的 \(selectedIDs.count) 条消息吗？其他设备仍会保留这些消息。")
+                Text("确定删除选中的 \(selectedIDs.count) 条消息吗？删除会同步到 Ferry 服务端及其他设备；对应原始附件也会被删除。")
             case .clearAll:
-                Text("确定清空本机全部消息吗？此操作仅在本机隐藏，不会删除服务器上的消息。")
+                Text("确定清空 Ferry 服务端全部聊天记录吗？这会影响所有设备，并删除消息关联的原始附件。")
+            }
+        }
+        .overlay {
+            if showAlbumPicker {
+                AlbumPickerView(model: model, onClose: {
+                    showAlbumPicker = false
+                })
+                .ignoresSafeArea()
+                .zIndex(10)
             }
         }
         .overlay { if showToast { toastView } }
+
+    }
+
+    /// Split the lazy row hierarchy and scroll modifiers into smaller view
+    /// expressions to keep Xcode's SwiftUI type-checker tractable.
+    private var transcriptContents: some View {
+                        LazyVStack(spacing: 18) {
+                            if !model.visibleMessages.isEmpty { topLoader }
+                            if model.visibleMessages.isEmpty {
+                                if model.selectedAssistantID != nil {
+                                    ContentUnavailableView("该助手暂无消息", systemImage: "person.crop.circle.badge.questionmark",
+                                                           description: Text("这位助手还没有发过消息。"))
+                                        .padding(.top, 100)
+                                } else {
+                                    ContentUnavailableView("等待传输", systemImage: "shippingbox",
+                                                           description: Text("来自电脑的消息和文件会显示在这里。"))
+                                        .padding(.top, 100)
+                                }
+                            }
+                        ForEach(model.daySections) { section in
+                            Text(section.dayLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 6)
+                            ForEach(section.messages) { message in
+                                MessageRow(message: message,
+                                           image: model.images[message.id],
+                                           videoThumbnail: model.videoThumbnails[message.id],
+                                           videoDuration: model.videoDurations[message.id] ?? 0,
+                                           loadImage: {
+                                                if case .some(.none) = model.images[message.id] {
+                                                    await model.retryImage(for: message)
+                                                } else {
+                                                    await model.loadImage(for: message)
+                                                }
+                                           },
+                                           loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
+                                           loadFile: { await model.fileData(for: message) },
+                                           loadFileURL: { await model.fileURL(for: message) },
+                                           isCurrent: message.isCurrentDevice,
+                                           isFavorite: model.localStore.isFavorite(message.id),
+                                           onToggleFavorite: { await model.toggleFavorite(message) },
+                                           copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
+                                           onOpenGallery: { openMediaGallery(message.id) },
+                                           onSendEditedImage: { image in sendEditedImage(image, sourceMessage: message) },
+                                           selectionMode: selectionMode,
+                                           isSelected: selectedIDs.contains(message.id),
+                                           isHighlighted: jumpTargetID == message.id,
+                                           highlightOn: highlightOn,
+                                           onToggleSelection: { toggleSelection(message.id) },
+                                           assistant: model.assistantStore.assistant(for: message),
+                                           assistantMedia: avatarMedia(for: message))
+                                    // Reserve the floating bar's height above
+                                    // the row a jump landed on, so anchoring
+                                    // the row to the top of the scroll view
+                                    // leaves it just below the bar.
+                                    // Jump positioning is a scroll anchor, not
+                                    // permanent padding on the target message.
+                                    .contentShape(Rectangle())
+                                    .id(message.id)
+                            }
+                        }
+                        // Invisible bottom anchor: scrolling to this reaches the
+                        // true bottom regardless of LazyVStack content heights.
+                        Color.clear.frame(height: 1).id(Self.bottomAnchorID)
+                    }
+
+    }
+
+    private var transcriptView: some View {
+                ScrollViewReader { proxy in
+                    let baseTranscript = ScrollView {
+                        transcriptContents
+                    // Extra top inset so the transcript scrolls *under* the
+                    // floating (background-less) assistant bar and shows through
+                    // it, instead of being permanently hidden behind it.
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 20)
+                    // Reserve room for the floating avatar bar and, when it is
+                    // showing, the pinned 待查看 row underneath it.
+                    .padding(.top, 20 + AssistantBarMetrics.height
+                             + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
+                    // Only a tap on *empty transcript background* dismisses the
+                    // keyboard. A gesture attached to the whole message stack
+                    // competes with its child buttons (media bubbles) and the
+                    // composer inset. Keep native controls as the hit targets.
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { dismissKeyboard() }
+                    }
+                }
+                let messageObserved = baseTranscript
+                    .defaultScrollAnchor(.bottom)
+                .onChange(of: pendingScroll) { _, request in
+                    guard let request else { return }
+                    proxy.scrollTo(request.id, anchor: request.anchor)
+                }
+                .onChange(of: model.messages.first?.id) { oldFirst, newFirst in
+                    // Older page prepended: keep the previous first message at
+                    // the top so the content does not visually jump.
+                    guard jumpHoldingID == nil, didInitialScroll,
+                          let oldFirst, oldFirst != newFirst else { return }
+                    queueScroll(to: oldFirst, anchor: .top, reason: .pagination)
+                }
+                .onChange(of: model.visibleMessages.last?.id) { _, newLast in
+                    guard newLast != nil, jumpHoldingID == nil else { return }
+                    if !didInitialScroll {
+                        didInitialScroll = true
+                        scrollToBottomAnchor(reason: .newMessage)
+                        return
+                    }
+                    // The last cell loading can temporarily make geometry say
+                    // !atBottom without a single user scroll. Track user
+                    // intention separately so *every* new photo follows.
+                    if isFollowingTail {
+                        scrollToBottomAnchor(reason: .newMessage)
+                    } else {
+                        withAnimation { showNewPill = true }
+                    }
+                }
+                .onChange(of: model.selectedAssistantID) { _, _ in
+                    guard jumpHoldingID == nil else { return }
+                    clearJumpTarget()
+                    isFollowingTail = true
+                    scrollToBottomAnchor()
+                }
+                .onChange(of: model.scrollToBottomToken) { _, _ in
+                    guard jumpHoldingID == nil else { return }
+                    isFollowingTail = true
+                    scrollToBottomAnchor()
+                }
+                let mediaObserved = messageObserved
+                    .onChange(of: model.images.count) { _, _ in
+                    followPendingMediaLoad()
+                }
+                .onChange(of: model.videoThumbnails.count) { _, _ in
+                    followPendingMediaLoad()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    // SwiftUI restores the geometry when the scene returns.
+                    // Avoid a second forced re-anchor which caused two bounces.
+                    if phase != .active { keyboardFollowTask?.cancel() }
+                }
+                let geometryObserved = mediaObserved
+                    .onScrollGeometryChange(for: ScrollState.self) { geometry in
+                    ScrollState(
+                        atBottom: geometry.contentOffset.y + geometry.containerSize.height
+                            >= geometry.contentSize.height - 120,
+                        nearTop: geometry.contentOffset.y < 60
+                    )
+                } action: { old, state in
+                    // The transform above runs on every frame of any scroll and
+                    // of the keyboard animation (the visible height changes), so
+                    // only write when a value actually flips: an unconditional
+                    // @State write re-evaluated the whole body every frame.
+                    if state.atBottom != old.atBottom {
+                        atBottom = state.atBottom
+                        if state.atBottom { showNewPill = false }
+                    }
+                    // `onReachTop()` used to fire on every frame spent near the
+                    // top, spawning a load task each time.
+                    if state.nearTop, !old.nearTop { onReachTop() }
+                }
+                .onScrollPhaseChange { _, phase in
+                    if phase == .interacting {
+                        // A real user drag takes precedence over a timed jump.
+                        if jumpHoldingID != nil {
+                            jumpTask?.cancel()
+                            jumpHoldingID = nil
+                        }
+                        transcriptUserDragging = true
+                        isFollowingTail = false
+                        if keyboardVisible { keyboardWasAtBottom = false }
+                    } else if phase == .idle && transcriptUserDragging {
+                        transcriptUserDragging = false
+                        isFollowingTail = atBottom
+                    }
+                }
+                let keyboardAware = geometryObserved
+                    .scrollDismissesKeyboard(.interactively)
+                .scrollContentBackground(.hidden)
+                .background(Color.chatBackground.ignoresSafeArea())
+                // Keyboard follow: see followKeyboard(_:) for the root cause.
+                .onReceive(keyboardWillShowPublisher) { note in
+                    followKeyboard(note)
+                }
+                .onReceive(keyboardWillHidePublisher) { note in
+                    restoreAfterKeyboard(note)
+                }
+                keyboardAware.overlay(alignment: .bottomTrailing) {
+                    if !atBottom {
+                        Button {
+                            scrollToBottom()
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("最新消息")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundStyle(Color(red: 0.34, green: 0.75, blue: 0.95))
+                            .padding(.horizontal, 15)
+                            .frame(height: 34)
+                            .background(Color(red: 0.07, green: 0.15, blue: 0.21),
+                                        in: Capsule())
+                            .overlay(Capsule().strokeBorder(
+                                Color(red: 0.23, green: 0.47, blue: 0.62).opacity(0.7),
+                                lineWidth: 0.8))
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("回到最新消息")
+                        .padding(.trailing, 14).padding(.bottom, 10)
+                        .transition(.opacity)
+                    }
+                }
+            }
     }
 
     /// Connection status icon for the top bar leading slot (tap opens device
@@ -370,6 +488,9 @@ struct TimelineView: View {
                     Menu {
                         Button { showDateJump = true } label: { Label("跳转到日期", systemImage: "calendar") }
                         Button { showFavorites = true } label: { Label("收藏", systemImage: "star") }
+                        Button {
+                            mediaPresentation = MediaPresentation(initialMessageID: nil)
+                        } label: { Label("图片与视频", systemImage: "square.grid.2x2") }
                         Button { enterSelection() } label: { Label("选择", systemImage: "checkmark.circle") }
                         Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
                     } label: {
@@ -385,13 +506,13 @@ struct TimelineView: View {
     }
 
     private func openMediaGallery(_ messageID: String) {
-        galleryInitialID = messageID
-        showMediaGallery = true
+        mediaPresentation = MediaPresentation(initialMessageID: messageID)
     }
 
     /// Enqueue an image edited from a preview as a new outgoing message.
-    private func sendEditedImage(_ image: UIImage) {
-        if let error = model.sendEditedImage(image, originalName: nil) {
+    private func sendEditedImage(_ image: UIImage, sourceMessage: MessagePayload) {
+        if let error = model.sendEditedImage(image, originalName: sourceMessage.file?.name,
+                                             sourceMessage: sourceMessage) {
             flashToast(error)
         } else {
             flashToast("已发送编辑后的图片")
@@ -419,7 +540,12 @@ struct TimelineView: View {
     /// lands right above the composer. Someone reading older history is left
     /// where they are.
     private func followKeyboard(_ note: Notification) {
-        guard atBottom else { return }
+        // A keyboard height-change notification is not another keyboard opening.
+        // Scheduling on each one previously caused repeated jumps.
+        guard !keyboardVisible else { return }
+        keyboardWasAtBottom = isFollowingTail && atBottom
+        keyboardVisible = true
+        guard keyboardWasAtBottom else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         keyboardFollowTask?.cancel()
         keyboardFollowTask = Task { @MainActor in
@@ -429,7 +555,26 @@ struct TimelineView: View {
             // itself 120ms later to catch LazyVStack height changes; during the
             // keyboard animation that second scroll lands while the new layout
             // is still settling and was the main source of the dropped frames.
-            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+            guard keyboardVisible, isFollowingTail, !transcriptUserDragging else { return }
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
+        }
+    }
+
+    /// A keyboard shrink changes viewport height again; restore the bottom only
+    /// if it was being followed before the keyboard appeared.
+    private func restoreAfterKeyboard(_ note: Notification) {
+        guard keyboardVisible else { return }
+        let shouldFollow = keyboardWasAtBottom && isFollowingTail
+        keyboardVisible = false
+        keyboardWasAtBottom = false
+        keyboardFollowTask?.cancel()
+        guard shouldFollow else { return }
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
+        keyboardFollowTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(max(duration, 0.1) + 0.05))
+            guard !Task.isCancelled, isFollowingTail, !transcriptUserDragging,
+                  !showAlbumPicker, !showAttachmentPanel, jumpHoldingID == nil else { return }
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
         }
     }
 
@@ -437,6 +582,9 @@ struct TimelineView: View {
     /// UITextView (not a SwiftUI TextField), so clear the focus binding and also
     /// resign the first responder directly via the responder chain.
     private func dismissKeyboard() {
+        if showAttachmentPanel {
+            withAnimation(.easeOut(duration: 0.18)) { showAttachmentPanel = false }
+        }
         composerFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                          to: nil, from: nil, for: nil)
@@ -470,22 +618,40 @@ struct TimelineView: View {
     }
 
     private func onReachTop() {
-        guard !model.isLoadingOlder, model.hasOlder else { return }
+        guard !model.isLoadingOlder, model.hasOlder,
+              !keyboardVisible, jumpHoldingID == nil else { return }
         Task { await model.loadOlder() }
     }
 
     private func scrollToBottom() {
+        isFollowingTail = true
         showNewPill = false
         scrollToBottomAnchor()
     }
 
-    private func scrollToBottomAnchor() {
-        pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
-        // Repeat once after layout settles: LazyVStack heights change as
-        // image/thumbnail cells load, which can shift the true bottom.
+    private func scrollToBottomAnchor(reason: ScrollReason = .user) {
+        queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: reason)
+        // Only one scroll per intent; don't enqueue a second delayed bounce.
+    }
+
+    private func followPendingMediaLoad() {
+        // Lazy image/video sizes may resolve after date/search scrollTo().
+        // Re-anchor the jumped row rather than drifting into another message.
+        if let id = jumpHoldingID, !transcriptUserDragging {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard jumpHoldingID == id, !transcriptUserDragging else { return }
+                queueScroll(to: id, anchor: .center, reason: .jump)
+            }
+            return
+        }
+        guard isFollowingTail, !transcriptUserDragging else { return }
+        // LazyVStack remeasures an image on the next layout pass. Following
+        // every media load (not only the first) fixes consecutive photo sends.
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
-            pendingScroll = PendingScroll(id: Self.bottomAnchorID, anchor: .bottom)
+            try? await Task.sleep(for: .milliseconds(80))
+            guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
+            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
         }
     }
 
@@ -504,43 +670,42 @@ struct TimelineView: View {
         }
     }
 
-    /// Scroll a message jumped to from the calendar or from search to just
-    /// below the floating avatar bar, then flash it.
-    ///
-    /// Why the gap: `scrollTo(_:anchor: .top)` aligns the row with the top of
-    /// the scroll view's *visible* area, which is exactly where the floating
-    /// avatar bar (and the pinned 待查看 row) sits — the row used to land
-    /// behind them. Reserving `jumpTopInset` above that one row makes the same
-    /// `.top` anchor leave the row below the bar. The gap stays until the next
-    /// jump (or a filter change) so the transcript never jumps afterwards.
+    /// Place a date/search target in the middle of the viewport, not under
+    /// the floating avatar row. Keep it anchored while its media loads.
     private func jumpToMessage(_ id: String) {
         // A message the active assistant filter hides would silently scroll
         // nowhere (search happily finds messages of every assistant), so move
         // to the page it belongs to — or 全部 when it belongs to none — first.
         let expectedFilter = jumpFilter(for: id)
-        if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
         jumpTask?.cancel()
+        jumpHoldingID = id
+        if expectedFilter != model.selectedAssistantID { model.selectAssistant(expectedFilter) }
+        isFollowingTail = false
+        didInitialScroll = true
+        keyboardFollowTask?.cancel()
         jumpTask = Task { @MainActor in
             // Let the date-jump sheet finish dismissing before scrolling.
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
             // The user picked another assistant meanwhile: drop the jump.
-            guard model.selectedAssistantID == expectedFilter else { return }
+            guard model.selectedAssistantID == expectedFilter else {
+                if jumpHoldingID == id { jumpHoldingID = nil }
+                return
+            }
             jumpTargetID = id
             highlightOn = true
             // One layout pass for the reserved gap before anchoring to it.
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            pendingScroll = PendingScroll(id: id, anchor: .top)
-            // Flash: three pulses, then fade out.
-            for _ in 0..<3 {
-                try? await Task.sleep(for: .milliseconds(200))
-                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = false }
-                try? await Task.sleep(for: .milliseconds(200))
-                withAnimation(.easeInOut(duration: 0.18)) { highlightOn = true }
-            }
-            try? await Task.sleep(for: .milliseconds(200))
-            withAnimation(.easeOut(duration: 0.45)) { highlightOn = false }
+            queueScroll(to: id, anchor: .center, reason: .jump)
+            // One soft highlight rather than an intrusive repeated yellow flash.
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, jumpTargetID == id else { return }
+            queueScroll(to: id, anchor: .center, reason: .jump)
+            try? await Task.sleep(for: .milliseconds(1250))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.35)) { highlightOn = false }
+            if jumpHoldingID == id { jumpHoldingID = nil }
         }
     }
 
@@ -552,6 +717,7 @@ struct TimelineView: View {
               let message = model.messages.first(where: { $0.id == id }) else {
             return model.selectedAssistantID
         }
+        if model.routeIsolationEnabled { return model.conversationIDForJump(message) }
         return model.assistantStore.assistant(for: message)?.id
     }
 
@@ -607,13 +773,20 @@ private struct ScrollState: Hashable {
 /// this keeps only the 清空全部 access (so it is not lost). Confirmation
 /// happens in the parent via alerts.
 private struct SelectionBar: View {
+    let canClearAll: Bool
     let onClearAll: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Button("清空全部", systemImage: "trash") { onClearAll() }
-                .buttonStyle(.bordered)
-                .tint(.red)
+            if canClearAll {
+                Button("清空全部", systemImage: "trash") { onClearAll() }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            } else {
+                Text("可删除所选消息；互传不支持单独清空")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
         }
         .padding(.horizontal, 16).padding(.vertical, 10)

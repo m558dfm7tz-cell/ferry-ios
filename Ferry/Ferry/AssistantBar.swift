@@ -78,11 +78,40 @@ final class AssistantStore {
     private(set) var custom: [Assistant]
     private let defaults: UserDefaults
     private(set) var spaceKey: SpaceKey?
+    /// Server-owned v2 profiles, never persisted over the old local roster.
+    /// Includes archived and hidden identities for history lookup.
+    private(set) var serverProfiles: [AssistantProfile]? = nil
+
+    func adoptServerProfiles(_ profiles: [AssistantProfile]?) {
+        serverProfiles = profiles
+    }
+
+    var hasHiddenServerProfiles: Bool {
+        serverProfiles?.contains(where: { $0.hidden && !$0.deleted }) == true
+    }
+
+    var hasDeletedServerProfiles: Bool {
+        serverProfiles?.contains(where: { $0.deleted }) == true
+    }
+
+    func serverProfile(id: String) -> AssistantProfile? {
+        serverProfiles?.first(where: { $0.id == id })
+    }
     private static let customKey = "ferry.local.customAssistants"
+    private static let builtInEditsKey = "ferry.local.builtInEdits"
+    private static let hiddenBuiltInsKey = "ferry.local.hiddenBuiltIns"
+    private static let deletedBuiltInsKey = "ferry.local.deletedBuiltIns"
+    private(set) var builtInEdits: [String: Assistant] = [:]
+    private(set) var hiddenBuiltInIDs: Set<String> = []
+    private(set) var deletedBuiltInIDs: Set<String> = []
+    private var builtInEditsScopedKey: String { Self.builtInEditsKey + "." + (spaceKey?.value ?? "") }
+    private var hiddenBuiltInsScopedKey: String { Self.hiddenBuiltInsKey + "." + (spaceKey?.value ?? "") }
+    private var deletedBuiltInsScopedKey: String { Self.deletedBuiltInsKey + "." + (spaceKey?.value ?? "") }
 
     private var scopedKey: String { Self.customKey + "." + (spaceKey?.value ?? "") }
 
     /// Fixed assistants and their sender-name match keywords.
+    static let protectedAssistantIDs: Set<String> = ["chief", "helper"]
     static let builtIn: [Assistant] = [
         Assistant(id: "chief", name: "总管", avatarText: "总", colorIndex: 3, isBuiltIn: true,
                   matchKeywords: ["总管"]),
@@ -92,6 +121,9 @@ final class AssistantStore {
                   matchKeywords: ["情报员"]),
         Assistant(id: "muse", name: "muse联络员", avatarText: "M", colorIndex: 1, isBuiltIn: true,
                   matchKeywords: ["muse"]),
+        Assistant(id: "helper", name: "助手", avatarText: "助", colorIndex: 2, isBuiltIn: true,
+                  // Old phone-only names remain non-visible aliases for history.
+                  matchKeywords: ["助手", "FerryHelper", "助理"]),
     ]
 
     init(defaults: UserDefaults = .standard) {
@@ -103,7 +135,33 @@ final class AssistantStore {
     /// first space ever activated absorbs legacy (unscoped) data.
     func activate(space: SpaceKey) {
         guard space != spaceKey else { return }
+        serverProfiles = nil
         spaceKey = space
+        if let data = defaults.data(forKey: builtInEditsScopedKey),
+           let value = try? JSONDecoder().decode([String: Assistant].self, from: data) {
+            builtInEdits = value
+        } else {
+            builtInEdits = [:]
+        }
+        // Migrate the old helper display name without resetting avatar media
+        // or any messages. The stable local identity remains "helper".
+        if let previous = builtInEdits["helper"], previous.name == "助理" {
+            builtInEdits["helper"] = Assistant(id: "helper", name: "助手",
+                 avatarText: previous.avatarText, colorIndex: previous.colorIndex,
+                 isBuiltIn: true, matchKeywords: [])
+            persistBuiltInEdits()
+        }
+        hiddenBuiltInIDs = Set(defaults.stringArray(forKey: hiddenBuiltInsScopedKey) ?? [])
+        deletedBuiltInIDs = Set(defaults.stringArray(forKey: deletedBuiltInsScopedKey) ?? [])
+        // Older test builds could hide/delete protected avatars locally.
+        // Restore their visibility without altering any messages or media.
+        if !hiddenBuiltInIDs.isDisjoint(with: Self.protectedAssistantIDs) ||
+           !deletedBuiltInIDs.isDisjoint(with: Self.protectedAssistantIDs) {
+            hiddenBuiltInIDs.subtract(Self.protectedAssistantIDs)
+            deletedBuiltInIDs.subtract(Self.protectedAssistantIDs)
+            defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+            defaults.set(Array(deletedBuiltInIDs).sorted(), forKey: deletedBuiltInsScopedKey)
+        }
         if let data = defaults.data(forKey: scopedKey),
            let decoded = try? JSONDecoder().decode([Assistant].self, from: data) {
             custom = decoded
@@ -117,8 +175,68 @@ final class AssistantStore {
         }
     }
 
-    /// All assistants: fixed first, then custom.
-    var assistants: [Assistant] { Self.builtIn + custom }
+    /// Built-in identities stay stable even after a display-only rename.
+    /// Hidden entries disappear from the bar; their messages remain in 全部.
+    var assistants: [Assistant] {
+        if let profiles = serverProfiles {
+            return profiles.filter { !$0.hidden && !$0.deleted }.map { profile in
+                let base = Self.builtIn.first(where: { $0.id == profile.id })
+                let prior = builtInEdits[profile.id]
+                let avatar = profile.avatarText.isEmpty
+                    ? (prior?.avatarText ?? base?.avatarText ?? String(profile.displayName.prefix(1)))
+                    : profile.avatarText
+                let color = profile.colorIndex < 0
+                    ? (prior?.colorIndex ?? base?.colorIndex ?? 0) : profile.colorIndex
+                return Assistant(id: profile.id, name: profile.displayName,
+                                 avatarText: avatar, colorIndex: color,
+                                 isBuiltIn: base != nil,
+                                 matchKeywords: [profile.routeName] + (base?.matchKeywords ?? []))
+            }
+        }
+        return Self.builtIn.filter { !hiddenBuiltInIDs.contains($0.id) && !deletedBuiltInIDs.contains($0.id) }.map { base in
+            guard let edited = builtInEdits[base.id] else { return base }
+            return Assistant(id: base.id, name: edited.name, avatarText: edited.avatarText,
+                             colorIndex: edited.colorIndex, isBuiltIn: true,
+                             matchKeywords: Array(Set(base.matchKeywords + [base.name, edited.name])))
+        } + custom
+    }
+
+    func hideBuiltIn(id: String) {
+        guard !Self.protectedAssistantIDs.contains(id),
+              Self.builtIn.contains(where: { $0.id == id }) else { return }
+        hiddenBuiltInIDs.insert(id)
+        defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+    }
+
+    func restoreBuiltIns() {
+        hiddenBuiltInIDs.removeAll()
+        defaults.removeObject(forKey: hiddenBuiltInsScopedKey)
+    }
+
+    /// Delete a built-in *local* conversation profile, not its messages nor
+    /// the remote Windows assistant. Reset local display customizations too.
+    func deleteBuiltIn(id: String) {
+        guard !Self.protectedAssistantIDs.contains(id),
+              Self.builtIn.contains(where: { $0.id == id }) else { return }
+        deletedBuiltInIDs.insert(id)
+        hiddenBuiltInIDs.remove(id)
+        builtInEdits.removeValue(forKey: id)
+        defaults.set(Array(deletedBuiltInIDs).sorted(), forKey: deletedBuiltInsScopedKey)
+        defaults.set(Array(hiddenBuiltInIDs).sorted(), forKey: hiddenBuiltInsScopedKey)
+        persistBuiltInEdits()
+    }
+
+    /// Explicit factory reset, separate from restore-hidden.
+    func resetDeletedBuiltIns() {
+        deletedBuiltInIDs.removeAll()
+        defaults.removeObject(forKey: deletedBuiltInsScopedKey)
+    }
+
+    private func persistBuiltInEdits() {
+        if let data = try? JSONEncoder().encode(builtInEdits) {
+            defaults.set(data, forKey: builtInEditsScopedKey)
+        }
+    }
 
     /// Resolve the assistant a message belongs to.
     ///
@@ -131,8 +249,50 @@ final class AssistantStore {
     ///
     /// Own messages without a tag stay unattributed: they keep the plain
     /// right-aligned layout and are only listed under 全部.
+    /// Independent of avatar visibility: never classify a deleted or unknown
+    /// assistant as ordinary transfer. Unknown legacy messages remain findable.
+    func conversationID(for message: MessagePayload) -> String? {
+        if message.route == "transfer" { return nil }
+        if let id = message.assistantID, !id.isEmpty { return id }
+        if let name = message.assistant, !name.isEmpty {
+            return stableID(forName: name) ?? "unresolved:" + name
+        }
+        if message.route == "assistant" { return "unresolved:" + message.id }
+        if let legacy = mentionedAssistant(inMessage: message) { return legacy.id }
+        if !message.isCurrentDevice,
+           let legacy = matchingAssistant(senderName: message.senderName) {
+            return legacy.id
+        }
+        return "legacy-unclassified"
+    }
+
+    private func stableID(forName name: String) -> String? {
+        if let profile = serverProfiles?.first(where: { $0.routeName == name }) {
+            return profile.id
+        }
+        if let base = Self.builtIn.first(where: {
+            $0.name == name || $0.matchKeywords.contains(name)
+        }) { return base.id }
+        if let local = custom.first(where: { $0.name == name }) { return local.id }
+        return nil
+    }
+
     func assistant(for message: MessagePayload) -> Assistant? {
-        guard message.isCurrentDevice else { return matchingAssistant(senderName: message.senderName) }
+        // A transfer remains ordinary even if its text begins with @总管.
+        if message.route == "transfer" { return nil }
+        if let id = message.assistantID,
+           let profile = assistants.first(where: { $0.id == id }) {
+            return profile
+        }
+        // The Go server and FerryHelper use an explicit assistant identity.
+        // Prefer it over sender device-name heuristics so Windows responses
+        // addressed to 助手 display in the dedicated conversation.
+        if let name = message.assistant, let exact = assistant(named: name) {
+            return exact
+        }
+        guard message.isCurrentDevice else {
+            return matchingAssistant(senderName: message.senderName)
+        }
         return mentionedAssistant(inMessage: message)
     }
 
@@ -162,7 +322,12 @@ final class AssistantStore {
     func assistant(named name: String) -> Assistant? {
         let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return nil }
-        return assistants.first { $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame }
+        return assistants.first { assistant in
+            assistant.name.localizedCaseInsensitiveCompare(target) == .orderedSame ||
+            (assistant.isBuiltIn && assistant.matchKeywords.contains {
+                $0.localizedCaseInsensitiveCompare(target) == .orderedSame
+            })
+        }
     }
 
     func matchingAssistant(senderName: String) -> Assistant? {
@@ -183,9 +348,20 @@ final class AssistantStore {
         return assistant
     }
 
-    /// Apply edits made in the long-press menu (name / avatar letter / colour).
-    /// Built-in assistants are ignored — only custom ones can be edited.
+    /// Apply edits to custom assistants or display-only edits to built-ins.
+    /// Built-in sender/wake matching always retains its canonical identity.
     func update(_ assistant: Assistant) {
+        if assistant.isBuiltIn {
+            guard Self.builtIn.contains(where: { $0.id == assistant.id }) else { return }
+            let name = assistant.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            builtInEdits[assistant.id] = Assistant(
+                id: assistant.id, name: name,
+                avatarText: Self.sanitizedAvatarText(assistant.avatarText, fallbackName: name),
+                colorIndex: assistant.colorIndex, isBuiltIn: true, matchKeywords: [])
+            persistBuiltInEdits()
+            return
+        }
         guard !assistant.isBuiltIn,
               let index = custom.firstIndex(where: { $0.id == assistant.id }) else { return }
         let trimmedName = assistant.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -281,6 +457,9 @@ enum AssistantBarMetrics {
 /// avatar editor (image / muted looping video / default).
 struct AssistantBarView: View {
     let assistants: [Assistant]
+    var allowCustomHide: Bool = false
+    var transferMode: Bool = false
+    var showUnclassifiedHistory: Bool = false
     @Binding var selectedID: String?
     let unreadIDs: Set<String>
     let avatarStore: AssistantAvatarStore
@@ -290,10 +469,18 @@ struct AssistantBarView: View {
     let onUpdate: (Assistant) -> Void
     /// Delete a custom assistant (confirmation happens here, before the call).
     let onDelete: (String) -> Void
+    let onHide: (String) -> Void
+    let canRestoreDeletedBuiltIns: Bool
+    let onRestoreDeletedBuiltIns: () -> Void
+    let canRestoreBuiltIns: Bool
+    let onRestoreBuiltIns: () -> Void
 
     @State private var editingAssistant: Assistant?
     @State private var renamingAssistant: Assistant?
     @State private var pendingDelete: Assistant?
+    @State private var removeActionIsHide = false
+    @State private var avatarMenuTarget: Assistant?
+    @State private var isAvatarMenuPresented = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let avatarSize: CGFloat = 40
@@ -301,13 +488,19 @@ struct AssistantBarView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 16) {
-                avatarButton(title: "全部", text: "全", color: Color(.systemGray),
+                avatarButton(title: transferMode ? "互传" : "全部",
+                             text: transferMode ? "互" : "全", color: Color(.systemGray),
                              id: nil, accessibilityID: "assistant-avatar-all")
                 ForEach(assistants) { assistant in
                     avatarButton(title: assistant.name, text: assistant.avatarText,
                                  color: assistant.color, id: assistant.id,
                                  accessibilityID: "assistant-avatar-\(assistant.id)",
                                  assistant: assistant)
+                }
+                if showUnclassifiedHistory {
+                    avatarButton(title: "未归类", text: "史", color: Color(.systemGray2),
+                                 id: "unresolved-assistants",
+                                 accessibilityID: "assistant-avatar-unclassified")
                 }
                 addButton
             }
@@ -334,15 +527,74 @@ struct AssistantBarView: View {
                                    onCancel: { renamingAssistant = nil })
             }
         }
-        .alert("删除助手", isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
-            Button("删除", role: .destructive) {
+        .confirmationDialog(
+            avatarMenuTarget.map { "管理「\($0.name)」" } ?? "管理头像",
+            isPresented: $isAvatarMenuPresented,
+            titleVisibility: .visible
+        ) {
+            if let assistant = avatarMenuTarget {
+                Button("更换头像") {
+                    presentAfterMenu { editingAssistant = assistant }
+                }
+                Button("编辑信息") {
+                    presentAfterMenu { renamingAssistant = assistant }
+                }
+                if (assistant.isBuiltIn || allowCustomHide) &&
+                    !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
+                    Button("隐藏头像") {
+                        presentAfterMenu {
+                            removeActionIsHide = true
+                            pendingDelete = assistant
+                        }
+                    }
+                }
+                if !AssistantStore.protectedAssistantIDs.contains(assistant.id) {
+                    Button(assistant.isBuiltIn ? "删除头像分类" : "删除助手",
+                           role: .destructive) {
+                        presentAfterMenu {
+                            removeActionIsHide = false
+                            pendingDelete = assistant
+                        }
+                    }
+                }
+            } else {
+                if canRestoreBuiltIns {
+                    Button("恢复隐藏的头像") { onRestoreBuiltIns() }
+                }
+                if canRestoreDeletedBuiltIns {
+                    Button("恢复内置默认头像") { onRestoreDeletedBuiltIns() }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只管理手机上的头像和分类，不删除历史聊天记录。")
+        }
+        .alert(removeActionIsHide ? "隐藏头像" : "删除助手",
+               isPresented: deleteAlertBinding, presenting: pendingDelete) { assistant in
+            Button(removeActionIsHide ? "隐藏" : "删除", role: .destructive) {
                 let id = assistant.id
                 pendingDelete = nil
-                onDelete(id)
+                guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
+                if removeActionIsHide { onHide(id) } else { onDelete(id) }
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { assistant in
-            Text("确定删除「\(assistant.name)」吗？只删除这个助手分类，消息不会被删除，会回到“全部”里。")
+            if removeActionIsHide {
+                Text("只隐藏「\(assistant.name)」的顶部头像，消息不删除。长按“全部”可恢复。")
+            } else if assistant.isBuiltIn {
+                Text("删除手机本地的「\(assistant.name)」头像分类及其自定义设置；所有历史消息仍保留在“全部”，电脑端助手不会删除。需要时可恢复内置默认头像。")
+            } else {
+                Text("删除「\(assistant.name)」的本地分类，历史消息仍保留在“全部”。")
+            }
+        }
+    }
+
+    /// Wait one UI beat between closing the menu and presenting a sheet/alert.
+    private func presentAfterMenu(_ action: @escaping @MainActor () -> Void) {
+        isAvatarMenuPresented = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            action()
         }
     }
 
@@ -378,28 +630,18 @@ struct AssistantBarView: View {
         .accessibilityLabel(title)
         .accessibilityIdentifier(accessibilityID)
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
-        .contextMenu {
-            if let assistant {
-                Button {
-                    editingAssistant = assistant
-                } label: {
-                    Label("更换头像", systemImage: "photo")
+        // Explicit long-press action sheet avoids a contextMenu rendering
+        // only its first item on some iOS versions inside ScrollView.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.55)
+                .onEnded { _ in
+                    avatarMenuTarget = assistant
+                    isAvatarMenuPresented = true
                 }
-                // Only custom assistants can be renamed or deleted; the four
-                // built-in ones keep their existing single-item menu.
-                if !assistant.isBuiltIn {
-                    Button {
-                        renamingAssistant = assistant
-                    } label: {
-                        Label("改名字", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) {
-                        pendingDelete = assistant
-                    } label: {
-                        Label("删除助手", systemImage: "trash")
-                    }
-                }
-            }
+        )
+        .accessibilityAction(named: "管理头像") {
+            avatarMenuTarget = assistant
+            isAvatarMenuPresented = true
         }
     }
 
@@ -627,7 +869,9 @@ struct EditAssistantSheet: View {
                 } header: {
                     Text("助手信息")
                 } footer: {
-                    Text("名字同时作为消息归类的匹配关键字。头像图片/视频请用长按菜单里的“更换头像”。")
+                    Text(assistant.isBuiltIn
+                         ? "内置助手改名只影响手机显示，电脑端原有唤醒词与消息归类保持不变。"
+                         : "名字同时作为消息归类的匹配关键字。头像图片/视频请用长按菜单里的“更换头像”。")
                 }
 
                 Section("头像颜色") {

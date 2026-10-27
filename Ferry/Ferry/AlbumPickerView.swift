@@ -26,6 +26,12 @@ import UIKit
 /// `.pairedVideo` resource, MOV transcoded by `AVAssetExportSession`).
 struct AlbumPickerView: View {
     let model: AppModel
+    let onClose: (() -> Void)?
+
+    init(model: AppModel, onClose: (() -> Void)? = nil) {
+        self.model = model
+        self.onClose = onClose
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -47,6 +53,10 @@ struct AlbumPickerView: View {
     /// Vertical translation of the whole grid page while it is being pulled
     /// down to close.
     @State private var dismissDrag: CGFloat = 0
+    @State private var gridDragStartedAtTop = false
+    /// After browsing below the first row, only the top bar may dismiss by drag.
+    @State private var gridDragInProgress = false
+    @State private var finishingDragDismiss = false
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
     /// Full-screen preview state; nil shows the grid.
@@ -59,11 +69,15 @@ struct AlbumPickerView: View {
     /// Default off, set per-asset, auto-off when the photo is edited.
     @State private var liveEnabled: [String: Bool] = [:]
 
-    private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 1), count: 4)
+    private let columns = [GridItem](repeating: GridItem(.flexible(), spacing: 3), count: 4)
+    @State private var gridCellSide: CGFloat = 0
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            // The underlying timeline stays mounted. Fade the scrim as the
+            // picker is pulled down so the chat emerges naturally above it.
+            Color.black.opacity(max(0, 1 - Double(dismissDrag) / 340))
+                .ignoresSafeArea()
             if let context = previewContext {
                 AlbumPreviewView(displayAssets: context.assets,
                                  startIndex: context.startIndex,
@@ -73,6 +87,7 @@ struct AlbumPickerView: View {
                                  liveEnabled: $liveEnabled,
                                  imageManager: imageManager,
                                  onSend: send,
+                                 onSendEdited: sendEditedFromPreview,
                                  onClose: { previewContext = nil })
                     .zIndex(1)
             } else {
@@ -87,7 +102,6 @@ struct AlbumPickerView: View {
                 if showAlbumList { albumListOverlay }
             }
         }
-        .statusBarHidden()
         .task { await resolvePermission() }
         .alert("发送失败", isPresented: sendErrorBinding) {
             Button("好", role: .cancel) {}
@@ -95,7 +109,7 @@ struct AlbumPickerView: View {
             Text(sendError ?? "")
         }
         .alert("放弃已选的 \(selected.count) 项？", isPresented: $showDiscardConfirm) {
-            Button("放弃", role: .destructive) { dismiss() }
+            Button("放弃", role: .destructive) { closePicker() }
             Button("继续选择", role: .cancel) {}
         } message: {
             Text("关闭后将不再发送这些照片。")
@@ -138,7 +152,20 @@ struct AlbumPickerView: View {
 
             Color.clear.frame(width: 44, height: 44)
         }
-        .padding(.top, 4)
+        .padding(.top, max(16, Self.topSystemInset + 10))
+        .padding(.bottom, 10)
+        .frame(minHeight: 76)
+        .contentShape(Rectangle())
+        // Header buttons must not steal a genuine downward swipe.
+        .highPriorityGesture(topBarDismissGesture)
+    }
+
+    // Prevent the album header from entering the Dynamic Island / notch.
+    private static var topSystemInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?.safeAreaInsets.top ?? 44
     }
 
     private var albumCapsule: some View {
@@ -173,28 +200,33 @@ struct AlbumPickerView: View {
     }
 
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 1) {
-                ForEach(assets, id: \.localIdentifier) { asset in
-                    PickerGridCell(
-                        asset: asset,
-                        sequence: selectionIndex(for: asset),
-                        isSelectable: isSelectable(asset),
-                        imageManager: imageManager,
-                        onTapCircle: { toggle(asset) },
-                        onTapThumbnail: { openPreview(at: asset) }
-                    )
+        GeometryReader { geometry in
+            // An explicit 1:1 frame is required here: aspectRatio(.fit) on
+            // the content alone still lets tall PHAsset images size the row.
+            let side = max(1, (geometry.size.width - 9) / 4)
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 3) {
+                    ForEach(assets, id: \.localIdentifier) { asset in
+                        PickerGridCell(
+                            asset: asset,
+                            side: side,
+                            sequence: selectionIndex(for: asset),
+                            isSelectable: isSelectable(asset),
+                            imageManager: imageManager,
+                            onTapCircle: { toggle(asset) },
+                            onTapThumbnail: { openPreview(at: asset) }
+                        )
+                        .frame(width: side, height: side)
+                    }
                 }
             }
+            .onScrollGeometryChange(for: CGFloat.self) { scroll in
+                scroll.contentOffset.y + scroll.contentInsets.top
+            } action: { _, distanceFromTop in
+                gridAtTop = distanceFromTop <= 2
+            }
+            .simultaneousGesture(dismissDragGesture)
         }
-        // Track the top edge so pull-to-close only engages at the very top;
-        // anywhere else a downward drag is ordinary scrolling.
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentOffset.y <= 0
-        } action: { _, isAtTop in
-            gridAtTop = isAtTop
-        }
-        .simultaneousGesture(dismissDragGesture)
     }
 
     /// Pull-down-to-close: when the grid is at the top, a downward drag moves
@@ -204,18 +236,65 @@ struct AlbumPickerView: View {
     private var dismissDragGesture: some Gesture {
         // A small minimum distance keeps cell taps / circle buttons crisp (a
         // tap is not a drag) while still tracking the pull the moment it moves.
-        DragGesture(minimumDistance: 12)
+        // Global coordinates are essential: the picker content itself follows
+        // dismissDrag. A local-coordinate gesture remeasures against the moving
+        // view and causes the repeated bounce seen during pull-to-dismiss.
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
-                guard gridAtTop, value.translation.height > 0 else {
-                    if dismissDrag != 0 { dismissDrag = 0 }
+                guard !finishingDragDismiss else { return }
+                if !gridDragInProgress {
+                    gridDragInProgress = true
+                    gridDragStartedAtTop = gridAtTop
+                }
+                // Latch the top-of-grid decision at gesture start. Rechecking
+                // gridAtTop after moving the containing view feeds back into
+                // the ScrollView geometry and repeatedly resets the offset.
+                guard gridDragStartedAtTop, value.translation.height > 0,
+                      value.translation.height > abs(value.translation.width) else {
                     return
                 }
                 dismissDrag = value.translation.height
             }
             .onEnded { value in
-                let shouldClose = dismissDrag > 140 || value.predictedEndTranslation.height > 240
-                withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
-                if shouldClose { requestClose() }
+                defer {
+                    gridDragStartedAtTop = false
+                    gridDragInProgress = false
+                }
+                guard !finishingDragDismiss, gridDragStartedAtTop,
+                      dismissDrag > 0 else { return }
+                let shouldClose = dismissDrag > 140 ||
+                    value.predictedEndTranslation.height > 240
+                if shouldClose, selected.isEmpty {
+                    animateDragDismiss()
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        dismissDrag = 0
+                    }
+                    if shouldClose { requestClose() }
+                }
+            }
+    }
+
+    /// The header remains an explicit pull-to-close handle after scrolling.
+    private var topBarDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 18, coordinateSpace: .global)
+            .onChanged { value in
+                guard !finishingDragDismiss, value.translation.height > 0,
+                      value.translation.height > abs(value.translation.width) else { return }
+                dismissDrag = value.translation.height
+            }
+            .onEnded { value in
+                guard !finishingDragDismiss else { return }
+                let shouldClose = dismissDrag > 110 ||
+                    value.predictedEndTranslation.height > 230
+                if shouldClose, selected.isEmpty {
+                    animateDragDismiss()
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        dismissDrag = 0
+                    }
+                    if shouldClose { requestClose() }
+                }
             }
     }
 
@@ -251,8 +330,9 @@ struct AlbumPickerView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .frame(height: 52)
-        .background(Color.black.opacity(0.9))
+        .frame(height: 64)
+        .padding(.bottom, 18)
+        .background(Color.black.opacity(0.92))
     }
 
     private var sendButton: some View {
@@ -330,9 +410,29 @@ struct AlbumPickerView: View {
     /// Used by the × button and by the pull-down-to-close gesture.
     private func requestClose() {
         if selected.isEmpty {
-            dismiss()
+            closePicker()
         } else {
             showDiscardConfirm = true
+        }
+    }
+
+    /// In an in-chat overlay, dismissing an Environment sheet does nothing.
+    /// Keep one exit path for X, swipe, discard and successful sending.
+    private func closePicker() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
+    private func animateDragDismiss() {
+        guard !finishingDragDismiss else { return }
+        finishingDragDismiss = true
+        // Keep the overlay mounted until the downward exit finishes so it does
+        // not suddenly jump back to y = 0 during the parent state transition.
+        withAnimation(.easeOut(duration: 0.20)) {
+            dismissDrag = UIScreen.main.bounds.height + 120
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(205))
+            closePicker()
         }
     }
 
@@ -358,7 +458,7 @@ struct AlbumPickerView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(pickerGreen)
-            Button("关闭") { dismiss() }
+            Button("关闭") { closePicker() }
                 .foregroundStyle(.white)
         }
     }
@@ -465,9 +565,13 @@ struct AlbumPickerView: View {
 
         imageManager.stopCachingImagesForAllAssets()
         assets = list
-        // Warm the thumbnail cache for the whole album so scrolling is smooth.
+        gridDragStartedAtTop = false
+        gridAtTop = true
+        // Preheat only the first visible rows, not thousands of full albums.
+        // Caching every asset previously delayed picker opening and used memory.
+        let preheat = Array(list.prefix(64))
         let thumb = CGSize(width: 200, height: 200)
-        imageManager.startCachingImages(for: list, targetSize: thumb, contentMode: .aspectFill, options: nil)
+        imageManager.startCachingImages(for: preheat, targetSize: thumb, contentMode: .aspectFill, options: nil)
     }
 
     // MARK: - Selection
@@ -502,6 +606,24 @@ struct AlbumPickerView: View {
     }
 
     // MARK: - Send
+
+    /// The editor's yellow Send button sends its rendered image immediately,
+    /// using the same uploader queue as the ordinary picker send. Do not save
+    /// an edit merely to return to preview or enqueue an unedited original.
+    private func sendEditedFromPreview(_ edited: UIImage) {
+        guard !isSending else { return }
+        guard let data = edited.jpegData(compressionQuality: 0.92) else {
+            sendError = "无法编码编辑后的图片，请重试。"
+            return
+        }
+        let name = MediaLoader.generatedName(prefix: "编辑照片", mime: "image/jpeg")
+        if let error = model.uploader.enqueue(data: data, name: name, mediaType: "image/jpeg") {
+            sendError = error
+            return
+        }
+        model.requestScrollToBottom()
+        closePicker()
+    }
 
     private func send() {
         guard !selected.isEmpty, !isSending else { return }
@@ -543,7 +665,7 @@ struct AlbumPickerView: View {
             // newest message (the messages arrive asynchronously via the upload
             // queue, so the scroll lands on them once they appear).
             model.requestScrollToBottom()
-            dismiss()
+            closePicker()
         }
     }
 }
@@ -582,6 +704,7 @@ private final class LibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserve
 /// One selectable thumbnail cell.
 private struct PickerGridCell: View {
     let asset: PHAsset
+    let side: CGFloat
     let sequence: Int?
     let isSelectable: Bool
     let imageManager: PHCachingImageManager
@@ -589,6 +712,7 @@ private struct PickerGridCell: View {
     let onTapThumbnail: () -> Void
 
     @State private var thumbnail: UIImage?
+    @State private var thumbnailRequest: PHImageRequestID?
 
     var body: some View {
         ZStack {
@@ -597,10 +721,13 @@ private struct PickerGridCell: View {
                 Image(uiImage: thumbnail)
                     .resizable()
                     .scaledToFill()
+                    .frame(width: side, height: side)
+                    .clipped()
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .frame(width: side, height: side)
         .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 3))
         .contentShape(Rectangle())
         .onTapGesture(perform: onTapThumbnail)
         .overlay(alignment: .topTrailing) {
@@ -608,11 +735,17 @@ private struct PickerGridCell: View {
         }
         .overlay(alignment: .bottomLeading) { bottomBadges }
         .onAppear(perform: loadThumbnail)
+        .onDisappear {
+            if let thumbnailRequest {
+                imageManager.cancelImageRequest(thumbnailRequest)
+                self.thumbnailRequest = nil
+            }
+        }
     }
 
     private var selectionCircle: some View {
         PickerSelectionCircle(sequence: sequence, action: onTapCircle)
-            .padding(4)
+            .padding(2)
     }
 
     @ViewBuilder private var bottomBadges: some View {
@@ -641,10 +774,13 @@ private struct PickerGridCell: View {
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
         let target = CGSize(width: 200, height: 200)
-        _ = imageManager.requestImage(for: asset, targetSize: target, contentMode: .aspectFill, options: options) { image, _ in
-            guard let image else { return }
+        guard thumbnail == nil, thumbnailRequest == nil else { return }
+        let request = imageManager.requestImage(for: asset, targetSize: target,
+                                                 contentMode: .aspectFill, options: options) { image, info in
+            guard let image, (info?[PHImageCancelledKey] as? Bool) != true else { return }
             DispatchQueue.main.async { thumbnail = image }
         }
+        thumbnailRequest = request
     }
 }
 
@@ -665,6 +801,8 @@ private struct PickerSelectionCircle: View {
                 }
             }
             .frame(width: 24, height: 24)
+            .frame(width: 42, height: 42)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -692,6 +830,7 @@ private struct AlbumPreviewView: View {
     @Binding var liveEnabled: [String: Bool]
     let imageManager: PHCachingImageManager
     let onSend: () -> Void
+    let onSendEdited: (UIImage) -> Void
     let onClose: () -> Void
 
     @State private var currentID: String?
@@ -719,6 +858,7 @@ private struct AlbumPreviewView: View {
          liveEnabled: Binding<[String: Bool]>,
          imageManager: PHCachingImageManager,
          onSend: @escaping () -> Void,
+         onSendEdited: @escaping (UIImage) -> Void,
          onClose: @escaping () -> Void) {
         self.displayAssets = displayAssets
         self.startIndex = startIndex
@@ -728,6 +868,7 @@ private struct AlbumPreviewView: View {
         self._liveEnabled = liveEnabled
         self.imageManager = imageManager
         self.onSend = onSend
+        self.onSendEdited = onSendEdited
         self.onClose = onClose
         let initial = displayAssets.indices.contains(startIndex)
             ? displayAssets[startIndex].localIdentifier
@@ -758,13 +899,11 @@ private struct AlbumPreviewView: View {
         .simultaneousGesture(edgeSwipeBackDrag)
         .statusBarHidden()
         .fullScreenCover(item: $editorInput) { input in
-            ImageEditorView(image: input.image, confirmTitle: "完成",
+            ImageEditorView(image: input.image, confirmTitle: "发送",
                             onFinish: { edited in
-                                editedImages[input.asset.localIdentifier] = edited
-                                // Editing produces a static image, so the
-                                // paired video no longer matches: auto-off 实况.
-                                liveEnabled.removeValue(forKey: input.asset.localIdentifier)
-                                editorInput = nil
+                                // Send only this edited photo, never the unedited
+                                // original or other selected photos by accident.
+                                onSendEdited(edited)
                             },
                             onCancel: { editorInput = nil })
         }
@@ -862,8 +1001,9 @@ private struct AlbumPreviewView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .frame(height: 52)
-        .background(Color.black.opacity(0.9))
+        .frame(height: 64)
+        .padding(.bottom, 18)
+        .background(Color.black.opacity(0.92))
     }
 
     private var sendButton: some View {
@@ -899,16 +1039,18 @@ private struct AlbumPreviewView: View {
     /// `ImageViewer` drag-to-dismiss: the preview tracks the finger, and on
     /// release past the threshold (or a fast flick) it returns to the grid.
     private var verticalDismissDrag: some Gesture {
-        DragGesture(minimumDistance: 10)
+        DragGesture(minimumDistance: 16)
             .onChanged { value in
-                guard value.translation.height > 0 else {
+                let horizontal = abs(value.translation.width)
+                guard value.translation.height > 16,
+                      value.translation.height > horizontal * 1.5 else {
                     if dismissDragY != 0 { dismissDragY = 0 }
                     return
                 }
                 dismissDragY = value.translation.height
             }
             .onEnded { value in
-                let shouldClose = dismissDragY > 150 || value.predictedEndTranslation.height > 300
+                let shouldClose = dismissDragY > 150 || (dismissDragY > 50 && value.predictedEndTranslation.height > 300)
                 if shouldClose {
                     dismissDragY = 0
                     onClose()
@@ -999,7 +1141,9 @@ private struct AlbumPreviewView: View {
             if let base {
                 image = base
             } else {
-                image = await loadFullImage(for: asset, manager: imageManager)
+                // Editing needs the prepared working resolution, not a huge
+                // HEIC original decoded before the editor downsizes it again.
+                image = await loadImage(for: asset, manager: imageManager, maxDimension: 3072)
             }
             guard let image else { return }
             editorInput = EditorInput(asset: asset, image: image)

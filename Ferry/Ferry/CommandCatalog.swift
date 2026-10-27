@@ -14,17 +14,19 @@ struct CommandItem: Codable, Identifiable, Equatable {
     var subtitle: String?
     var icon: String?
     var aliases: [String]
+    var requiresArgument: Bool
 
-    enum CodingKeys: String, CodingKey { case id, title, insertText, subtitle, icon, aliases }
+    enum CodingKeys: String, CodingKey { case id, title, insertText, subtitle, icon, aliases, requiresArgument }
 
     init(id: String, title: String, insertText: String, subtitle: String? = nil,
-         icon: String? = nil, aliases: [String] = []) {
+         icon: String? = nil, aliases: [String] = [], requiresArgument: Bool = false) {
         self.id = id
         self.title = title
         self.insertText = insertText
         self.subtitle = subtitle
         self.icon = icon
         self.aliases = aliases
+        self.requiresArgument = requiresArgument
     }
 
     init(from decoder: Decoder) throws {
@@ -35,6 +37,7 @@ struct CommandItem: Codable, Identifiable, Equatable {
         subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
         icon = try c.decodeIfPresent(String.self, forKey: .icon)
         aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        requiresArgument = try c.decodeIfPresent(Bool.self, forKey: .requiresArgument) ?? false
     }
 }
 
@@ -131,18 +134,21 @@ struct RemoteCommandCatalog: Decodable {
     }
 
     static func map(group: RemoteCommandGroup) -> MentionTarget {
+        // Keep iOS navigation IDs stable while displaying Windows' "助手".
+        let key = group.assistant == "助手" ? "helper" : group.assistant
         let commands = group.commands.map { command in
             CommandItem(id: command.name, title: command.name,
                         insertText: command.insert_text ?? "",
-                        subtitle: command.description, icon: nil, aliases: command.aliases ?? [])
+                        subtitle: command.description, icon: nil, aliases: command.aliases ?? [],
+                        requiresArgument: command.requires_argument ?? false)
         }
         if commands.count == 1 {
             let command = commands[0]
-            return MentionTarget(id: group.assistant, title: group.assistant, alias: group.assistant,
+            return MentionTarget(id: key, title: group.assistant, alias: group.assistant,
                                  aliases: command.aliases, subtitle: command.subtitle,
                                  insertText: command.insertText, icon: nil, commands: [])
         }
-        return MentionTarget(id: group.assistant, title: group.assistant, alias: group.assistant,
+        return MentionTarget(id: key, title: group.assistant, alias: group.assistant,
                              aliases: [], subtitle: nil, insertText: nil, icon: nil, commands: commands)
     }
 }
@@ -255,17 +261,24 @@ struct LocalCommandCatalogProvider: CommandCatalogProvider {
             .appendingPathComponent("command-catalog.json")
     }
 
-    /// Built-in default catalog (fallback when no cache and the remote is
-    /// unreachable). FerryHelper's real list overrides this once fetched.
+    /// Offline fallback mirrors actual FerryHelper CommandRegistry
+    /// rather than offering non-existent translation/OCR/summary commands.
     static let builtIn: [MentionTarget] = [
         MentionTarget(id: "desktop", title: "电脑", alias: "电脑", aliases: ["PC", "desktop"],
                       subtitle: "唤醒电脑", insertText: "@电脑 ", icon: "desktopcomputer"),
         MentionTarget(id: "helper", title: "助手", alias: "FerryHelper", icon: "sparkles", commands: [
-            CommandItem(id: "translate", title: "翻译", insertText: "/翻译 ", subtitle: "翻译文本", icon: "character.book.closed", aliases: ["translate"]),
-            CommandItem(id: "ocr", title: "识别文字", insertText: "/识别文字 ", subtitle: "识别图片文字", icon: "text.viewfinder", aliases: ["OCR"]),
-            CommandItem(id: "summary", title: "总结", insertText: "/总结 ", subtitle: "总结内容", icon: "doc.text", aliases: ["摘要"]),
-            CommandItem(id: "search", title: "搜索", insertText: "/搜索 ", subtitle: "搜索信息", icon: "magnifyingglass", aliases: ["search"]),
-            CommandItem(id: "remind", title: "提醒", insertText: "/提醒 ", subtitle: "设置提醒", icon: "bell", aliases: ["remind"]),
+            CommandItem(id: "截图", title: "截图", insertText: "/截图",
+                        subtitle: "截取电脑屏幕并发送", icon: "camera.viewfinder"),
+            CommandItem(id: "找", title: "找文件", insertText: "/找 ",
+                        subtitle: "按文件名、路径、日期和类型查找", icon: "magnifyingglass",
+                        aliases: ["查找"], requiresArgument: true),
+            CommandItem(id: "发文件", title: "发文件", insertText: "/发文件 ",
+                        subtitle: "发送白名单目录中的指定文件", icon: "folder",
+                        requiresArgument: true),
+            CommandItem(id: "帮助", title: "帮助", insertText: "/帮助",
+                        subtitle: "查看电脑支持的指令", icon: "questionmark.circle"),
+            CommandItem(id: "命令列表", title: "命令列表", insertText: "/命令列表",
+                        subtitle: "查看完整指令清单", icon: "list.bullet"),
         ]),
     ]
 }
@@ -281,6 +294,33 @@ struct RemoteCommandCatalogFetcher {
         config.timeoutIntervalForResource = 5
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
+    }
+
+    /// Prefer the authenticated Go relay; only the fallback uses port 42830.
+    func fetch(endpoint: ServerEndpoint, token: String?) async throws
+        -> (raw: Data, targets: [MentionTarget]) {
+        var request = URLRequest(url: endpoint.url(
+            path: "/api/v1/assistant-commands", queryItems: []))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            let remote = try JSONDecoder().decode(RemoteCommandCatalog.self, from: data)
+            guard let targets = RemoteCommandCatalog.map(remote), !targets.isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return (data, targets)
+        } catch {
+            guard let host = endpoint.baseURL.host else { throw error }
+            return try await fetch(host: host)
+        }
     }
 
     func fetch(host: String) async throws -> (raw: Data, targets: [MentionTarget]) {
@@ -331,6 +371,11 @@ final class CommandCatalogStore {
     /// (FerryHelper unreachable, or a locally created assistant) — which is the
     /// same shape FerryHelper's own default config uses.
     func wakeTag(forAssistantName name: String) -> String {
+        // FerryHelper's built-in command interpreter explicitly recognizes
+        // @助手, not @助理 or @FerryHelper.
+        if name == "助手" || name == "助理" || name == "FerryHelper" {
+            return "@助手"
+        }
         if let target = targets.first(where: { $0.matchesAssistant(name) }),
            let tag = Self.extractedWakeTag(from: target.insertText) {
             return tag
@@ -349,8 +394,8 @@ final class CommandCatalogStore {
     /// throttled to once per 60 s. Failures are silent (os.Logger debug only,
     /// never a user-facing error or a secret) and leave the cached/built-in
     /// catalog in place.
-    func refresh(host: String?) {
-        guard let host, !host.isEmpty, !isFetching else { return }
+    func refresh(endpoint: ServerEndpoint?, token: String?) {
+        guard let endpoint, !isFetching else { return }
         if let lastFetch, Date().timeIntervalSince(lastFetch) < Self.throttle { return }
         lastFetch = Date()
         isFetching = true
@@ -358,7 +403,8 @@ final class CommandCatalogStore {
             guard let self else { return }
             defer { self.isFetching = false }
             do {
-                let (raw, targets) = try await self.fetcher.fetch(host: host)
+                let (raw, targets) = try await self.fetcher.fetch(
+                    endpoint: endpoint, token: token)
                 Self.saveRaw(raw)
                 self.targets = targets
             } catch {
@@ -463,5 +509,202 @@ struct MentionPickerView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("command-\(command.id)")
+    }
+}
+
+
+// MARK: - Dedicated computer task UI
+
+/// The Windows FerryHelper owns the command vocabulary. This panel displays
+/// only commands supplied by its catalog (including the existing cached copy),
+/// rather than inventing HTTP endpoints or unsupported command spellings.
+struct AssistantTaskPanel: View {
+    @Bindable var model: AppModel
+
+    @State private var chosenID: String?
+    @State private var showTaskSheet = false
+    @State private var argument = ""
+    @State private var includeDate = false
+    @State private var date = Date()
+    @State private var executing = false
+
+    private var target: MentionTarget? {
+        model.catalog.targets.first {
+            $0.id == "助手" || $0.id == "helper" ||
+            $0.matchesAssistant("助手") || $0.matchesAssistant("FerryHelper")
+        }
+    }
+
+    private var commands: [CommandItem] {
+        guard let target else { return [] }
+        if !target.commands.isEmpty { return target.commands }
+        // Remote catalogs may publish a helper group with a single command.
+        if let insert = target.insertText, !insert.isEmpty {
+            return [CommandItem(id: target.id, title: target.title, insertText: insert,
+                                subtitle: target.subtitle)]
+        }
+        return []
+    }
+
+    private var chosen: CommandItem? {
+        commands.first(where: { $0.id == chosenID })
+    }
+
+    /// Date choice is an optional, editable positional argument. Never
+    /// synthesize flags that are not declared by the Windows command catalog.
+    private var offersDate: Bool {
+        guard let chosen else { return false }
+        // Only /找 accepts a standalone date; /发文件 expects a filename.
+        return chosen.insertText.trimmingCharacters(in: .whitespaces).hasPrefix("/找")
+    }
+
+    private var preparedText: String? {
+        guard let chosen else { return nil }
+        let verb = chosen.insertText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !verb.isEmpty else { return nil }
+        var text = verb.hasPrefix("@") || model.routeIsolationEnabled
+            ? verb : model.catalog.wakeTag(forAssistantName: "助手") + " " + verb
+        let arguments = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chosen.requiresArgument && arguments.isEmpty && !includeDate { return nil }
+        if !arguments.isEmpty { text += " " + arguments }
+        if includeDate && offersDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            text += " " + formatter.string(from: date)
+        }
+        return text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "desktopcomputer")
+                    .foregroundStyle(.cyan)
+                Text("电脑助手")
+                    .font(.subheadline.weight(.semibold))
+                Text("快捷命令")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    model.refreshCommandCatalog()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("刷新电脑命令")
+            }
+            if commands.isEmpty {
+                Text("暂无可用命令，点击右侧刷新。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(commands) { command in
+                            Button {
+                                chosenID = command.id
+                                argument = ""
+                                includeDate = false
+                                showTaskSheet = true
+                            } label: {
+                                Text(command.title)
+                                    .font(.footnote.weight(.medium))
+                                    .padding(.horizontal, 13)
+                                    .frame(height: 36)
+                                    .background(Color.white.opacity(0.10),
+                                                in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("helper-command-\(command.id)")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityIdentifier("computer-assistant-commands")
+        .sheet(isPresented: $showTaskSheet) {
+            taskEditor
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private var taskEditor: some View {
+        NavigationStack {
+            Form {
+                if let chosen {
+                    Section {
+                        if let subtitle = chosen.subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if chosen.requiresArgument || offersDate {
+                            TextField(chosen.requiresArgument ? "输入所需参数" : "附加参数（可选）",
+                                      text: $argument)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        if offersDate {
+                            Toggle("指定日期", isOn: $includeDate)
+                            if includeDate {
+                                DatePicker("日期", selection: $date,
+                                           displayedComponents: .date)
+                                    .datePickerStyle(.compact)
+                            }
+                        }
+                    } header: {
+                        Text("命令参数")
+                    }
+                    Section {
+                        Button("填入聊天输入框") {
+                            guard let preparedText else { return }
+                            model.draft = preparedText
+                            showTaskSheet = false
+                        }
+                        .disabled(preparedText == nil)
+
+                        Button {
+                            guard let preparedText, !executing else { return }
+                            executing = true
+                            Task { @MainActor in
+                                let success = await model.sendText(preparedText)
+                                executing = false
+                                if success {
+                                    chosenID = nil
+                                    argument = ""
+                                    includeDate = false
+                                    showTaskSheet = false
+                                    model.requestScrollToBottom()
+                                }
+                            }
+                        } label: {
+                            if executing {
+                                HStack {
+                                    ProgressView()
+                                    Text("正在执行…")
+                                }
+                            } else {
+                                Label("执行任务", systemImage: "paperplane.fill")
+                            }
+                        }
+                        .disabled(preparedText == nil || executing)
+                    }
+                }
+            }
+            .navigationTitle(chosen?.title ?? "电脑助手")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showTaskSheet = false }
+                }
+            }
+        }
     }
 }

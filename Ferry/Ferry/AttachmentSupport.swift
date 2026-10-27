@@ -11,6 +11,7 @@ struct AttachmentActions: View {
     let name: String
     let mediaType: String
     let load: () async -> Data?
+    var loadFileURL: (() async -> URL?)? = nil
     var tint: Color = .primary
     var onToast: ((String) -> Void)? = nil
     /// Optional extra entry rendered beside 保存/分享: opens the grid of every
@@ -107,6 +108,12 @@ struct AttachmentActions: View {
     private func share() async {
         busy = true
         defer { busy = false }
+        if let loadFileURL {
+            if let url = await loadFileURL() {
+                shareItem = ShareItem(url: AttachmentSupport.namedShareURL(for: url, name: name))
+            }
+            return
+        }
         guard let data = await load() else { return }
         if let url = AttachmentSupport.writeTemporaryFile(data, name: name) {
             shareItem = ShareItem(url: url)
@@ -115,6 +122,27 @@ struct AttachmentActions: View {
 }
 
 enum AttachmentSupport {
+    /// Preserve the original filename in the system share sheet without
+    /// loading/rewriting the entire cached file. Linking is O(1) on APFS.
+    static func namedShareURL(for cachedURL: URL, name: String) -> URL {
+        let leaf = (name as NSString).lastPathComponent
+        guard !leaf.isEmpty else { return cachedURL }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ferry-share-" + UUID().uuidString, isDirectory: true)
+        let target = directory.appendingPathComponent(leaf)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.linkItem(at: cachedURL, to: target)
+            } catch {
+                try FileManager.default.copyItem(at: cachedURL, to: target)
+            }
+            return target
+        } catch {
+            return cachedURL
+        }
+    }
+
     static func writeTemporaryFile(_ data: Data, name: String) -> URL? {
         let leaf = (name as NSString).lastPathComponent
         let safe = leaf.isEmpty ? "file" : leaf

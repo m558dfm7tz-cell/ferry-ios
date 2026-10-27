@@ -50,9 +50,15 @@ struct MessagePayload: Codable, Equatable, Identifiable, Sendable {
     let createdAt: String
     let text: String?
     let file: FileInfo?
+    // Present in newer Go responses; missing on older servers/messages.
+    var assistant: String? = nil
+    /// Absent from old server messages; do not infer it from text.
+    var route: String? = nil
+    var assistantID: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, sequence, kind, text, file
+        case id, sequence, kind, text, file, assistant, route
+        case assistantID = "assistant_id"
         case senderName = "sender_name"
         case senderKind = "sender_kind"
         case isCurrentDevice = "is_current_device"
@@ -65,6 +71,27 @@ struct MessagePayload: Codable, Equatable, Identifiable, Sendable {
     var timeText: String {
         guard let date = TimestampFormat.date(from: createdAt) else { return "" }
         return TimestampFormat.time.string(from: date)
+    }
+}
+
+/// Captured before an outgoing text/file message enters its send queue.
+/// Nil destination means legacy behavior, before protocol capability checks.
+struct MessageDestination: Equatable, Sendable {
+    let route: String
+    let assistant: String?
+    let assistantID: String?
+
+    static let transfer = MessageDestination(route: "transfer", assistant: nil, assistantID: nil)
+
+    static func assistant(name: String, id: String) -> MessageDestination {
+        MessageDestination(route: "assistant", assistant: name, assistantID: id)
+    }
+
+    var fields: [String: String] {
+        var result = ["route": route]
+        if let assistant { result["assistant"] = assistant }
+        if let assistantID { result["assistant_id"] = assistantID }
+        return result
     }
 }
 
@@ -298,6 +325,53 @@ struct ServerCustomAssistant: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case name, avatarText, colorIndex }
 }
 
+/// Runtime capability handshake, including the active helper guard.
+struct FerryCapabilities: Decodable, Sendable {
+    let protocolVersion: Int
+    let messageRouteV1: Bool
+    let assistantIdentityV1: Bool
+    let assistantProfilesV1: Bool
+    let helperRouteGuardV1: Bool
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol"
+        case messageRouteV1 = "message_route_v1"
+        case assistantIdentityV1 = "assistant_identity_v1"
+        case assistantProfilesV1 = "assistant_profiles_v1"
+        case helperRouteGuardV1 = "helper_route_guard_v1"
+    }
+    var permitsIsolatedTransfer: Bool {
+        protocolVersion >= 2 && messageRouteV1 && assistantIdentityV1 &&
+            assistantProfilesV1 && helperRouteGuardV1
+    }
+}
+
+struct AssistantProfile: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let routeName: String
+    let displayName: String
+    let avatarText: String
+    let colorIndex: Int
+    let hidden: Bool
+    let deleted: Bool
+    let revision: Int64
+    enum CodingKeys: String, CodingKey {
+        case id, hidden, deleted, revision
+        case routeName = "route_name"
+        case displayName = "display_name"
+        case avatarText = "avatar_text"
+        case colorIndex = "color_index"
+    }
+}
+
+struct AssistantProfilesSnapshot: Decodable, Sendable {
+    let revision: Int64
+    let profiles: [AssistantProfile]
+}
+
+struct AssistantProfileResponse: Decodable, Sendable {
+    let profile: AssistantProfile
+}
+
 /// `GET/PUT /api/v1/assistant-state`: the server-authoritative assistant bar
 /// (selected filter, per-assistant read cursors, custom assistant list).
 struct AssistantStatePayload: Codable, Sendable {
@@ -331,7 +405,7 @@ struct FavoritesPayload: Decodable, Sendable {
 }
 
 /// Body of `PUT /api/v1/favorites/{id}` (a favorite snapshot to star on).
-struct FavoriteRecord: Encodable, Sendable {
+struct FavoriteRecord: Codable, Sendable {
     let id: String
     let kind: String
     let fileKind: String
@@ -346,6 +420,26 @@ struct FavoriteRecord: Encodable, Sendable {
 struct PutFavoriteResponse: Decodable, Sendable {
     let applied: Bool
     let favorite: ServerFavorite
+}
+
+/// Persisted, immutable favorite action. Using the tap-time timestamp rather
+/// than making one at retry prevents an old offline action from overruling a
+/// newer cancel/restore performed on another device.
+struct PendingFavoriteAction: Codable, Sendable, Identifiable {
+    enum Kind: String, Codable, Sendable { case add, remove }
+    let id: UUID
+    let kind: Kind
+    let messageID: String
+    let opAt: Int64
+    let record: FavoriteRecord?
+
+    init(kind: Kind, messageID: String, opAt: Int64, record: FavoriteRecord? = nil) {
+        id = UUID()
+        self.kind = kind
+        self.messageID = messageID
+        self.opAt = opAt
+        self.record = record
+    }
 }
 
 /// One deletion made on this phone that still needs to reach the server.

@@ -30,7 +30,17 @@ struct MessagePreview: Identifiable {
 /// Type classification + temp-file helpers shared by the timeline row and the
 /// favorites list so both route message files to the same previews.
 enum PreviewRouter {
-    static func isImage(_ mediaType: String) -> Bool { mediaType.hasPrefix("image/") }
+    /// Servers and Windows upload clients sometimes label a photo as
+    /// application/octet-stream; keep the filename fallback consistent with video.
+    static func isImage(_ mediaType: String, name: String = "") -> Bool {
+        if mediaType.lowercased().hasPrefix("image/") { return true }
+        let ext = (name as NSString).pathExtension.lowercased()
+        return ["jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tif", "tiff", "avif"].contains(ext)
+    }
+
+    static func isImage(_ file: FileInfo) -> Bool {
+        isImage(file.mediaType, name: file.name)
+    }
     static func isAudio(_ mediaType: String) -> Bool { mediaType.hasPrefix("audio/") }
 
     /// Video detection accepts `video/*` mime OR a mp4/mov/m4v extension

@@ -6,10 +6,10 @@ import UIKit
 /// the right, with a WeChat-style panel (文件 / 拍摄) and per-item upload queue.
 struct ComposerView: View {
     @Bindable var model: AppModel
-    var focused: FocusState<Bool>.Binding
+    var focused: Binding<Bool>
 
-    @State private var showImagePicker = false
-    @State private var showPlus = false
+    @Binding var showImagePicker: Bool
+    @Binding var showPlus: Bool
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var showEditor = false
@@ -23,11 +23,9 @@ struct ComposerView: View {
     @State private var editTarget: ImageEditTarget?
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
-    /// The attachment destination the plus panel asked for. It is opened only
-    /// after the panel has finished dismissing — see the `.sheet` below.
-    private enum PendingAttachment { case file, camera }
-    @State private var pendingAttachment: PendingAttachment?
     @State private var didWarmUpAttachments = false
+    @State private var keyboardPresented = false
+    @State private var pendingAlbumAfterKeyboard = false
 
     /// A queued image opened in the editor. `id` is the upload item it will
     /// replace when the edit is confirmed.
@@ -42,6 +40,9 @@ struct ComposerView: View {
         VStack(spacing: 8) {
             statusArea
             uploadQueue
+            if model.selectedAssistantID == "helper" {
+                AssistantTaskPanel(model: model)
+            }
             if mentionContext != nil {
                 MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
@@ -53,23 +54,36 @@ struct ComposerView: View {
             inputBar
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
+        // No full-width opaque glass rectangle around the input capsule.
+        // Messages fade gently beneath the original independent input field.
+        .background {
+            LinearGradient(colors: [
+                Color.chatBackground.opacity(0),
+                Color.chatBackground.opacity(0.67),
+                Color.chatBackground
+            ], startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
         .onAppear { refreshPasteAvailability() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardPresented = false
+            if pendingAlbumAfterKeyboard {
+                pendingAlbumAfterKeyboard = false
+                withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshPasteAvailability()
         }
-        // Previously the panel called `dismiss()` and then presented the file
-        // importer / camera in the same run-loop turn. UIKit drops or defers a
-        // presentation that arrives while another dismissal is still animating,
-        // which is what made the next screen appear "a beat late". Record the
-        // choice instead and open it from `onDismiss`, i.e. once the panel is
-        // really gone.
-        .sheet(isPresented: $showPlus, onDismiss: { openPendingAttachment() }) {
-            PlusPanel(onFile: { pendingAttachment = .file },
-                      onCamera: { pendingAttachment = .camera })
-        }
+        // The two options are inline, so selecting one needs no sheet-dismiss
+        // animation before UIKit can present the camera or document picker.
         .onChange(of: showPlus) { _, isShown in
             guard isShown, !didWarmUpAttachments else { return }
             didWarmUpAttachments = true
@@ -87,9 +101,6 @@ struct ComposerView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
             handleFiles(result)
-        }
-        .fullScreenCover(isPresented: $showImagePicker) {
-            AlbumPickerView(model: model)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { result in
@@ -220,7 +231,15 @@ struct ComposerView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            Button { showImagePicker = true } label: {
+            Button {
+                showPlus = false
+                if focused.wrappedValue || keyboardPresented {
+                    pendingAlbumAfterKeyboard = true
+                    dismissComposerKeyboard()
+                } else {
+                    withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+                }
+            } label: {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 24, weight: .light))
                     .foregroundStyle(.white)
@@ -259,8 +278,25 @@ struct ComposerView: View {
                                  activeTarget = nil
                                  if context != nil { model.refreshCommandCatalog() }
                              },
-                             accessibilityIdentifier: "composer-input")
-                .frame(height: textFieldHeight)
+                             accessibilityIdentifier: "composer-input",
+                             attachmentMode: $showPlus,
+                             onAttachmentFile: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     showFileImporter = true
+                                 }
+                             },
+                             onAttachmentCamera: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     openCamera()
+                                 }
+                             })
+                .frame(height: max(44, textFieldHeight), alignment: .center)
                 // Hard guarantee that long text can never be painted outside
                 // the capsule: the text view is sized by `textFieldHeight`, and
                 // clipping keeps a stale intermediate height from overflowing.
@@ -289,8 +325,25 @@ struct ComposerView: View {
         .background(capsuleColor, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
+    private func dismissComposerKeyboard() {
+        focused.wrappedValue = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+
     private var plusButton: some View {
-        Button { showPlus = true } label: {
+        Button {
+            if showPlus {
+                showPlus = false
+                dismissComposerKeyboard()
+            } else {
+                pendingAlbumAfterKeyboard = false
+                // Keep the UITextView first responder and change only its
+                // native inputView; the keyboard swaps in one UIKit animation.
+                showPlus = true
+                focused.wrappedValue = true
+            }
+        } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
                 .frame(width: barButtonSize, height: barButtonSize)
@@ -319,17 +372,6 @@ struct ComposerView: View {
     /// Web-style send button: filled near-white circle with a dark up arrow.
     private var sendButtonFill: Color {
         Color(red: 0.93, green: 0.94, blue: 0.96)
-    }
-
-    /// Opens whatever the plus panel picked. Runs from the sheet's `onDismiss`,
-    /// so the panel is fully gone before the next presentation starts.
-    private func openPendingAttachment() {
-        guard let pending = pendingAttachment else { return }
-        pendingAttachment = nil
-        switch pending {
-        case .file: showFileImporter = true
-        case .camera: openCamera()
-        }
     }
 
     private func openCamera() {
@@ -429,8 +471,19 @@ struct ComposerView: View {
             return
         }
         let name = EditedImageExport.name(for: target.name, mime: encoded.mime)
+        guard let pending = model.uploader.items.first(where: { $0.id == target.id }) else {
+            errorMessage = "待发送的原图片已不存在。"
+            return
+        }
+        let originalDestination = pending.destination
+        if model.routeIsolationEnabled && originalDestination == nil {
+            errorMessage = "原图片的目标助手不明确，已阻止重新发送。"
+            return
+        }
         model.uploader.remove(target.id)
-        if let error = model.uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime) {
+        if let error = model.uploader.enqueue(data: encoded.data, name: name,
+                                               mediaType: encoded.mime,
+                                               destinationOverride: originalDestination) {
             errorMessage = error
         }
     }
@@ -522,22 +575,14 @@ private enum AttachmentWarmup {
 struct PlusPanel: View {
     let onFile: () -> Void
     let onCamera: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         HStack(spacing: 16) {
-            // Record the choice first, then dismiss: the parent opens the real
-            // picker once this panel has finished animating away.
-            panelButton("文件", systemImage: "folder") {
-                onFile(); dismiss()
-            }
-            panelButton("拍摄", systemImage: "camera") {
-                onCamera(); dismiss()
-            }
+            panelButton("文件", systemImage: "folder", action: onFile)
+            panelButton("拍摄", systemImage: "camera", action: onCamera)
         }
-        .padding(24)
-        .presentationDetents([.height(180)])
-        .presentationDragIndicator(.visible)
+        .padding(12)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func panelButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -548,7 +593,8 @@ struct PlusPanel: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 96)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(Color(uiColor: .tertiarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -565,7 +611,7 @@ struct ExpandEditorView: View {
     let onSend: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?

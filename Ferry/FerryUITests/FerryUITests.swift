@@ -38,6 +38,50 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(copyLinkItem.waitForExistence(timeout: 5), "video bubble context menu should appear")
     }
 
+    /// A chat bubble goes straight to its own full-screen media page; the
+    /// all-media grid is an explicit control on the top right, not the first
+    /// screen when opening the viewer for the first time.
+    @MainActor
+    func testChatBubbleOpensPagerWithTopRightMediaGrid() throws {
+        let imageBubble = app.descendants(matching: .any)["bubble.image"].firstMatch
+        XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
+        tap(imageBubble)
+        print("FERRY_DIAG_PAGER_AFTER_TAP\n\(app.debugDescription)")
+        let grid = app.buttons["viewer-open-gallery"].firstMatch
+        XCTAssertTrue(grid.waitForExistence(timeout: 8),
+                      "chat image should open its own pager with a gallery shortcut")
+        XCTAssertTrue(app.staticTexts["1 / 2"].waitForExistence(timeout: 5),
+                      "the tapped image should be the first media page")
+        app.swipeLeft()
+        XCTAssertTrue(app.staticTexts["2 / 2"].waitForExistence(timeout: 6),
+                      "swipe left must advance from chat photo to chat video")
+        tap(grid)
+        XCTAssertTrue(app.navigationBars["媒体"].waitForExistence(timeout: 8),
+                      "top-right media shortcut should show this chat's grid")
+    }
+
+    /// The plus menu is hosted by the UITextView inputView, not stacked above
+    /// the software keyboard. Tapping the editor swaps the native input view
+    /// back to the system keyboard without moving the transcript twice.
+    @MainActor
+    func testPlusAttachmentKeyboardHandoff() throws {
+        let plus = app.buttons["添加"].firstMatch
+        let input = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        tap(input)
+        XCTAssertTrue(plus.waitForExistence(timeout: 8))
+        tap(plus)
+        print("FERRY_DIAG_PLUS_AFTER_TAP\n\(app.debugDescription)")
+
+        let files = app.buttons["composer-attachment-file"].firstMatch
+        let camera = app.buttons["composer-attachment-camera"].firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 8))
+        XCTAssertTrue(camera.exists)
+        tap(input)
+        XCTAssertFalse(files.waitForExistence(timeout: 2),
+                       "tapping the composer should restore system keyboard")
+    }
+
     /// Device-management removal flow in mock mode: open 设备管理, verify the
     /// current-device tag, swipe a non-current device, tap 移除, and confirm the
     /// confirmation alert appears before cancelling.
@@ -82,12 +126,13 @@ final class FerryUITests: XCTestCase {
     }
 
     /// "@" mention/command picker (mock mode): typing "@" shows 电脑 + 助手,
-    /// tapping 助手 shows its commands, tapping 翻译 inserts "/翻译 ".
+    /// tapping 助手 shows its real commands; 截图 inserts "/截图".
     @MainActor
     func testMentionPickerInsertsCommand() throws {
         let composer = app.textViews["composer-input"]
         XCTAssertTrue(composer.waitForExistence(timeout: 8), "composer input should exist")
         tap(composer)
+        print("FERRY_DIAG_COMPOSER_AFTER_TAP\n\(app.debugDescription)")
 
         // Wait until the composer actually has keyboard focus before typing. On
         // CI the software keyboard may not appear (hardware keyboard), so accept
@@ -103,15 +148,45 @@ final class FerryUITests: XCTestCase {
 
         let desktop = app.buttons["mention-desktop"].firstMatch
         XCTAssertTrue(desktop.waitForExistence(timeout: 8), "mention list should show 电脑")
-        XCTAssertTrue(app.buttons["mention-helper"].exists, "mention list should show 助手")
+        XCTAssertTrue(app.buttons["mention-helper"].waitForExistence(timeout: 5),
+                      "mention list should show 助手")
 
         tap(app.buttons["mention-helper"].firstMatch)
 
-        let translate = app.buttons["command-translate"].firstMatch
-        XCTAssertTrue(translate.waitForExistence(timeout: 5), "commands should appear")
-        tap(translate)
+        let screenshot = app.buttons["command-截图"].firstMatch
+        XCTAssertTrue(screenshot.waitForExistence(timeout: 5), "real commands should appear")
+        tap(screenshot)
 
-        XCTAssertEqual(composer.value as? String, "/翻译 ", "composer text should be the inserted command")
+        XCTAssertEqual(composer.value as? String, "/截图", "composer should contain actual FerryHelper command")
+    }
+
+
+    /// All built-in avatars, including 总管 and 助手, expose the full menu.
+    @MainActor
+    func testBuiltInAvatarManagementMenus() throws {
+        let bar = app.scrollViews["assistant-bar"].firstMatch
+        let chief = app.buttons["assistant-avatar-chief"].firstMatch
+        XCTAssertTrue(chief.waitForExistence(timeout: 8))
+        chief.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["更换头像"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["编辑信息"].exists)
+        XCTAssertFalse(app.buttons["隐藏头像"].exists)
+        XCTAssertFalse(app.buttons["删除头像分类"].exists)
+        tap(app.buttons["取消"].firstMatch)
+
+        let helper = app.buttons["assistant-avatar-helper"].firstMatch
+        XCTAssertTrue(helper.waitForExistence(timeout: 8))
+        for _ in 0..<4 {
+            if helper.isHittable { break }
+            bar.swipeLeft()
+        }
+        XCTAssertTrue(helper.isHittable)
+        helper.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["更换头像"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["编辑信息"].exists)
+        XCTAssertFalse(app.buttons["隐藏头像"].exists)
+        XCTAssertFalse(app.buttons["删除头像分类"].exists)
+        tap(app.buttons["取消"].firstMatch)
     }
 
     /// Wait for an element, then tap it; falls back to a center-coordinate tap

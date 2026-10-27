@@ -10,9 +10,14 @@ struct ImageViewer: View {
     let name: String
     let mediaType: String
     let load: () async -> Data?
+    var loadFileURL: (() async -> URL?)? = nil
     /// Opens the grid of every image and video in this chat. Nil hides the
     /// entry (e.g. when the viewer is already opened from that grid).
     var onOpenGallery: (() -> Void)? = nil
+    /// Called when an image is dismissed inside the full-screen media pager.
+    var onClose: (() -> Void)? = nil
+    /// Pass vertical drag progress through to the parent pager's backdrop.
+    var onVerticalDrag: ((CGFloat) -> Void)? = nil
     /// Called with the edited copy when the user finishes editing from the
     /// viewer. Nil hides the 编辑 entry.
     var onEditFinished: ((UIImage) -> Void)? = nil
@@ -22,18 +27,37 @@ struct ImageViewer: View {
     @State private var toastText = ""
     @State private var showOCR = false
     @State private var showEditor = false
+    @State private var verticalDragOffset: CGFloat = 0
+
+    private var previewScale: CGFloat {
+        max(CGFloat(0.88), CGFloat(1) - abs(verticalDragOffset) / CGFloat(2000))
+    }
+    private var previewOpacity: Double {
+        Double(max(CGFloat(0.55), CGFloat(1) - abs(verticalDragOffset) / CGFloat(1100)))
+    }
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            ZoomableImageView(image: image, onDismiss: { dismiss() }).ignoresSafeArea()
+            Color.black.opacity(Double(max(CGFloat(0), CGFloat(1) - abs(verticalDragOffset) / CGFloat(340))))
+                .ignoresSafeArea()
+            ZoomableImageView(image: image,
+                              onDismiss: { if let onClose { onClose() } else { dismiss() } },
+                              onDragChange: { translation in
+                                  onVerticalDrag?(translation)
+                                  if translation == 0 {
+                                      withAnimation(.easeOut(duration: 0.22)) { verticalDragOffset = 0 }
+                                  } else {
+                                      verticalDragOffset = translation
+                                  }
+                              }).ignoresSafeArea()
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
                 .lineLimit(2).padding(20)
         }
         .overlay(alignment: .bottomTrailing) {
-            AttachmentActions(name: name, mediaType: mediaType, load: load, tint: .white,
+            AttachmentActions(name: name, mediaType: mediaType, load: load,
+                              loadFileURL: loadFileURL, tint: .white,
                               onToast: { text in flashToast(text) },
                               onOpenGallery: onOpenGallery)
                 .padding(20)
@@ -65,6 +89,9 @@ struct ImageViewer: View {
             .padding(20)
         }
         .overlay { if showToast { toastView } }
+        .offset(y: verticalDragOffset)
+        .scaleEffect(previewScale)
+        .opacity(previewOpacity)
         .sheet(isPresented: $showOCR) {
             OCRView(image: image, name: name)
         }
@@ -165,22 +192,26 @@ struct ImageGridView: View {
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     let onDismiss: () -> Void
+    var onDragChange: ((CGFloat) -> Void)? = nil
 
     func makeUIView(context: Context) -> ZoomableImageUIView {
         let view = ZoomableImageUIView()
         view.image = image
         view.onDismiss = onDismiss
+        view.onDragChange = onDragChange
         return view
     }
 
     func updateUIView(_ uiView: ZoomableImageUIView, context: Context) {
         if uiView.image !== image { uiView.image = image }
         uiView.onDismiss = onDismiss
+        uiView.onDragChange = onDragChange
     }
 }
 
 final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var onDismiss: (() -> Void)?
+    var onDragChange: ((CGFloat) -> Void)?
 
     var image: UIImage? {
         get { imageView.image }
@@ -196,7 +227,7 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        backgroundColor = .clear
         imageView.contentMode = .scaleAspectFit
         scrollView.delegate = self
         scrollView.minimumZoomScale = 1
@@ -204,7 +235,7 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         scrollView.showsVerticalScrollIndicator = false
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.bouncesZoom = true
-        scrollView.backgroundColor = .black
+        scrollView.backgroundColor = .clear
         // At zoom scale 1 the image fits exactly, so pan-scrolling is disabled
         // and the vertical dismiss pan owns dragging. Scrolling is re-enabled
         // once zoomed in (see scrollViewDidZoom).
@@ -246,7 +277,10 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === dismissPan {
             // Drag-dismiss is disabled while zoomed so pinch/pan keeps working.
-            return scrollView.zoomScale <= 1.01
+            guard scrollView.zoomScale <= 1.01 else { return false }
+            let velocity = dismissPan.velocity(in: self)
+            // Let the gallery handle left/right paging; dismiss vertically only.
+            return abs(velocity.y) > abs(velocity.x) * 1.25
         }
         return true
     }
@@ -294,19 +328,16 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         let translation = pan.translation(in: self)
         switch pan.state {
         case .changed:
-            scrollView.transform = CGAffineTransform(translationX: 0, y: translation.y)
-            let progress = min(1, abs(translation.y) / 240)
-            imageView.alpha = 1 - progress * 0.75
+            // Move the whole SwiftUI preview (including actions) with the
+            // finger, rather than only fading its UIImageView.
+            onDragChange?(translation.y)
         case .ended, .cancelled, .failed:
             let velocity = pan.velocity(in: self).y
             let shouldDismiss = abs(translation.y) > 120 || abs(velocity) > 900
             if shouldDismiss {
                 onDismiss?()
             } else {
-                UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut], animations: {
-                    self.scrollView.transform = .identity
-                    self.imageView.alpha = 1
-                })
+                onDragChange?(0)
             }
         default:
             break
