@@ -48,6 +48,7 @@ struct AlbumPickerView: View {
     /// down to close.
     @State private var dismissDrag: CGFloat = 0
     @State private var gridDragStartedAtTop = false
+    @State private var gridDragInProgress = false
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
     /// Full-screen preview state; nil shows the grid.
@@ -207,7 +208,10 @@ struct AlbumPickerView: View {
         // tap is not a drag) while still tracking the pull the moment it moves.
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                if value.translation == .zero { gridDragStartedAtTop = gridAtTop }
+                if !gridDragInProgress {
+                    gridDragInProgress = true
+                    gridDragStartedAtTop = gridAtTop
+                }
                 guard gridDragStartedAtTop, gridAtTop, value.translation.height > 0 else {
                     if dismissDrag != 0 { dismissDrag = 0 }
                     return
@@ -215,7 +219,10 @@ struct AlbumPickerView: View {
                 dismissDrag = value.translation.height
             }
             .onEnded { value in
-                defer { gridDragStartedAtTop = false }
+                defer {
+                    gridDragStartedAtTop = false
+                    gridDragInProgress = false
+                }
                 let shouldClose = gridDragStartedAtTop && (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
                 withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
                 if shouldClose { requestClose() }
