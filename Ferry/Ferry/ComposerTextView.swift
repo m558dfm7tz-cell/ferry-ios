@@ -168,18 +168,46 @@ struct ComposerTextView: UIViewRepresentable {
             self.onMentionChange = onMentionChange
         }
 
-        /// Drive the text view's first-responder state only on an explicit
-        /// transition of the focus binding (e.g. the expand editor focusing on
-        /// appear, or an explicit dismiss). The delegate deliberately does NOT
-        /// write back to the focus binding, so a plain tap that focuses the
-        /// text view can never be followed by SwiftUI writing `false` back and
-        /// dismissing the keyboard right after it appears.
+        /// Keep the SwiftUI focus binding in sync with *actual* UIKit taps.
+        /// A native UITextView gains first-responder status without a SwiftUI
+        /// FocusState transition. Leaving the binding false made subsequent
+        /// keyboard/attachment handoffs race against stale focus state.
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            lastKnownFocus = true
+            DispatchQueue.main.async { [weak textView] in
+                guard textView?.isFirstResponder == true else { return }
+                self.isFocused.wrappedValue = true
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            lastKnownFocus = false
+            DispatchQueue.main.async { [weak textView] in
+                guard textView?.isFirstResponder != true else { return }
+                self.isFocused.wrappedValue = false
+            }
+        }
+
+        /// UIKit may also lose the responder during an input-view change.
+        /// Reconcile a requested focus even if the binding itself did not
+        /// change; never resign a user-initiated tap while FocusState is stale.
         func applyFocus(_ wantsFocus: Bool, to textView: UITextView) {
-            guard wantsFocus != lastKnownFocus else { return }
-            lastKnownFocus = wantsFocus
             if wantsFocus {
-                if !textView.isFirstResponder { textView.becomeFirstResponder() }
-            } else {
+                lastKnownFocus = true
+                if !textView.isFirstResponder {
+                    if textView.window != nil {
+                        textView.becomeFirstResponder()
+                    } else {
+                        DispatchQueue.main.async { [weak textView] in
+                            guard self.isFocused.wrappedValue,
+                                  let textView, textView.window != nil,
+                                  !textView.isFirstResponder else { return }
+                            textView.becomeFirstResponder()
+                        }
+                    }
+                }
+            } else if lastKnownFocus {
+                lastKnownFocus = false
                 if textView.isFirstResponder { textView.resignFirstResponder() }
             }
         }
@@ -305,7 +333,12 @@ final class ComposerUITextView: UITextView {
     }
 
     @objc private func handleAttachmentTap() {
-        if isShowingAttachmentInput { onTapWhileShowingAttachment?() }
+        if isShowingAttachmentInput {
+            onTapWhileShowingAttachment?()
+        }
+        // Keep the native responder even when the scroll/keyboard gesture
+        // recognizers compete for a tap on the empty composer.
+        if !isFirstResponder { becomeFirstResponder() }
     }
     var onWidthChanged: (() -> Void)?
     private var lastLaidOutWidth: CGFloat = 0
