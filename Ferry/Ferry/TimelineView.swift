@@ -10,10 +10,13 @@ struct TimelineView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var showDeviceManagement = false
-    @State private var showMediaGallery = false
+    @State private var mediaPresentation: MediaPresentation? = nil
     @State private var showNewAssistant = false
     @State private var showReviewList = false
-    @State private var galleryInitialID: String?
+    private struct MediaPresentation: Identifiable {
+        let id = UUID()
+        let initialMessageID: String?
+    }
     @State private var atBottom = true
     @State private var isFollowingTail = true
     @State private var transcriptUserDragging = false
@@ -162,8 +165,8 @@ struct TimelineView: View {
                     }
             }
         }
-        .fullScreenCover(isPresented: $showMediaGallery) {
-            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+        .fullScreenCover(item: $mediaPresentation) { presentation in
+            MediaGalleryView(model: model, initialMessageID: presentation.initialMessageID)
                 .presentationBackground(.clear)
         }
         .sheet(isPresented: $showNewAssistant) {
@@ -479,8 +482,7 @@ struct TimelineView: View {
                         Button { showDateJump = true } label: { Label("跳转到日期", systemImage: "calendar") }
                         Button { showFavorites = true } label: { Label("收藏", systemImage: "star") }
                         Button {
-                            galleryInitialID = nil
-                            showMediaGallery = true
+                            mediaPresentation = MediaPresentation(initialMessageID: nil)
                         } label: { Label("图片与视频", systemImage: "square.grid.2x2") }
                         Button { enterSelection() } label: { Label("选择", systemImage: "checkmark.circle") }
                         Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
@@ -497,8 +499,7 @@ struct TimelineView: View {
     }
 
     private func openMediaGallery(_ messageID: String) {
-        galleryInitialID = messageID
-        showMediaGallery = true
+        mediaPresentation = MediaPresentation(initialMessageID: messageID)
     }
 
     /// Enqueue an image edited from a preview as a new outgoing message.
