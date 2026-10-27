@@ -8,7 +8,7 @@ struct ComposerView: View {
     @Bindable var model: AppModel
     var focused: FocusState<Bool>.Binding
 
-    @State private var showImagePicker = false
+    @Binding var showImagePicker: Bool
     @Binding var showPlus: Bool
     @State private var showFileImporter = false
     @State private var showCamera = false
@@ -99,9 +99,6 @@ struct ComposerView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
             handleFiles(result)
-        }
-        .fullScreenCover(isPresented: $showImagePicker) {
-            AlbumPickerView(model: model)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { result in
@@ -232,7 +229,11 @@ struct ComposerView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            Button { showImagePicker = true } label: {
+            Button {
+                focused.wrappedValue = false
+                showPlus = false
+                withAnimation(.easeOut(duration: 0.18)) { showImagePicker = true }
+            } label: {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 24, weight: .light))
                     .foregroundStyle(.white)
