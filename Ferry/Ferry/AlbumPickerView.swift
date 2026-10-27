@@ -47,6 +47,7 @@ struct AlbumPickerView: View {
     /// Vertical translation of the whole grid page while it is being pulled
     /// down to close.
     @State private var dismissDrag: CGFloat = 0
+    @State private var gridDragStartedAtTop = false
     @State private var imageManager = PHCachingImageManager()
     @State private var libraryObserver: LibraryChangeObserver?
     /// Full-screen preview state; nil shows the grid.
@@ -206,14 +207,16 @@ struct AlbumPickerView: View {
         // tap is not a drag) while still tracking the pull the moment it moves.
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard gridAtTop, value.translation.height > 0 else {
+                if value.translation == .zero { gridDragStartedAtTop = gridAtTop }
+                guard gridDragStartedAtTop, gridAtTop, value.translation.height > 0 else {
                     if dismissDrag != 0 { dismissDrag = 0 }
                     return
                 }
                 dismissDrag = value.translation.height
             }
             .onEnded { value in
-                let shouldClose = dismissDrag > 140 || value.predictedEndTranslation.height > 240
+                defer { gridDragStartedAtTop = false }
+                let shouldClose = gridDragStartedAtTop && (dismissDrag > 140 || value.predictedEndTranslation.height > 240)
                 withAnimation(.easeOut(duration: 0.25)) { dismissDrag = 0 }
                 if shouldClose { requestClose() }
             }
@@ -612,7 +615,7 @@ private struct PickerGridCell: View {
 
     private var selectionCircle: some View {
         PickerSelectionCircle(sequence: sequence, action: onTapCircle)
-            .padding(4)
+            .padding(2)
     }
 
     @ViewBuilder private var bottomBadges: some View {
@@ -665,6 +668,8 @@ private struct PickerSelectionCircle: View {
                 }
             }
             .frame(width: 24, height: 24)
+            .frame(width: 42, height: 42)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -899,16 +904,18 @@ private struct AlbumPreviewView: View {
     /// `ImageViewer` drag-to-dismiss: the preview tracks the finger, and on
     /// release past the threshold (or a fast flick) it returns to the grid.
     private var verticalDismissDrag: some Gesture {
-        DragGesture(minimumDistance: 10)
+        DragGesture(minimumDistance: 16)
             .onChanged { value in
-                guard value.translation.height > 0 else {
+                let horizontal = abs(value.translation.width)
+                guard value.translation.height > 16,
+                      value.translation.height > horizontal * 1.5 else {
                     if dismissDragY != 0 { dismissDragY = 0 }
                     return
                 }
                 dismissDragY = value.translation.height
             }
             .onEnded { value in
-                let shouldClose = dismissDragY > 150 || value.predictedEndTranslation.height > 300
+                let shouldClose = dismissDragY > 150 || (dismissDragY > 50 && value.predictedEndTranslation.height > 300)
                 if shouldClose {
                     dismissDragY = 0
                     onClose()
