@@ -83,8 +83,102 @@ struct TimelineView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                ScrollViewReader { proxy in
-                    ScrollView {
+                transcriptView
+                VStack(spacing: 0) {
+                    AssistantBarView(assistants: model.assistantStore.assistants,
+                                     selectedID: $model.selectedAssistantID,
+                                     unreadIDs: model.unreadAssistantIDs,
+                                     avatarStore: model.avatarStore,
+                                     onSelect: { model.selectAssistant($0) },
+                                     onAdd: { showNewAssistant = true },
+                                     onUpdate: { model.assistantStore.update($0) },
+                                     onDelete: { model.deleteAssistant(id: $0) },
+                                     canRestoreBuiltIns: !model.assistantStore.hiddenBuiltInIDs.isEmpty,
+                                     onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
+                    if model.showsReviewEntry {
+                        ReviewEntryRow(count: model.reviewStore.unseenCount) {
+                            showReviewList = true
+                        }
+                    }
+                }
+            }
+            .toolbar { toolbarContent }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selectionMode {
+                    SelectionBar(onClearAll: { selectionAlert = .clearAll })
+                } else {
+                    ComposerView(model: model, focused: $composerFocused)
+                }
+            }
+            .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
+        }
+        .sheet(isPresented: $showSearch) {
+            SearchView(model: model, onSelect: { id in jumpToMessage(id) })
+        }
+        .sheet(isPresented: $showFavorites) {
+            FavoritesView(model: model)
+        }
+        .sheet(isPresented: $showDateJump) {
+            DateJumpSheet(model: model,
+                          onJump: { id in jumpToMessage(id) },
+                          onEmpty: { flashToastAfterDismiss("当天没有消息") })
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(model: model)
+        }
+        .sheet(isPresented: $showDeviceManagement) {
+            NavigationStack {
+                DeviceManagementView(model: model)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) { Button("关闭") { showDeviceManagement = false } }
+                    }
+            }
+        }
+        .fullScreenCover(isPresented: $showMediaGallery) {
+            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+        }
+        .sheet(isPresented: $showNewAssistant) {
+            NewAssistantSheet { name, avatarText, colorIndex in
+                model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+            }
+        }
+        .sheet(isPresented: $showReviewList) {
+            ReviewListView(model: model)
+        }
+        .onAppear { applyPendingRoute() }
+        .onChange(of: model.pendingRoute) { _, route in
+            guard route != nil else { return }
+            applyPendingRoute()
+        }
+        .alert(selectionAlert?.title ?? "", isPresented: selectionAlertBinding, presenting: selectionAlert) { alert in
+            switch alert {
+            case .delete:
+                Button("删除", role: .destructive) {
+                    model.deleteSelected(selectedIDs)
+                    exitSelection()
+                }
+                Button("取消", role: .cancel) {}
+            case .clearAll:
+                Button("清空全部", role: .destructive) {
+                    model.clearAllMessages()
+                    exitSelection()
+                }
+                Button("取消", role: .cancel) {}
+            }
+        } message: { alert in
+            switch alert {
+            case .delete:
+                Text("确定从本机删除选中的 \(selectedIDs.count) 条消息吗？其他设备仍会保留这些消息。")
+            case .clearAll:
+                Text("确定清空本机全部消息吗？此操作仅在本机隐藏，不会删除服务器上的消息。")
+            }
+        }
+        .overlay { if showToast { toastView } }
+    }
+
+    /// Split the lazy row hierarchy and scroll modifiers into smaller view
+    /// expressions to keep Xcode's SwiftUI type-checker tractable.
+    private var transcriptContents: some View {
                         LazyVStack(spacing: 18) {
                             if !model.visibleMessages.isEmpty { topLoader }
                             if model.visibleMessages.isEmpty {
@@ -142,6 +236,13 @@ struct TimelineView: View {
                         // true bottom regardless of LazyVStack content heights.
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
+
+    }
+
+    private var transcriptView: some View {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        transcriptContents
                     // Extra top inset so the transcript scrolls *under* the
                     // floating (background-less) assistant bar and shows through
                     // it, instead of being permanently hidden behind it.
@@ -259,96 +360,6 @@ struct TimelineView: View {
                     }
                 }
             }
-                VStack(spacing: 0) {
-                    AssistantBarView(assistants: model.assistantStore.assistants,
-                                     selectedID: $model.selectedAssistantID,
-                                     unreadIDs: model.unreadAssistantIDs,
-                                     avatarStore: model.avatarStore,
-                                     onSelect: { model.selectAssistant($0) },
-                                     onAdd: { showNewAssistant = true },
-                                     onUpdate: { model.assistantStore.update($0) },
-                                     onDelete: { model.deleteAssistant(id: $0) },
-                                     canRestoreBuiltIns: !model.assistantStore.hiddenBuiltInIDs.isEmpty,
-                                     onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
-                    if model.showsReviewEntry {
-                        ReviewEntryRow(count: model.reviewStore.unseenCount) {
-                            showReviewList = true
-                        }
-                    }
-                }
-            }
-            .toolbar { toolbarContent }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if selectionMode {
-                    SelectionBar(onClearAll: { selectionAlert = .clearAll })
-                } else {
-                    ComposerView(model: model, focused: $composerFocused)
-                }
-            }
-            .background(Color.chatBackground.ignoresSafeArea(edges: .bottom))
-        }
-        .sheet(isPresented: $showSearch) {
-            SearchView(model: model, onSelect: { id in jumpToMessage(id) })
-        }
-        .sheet(isPresented: $showFavorites) {
-            FavoritesView(model: model)
-        }
-        .sheet(isPresented: $showDateJump) {
-            DateJumpSheet(model: model,
-                          onJump: { id in jumpToMessage(id) },
-                          onEmpty: { flashToastAfterDismiss("当天没有消息") })
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(model: model)
-        }
-        .sheet(isPresented: $showDeviceManagement) {
-            NavigationStack {
-                DeviceManagementView(model: model)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) { Button("关闭") { showDeviceManagement = false } }
-                    }
-            }
-        }
-        .fullScreenCover(isPresented: $showMediaGallery) {
-            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
-        }
-        .sheet(isPresented: $showNewAssistant) {
-            NewAssistantSheet { name, avatarText, colorIndex in
-                model.assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
-            }
-        }
-        .sheet(isPresented: $showReviewList) {
-            ReviewListView(model: model)
-        }
-        .onAppear { applyPendingRoute() }
-        .onChange(of: model.pendingRoute) { _, route in
-            guard route != nil else { return }
-            applyPendingRoute()
-        }
-        .alert(selectionAlert?.title ?? "", isPresented: selectionAlertBinding, presenting: selectionAlert) { alert in
-            switch alert {
-            case .delete:
-                Button("删除", role: .destructive) {
-                    model.deleteSelected(selectedIDs)
-                    exitSelection()
-                }
-                Button("取消", role: .cancel) {}
-            case .clearAll:
-                Button("清空全部", role: .destructive) {
-                    model.clearAllMessages()
-                    exitSelection()
-                }
-                Button("取消", role: .cancel) {}
-            }
-        } message: { alert in
-            switch alert {
-            case .delete:
-                Text("确定从本机删除选中的 \(selectedIDs.count) 条消息吗？其他设备仍会保留这些消息。")
-            case .clearAll:
-                Text("确定清空本机全部消息吗？此操作仅在本机隐藏，不会删除服务器上的消息。")
-            }
-        }
-        .overlay { if showToast { toastView } }
     }
 
     /// Connection status icon for the top bar leading slot (tap opens device
