@@ -38,6 +38,43 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(copyLinkItem.waitForExistence(timeout: 5), "video bubble context menu should appear")
     }
 
+    /// A chat bubble goes straight to its own full-screen media page; the
+    /// all-media grid is an explicit control on the top right, not the first
+    /// screen when opening the viewer for the first time.
+    @MainActor
+    func testChatBubbleOpensPagerWithTopRightMediaGrid() throws {
+        let imageBubble = app.descendants(matching: .any)["bubble.image"].firstMatch
+        XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
+        tap(imageBubble)
+        let grid = app.buttons["viewer-open-gallery"].firstMatch
+        XCTAssertTrue(grid.waitForExistence(timeout: 8),
+                      "chat image should open its own pager with a gallery shortcut")
+        tap(grid)
+        XCTAssertTrue(app.navigationBars["媒体"].waitForExistence(timeout: 8),
+                      "top-right media shortcut should show this chat's grid")
+    }
+
+    /// The plus menu is hosted by the UITextView inputView, not stacked above
+    /// the software keyboard. Tapping the editor swaps the native input view
+    /// back to the system keyboard without moving the transcript twice.
+    @MainActor
+    func testPlusAttachmentKeyboardHandoff() throws {
+        let plus = app.buttons["添加"].firstMatch
+        let input = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        tap(input)
+        XCTAssertTrue(plus.waitForExistence(timeout: 8))
+        tap(plus)
+
+        let files = app.buttons["composer-attachment-file"].firstMatch
+        let camera = app.buttons["composer-attachment-camera"].firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 8))
+        XCTAssertTrue(camera.exists)
+        tap(input)
+        XCTAssertFalse(files.waitForExistence(timeout: 2),
+                       "tapping the composer should restore system keyboard")
+    }
+
     /// Device-management removal flow in mock mode: open 设备管理, verify the
     /// current-device tag, swipe a non-current device, tap 移除, and confirm the
     /// confirmation alert appears before cancelling.
