@@ -63,6 +63,7 @@ struct MessageRow: View {
     @State private var exportDocument: ExportedFile?
     @State private var shareItem: ShareItem?
     @State private var previewItem: MessagePreview?
+    @State private var lastMediaTapAt: Date = .distantPast
     @State private var showToast = false
     @State private var toastText = ""
 
@@ -288,13 +289,8 @@ struct MessageRow: View {
     }
 
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
-        Button {
-            if !selectionMode {
-                // The same original SwiftUI Button now opens the tapped
-                // media directly in this chat's horizontal pager.
-                onOpenGallery()
-            }
-        } label: {
+        Button(action: openMediaGalleryOnce) {
+
             Image(uiImage: decoded)
                 .resizable().scaledToFit()
                 .frame(maxWidth: 240, maxHeight: 320)
@@ -303,13 +299,16 @@ struct MessageRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityIdentifier("bubble.image")
+        // UIKit's context menu can claim the Button gesture after a short
+        // tap on some iOS versions. The explicit high-priority tap makes the
+        // ordinary tap reliable; the one-shot gate prevents double opening
+        // if Button and TapGesture both fire.
+        .highPriorityGesture(TapGesture().onEnded { openMediaGalleryOnce() })
         .contextMenu { mediaMenu }
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
-        Button {
-            if !selectionMode { onOpenGallery() }
-        } label: {
+        Button(action: openMediaGalleryOnce) {
             ZStack {
                 if let thumbnail {
                     Image(uiImage: thumbnail)
@@ -339,7 +338,20 @@ struct MessageRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityIdentifier("bubble.video")
+        // UIKit's context menu can claim the Button gesture after a short
+        // tap on some iOS versions. The explicit high-priority tap makes the
+        // ordinary tap reliable; the one-shot gate prevents double opening
+        // if Button and TapGesture both fire.
+        .highPriorityGesture(TapGesture().onEnded { openMediaGalleryOnce() })
         .contextMenu { mediaMenu }
+    }
+
+    private func openMediaGalleryOnce() {
+        guard !selectionMode else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastMediaTapAt) > 0.75 else { return }
+        lastMediaTapAt = now
+        onOpenGallery()
     }
 
     private func openFile() {
