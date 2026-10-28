@@ -366,7 +366,10 @@ struct ComposerView: View {
                 // Shift the entire one-line native view down slightly inside
                 // the capsule instead of modifying textContainerInset from
                 // layoutSubviews (which previously broke copy/paste).
-                .offset(y: textFieldHeight <= 46 ? 4 : 0)
+                // Placeholder is already vertically centered by its
+                // native UILabel. Only compensate the text when nonempty;
+                // shifting the empty UITextView moved "输入消息..." too low.
+                .offset(y: !model.draft.isEmpty && textFieldHeight <= 46 ? 4 : 0)
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
