@@ -11,6 +11,9 @@ struct ImageViewer: View {
     let mediaType: String
     let load: () async -> Data?
     var loadFileURL: (() async -> URL?)? = nil
+    // Full resolution is loaded only when a viewer is opened. Chat rows
+    // retain small thumbnails to avoid decoding large images on keyboard moves.
+    var loadFullImage: (() async -> UIImage?)? = nil
     /// Opens the grid of every image and video in this chat. Nil hides the
     /// entry (e.g. when the viewer is already opened from that grid).
     var onOpenGallery: (() -> Void)? = nil
@@ -28,6 +31,7 @@ struct ImageViewer: View {
     @State private var showOCR = false
     @State private var showEditor = false
     @State private var verticalDragOffset: CGFloat = 0
+    @State private var originalImage: UIImage?
 
     // The controls disappear as soon as a vertical image drag starts.
     // They return only after the image has settled back to its resting place.
@@ -60,7 +64,7 @@ struct ImageViewer: View {
         ZStack {
             Color.black.opacity(Double(max(CGFloat(0), CGFloat(1) - abs(verticalDragOffset) / CGFloat(340))))
                 .ignoresSafeArea()
-            ZoomableImageView(image: image,
+            ZoomableImageView(image: originalImage ?? image,
                               onDismiss: { animateDismiss() },
                               onDragChange: { translation in
                                   onVerticalDrag?(translation)
@@ -122,10 +126,10 @@ struct ImageViewer: View {
         }
         .overlay { if showToast { toastView } }
         .sheet(isPresented: $showOCR) {
-            OCRView(image: image, name: name)
+            OCRView(image: originalImage ?? image, name: name)
         }
         .fullScreenCover(isPresented: $showEditor) {
-            ImageEditorView(image: image, confirmTitle: "发送",
+            ImageEditorView(image: originalImage ?? image, confirmTitle: "发送",
                             onFinish: { edited in
                                 showEditor = false
                                 onEditFinished?(edited)
@@ -134,6 +138,11 @@ struct ImageViewer: View {
                             onCancel: { showEditor = false })
         }
         .statusBarHidden()
+        .task {
+            if let loadFullImage {
+                originalImage = await loadFullImage()
+            }
+        }
     }
 
     private var toastView: some View {
