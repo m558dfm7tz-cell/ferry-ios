@@ -288,13 +288,25 @@ struct MessageRow: View {
         }
     }
 
-    @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
-        Button(action: openMediaGalleryOnce) {
+    // Size the hit-test surface to the pixels that are actually displayed.
+    // A flexible maxWidth/maxHeight frame leaves tappable blank margins on
+    // tall/narrow screenshots, sometimes opening the viewer from outside.
+    private func imageBubbleSize(_ image: UIImage) -> CGSize {
+        let width = max(1, image.size.width)
+        let height = max(1, image.size.height)
+        let scale = min(1, min(240 / width, 320 / height))
+        return CGSize(width: width * scale, height: height * scale)
+    }
 
+    @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
+        let size = imageBubbleSize(decoded)
+        Button(action: openMediaGalleryOnce) {
             Image(uiImage: decoded)
-                .resizable().scaledToFit()
-                .frame(maxWidth: 240, maxHeight: 320)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size.width, height: size.height)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
