@@ -6,7 +6,9 @@ import UIKit
 struct FavoritesView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    var onLocate: ((String) -> Void)? = nil
     @State private var previewItem: MessagePreview?
+    @State private var previewSource: MessagePayload?
     @State private var statusMessage: String?
 
     var body: some View {
@@ -25,6 +27,7 @@ struct FavoritesView: View {
                             FavoriteRow(favorite: favorite,
                                         localURL: localURL(for: favorite),
                                         onOpen: { await open(favorite) },
+                                        onLocate: { await locate(favorite) },
                                         onUnfavorite: { await model.toggleFavorite(favorite.message) })
                         }
                     }
@@ -49,7 +52,24 @@ struct FavoritesView: View {
     @MainActor
     private func open(_ favorite: FavoriteMessage) async {
         guard let preview = await Self.makePreview(for: favorite, model: model) else { return }
+        previewSource = favorite.message
         previewItem = preview
+    }
+
+    private func locate(_ favorite: FavoriteMessage) async {
+        guard let onLocate else {
+            await open(favorite)
+            return
+        }
+        guard await model.ensureMessageLoaded(id: favorite.message.id) else {
+            statusMessage = "原消息未加载或已删除，收藏仍保留，可继续预览。"
+            return
+        }
+        dismiss()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            onLocate(favorite.message.id)
+        }
     }
 
     @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
@@ -63,7 +83,8 @@ struct FavoritesView: View {
                             },
                             onEditFinished: { edited in
                                 previewItem = nil
-                                if let error = model.sendEditedImage(edited, originalName: preview.name) {
+                                if let error = model.sendEditedImage(edited, originalName: preview.name,
+                                                                    sourceMessage: previewSource) {
                                     statusMessage = error
                                 }
                             })
@@ -128,6 +149,7 @@ private struct FavoriteRow: View {
     let favorite: FavoriteMessage
     let localURL: URL?
     let onOpen: () async -> Void
+    let onLocate: () async -> Void
     let onUnfavorite: () async -> Void
 
     @State private var showToast = false
@@ -167,6 +189,7 @@ private struct FavoriteRow: View {
         }
         .overlay { if showToast { toastView } }
         .contextMenu {
+            Button { Task { await onLocate() } } label: { Label("定位原消息", systemImage: "arrowshape.turn.up.left") }
             Button { Task { await onOpen() } } label: { Label("打开", systemImage: "arrow.up.left.and.arrow.down.right") }
             if hasText {
                 Button { copyText() } label: { Label("复制", systemImage: "doc.on.doc") }

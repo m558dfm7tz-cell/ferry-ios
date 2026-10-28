@@ -28,6 +28,8 @@ final class Uploader {
         /// re-open them (edit before send) without parsing the multipart body.
         /// Nil for streamed file uploads.
         var sourceURL: URL? = nil
+        /// Captured on enqueue; retries and video transcoding retain it.
+        var destination: MessageDestination? = nil
         var progress: Double = 0
         var phase: Phase = .waiting
         var error: String?
@@ -40,6 +42,8 @@ final class Uploader {
 
     var onCreated: ((MessagePayload) -> Void)?
     var onUnauthorized: (() -> Void)?
+    var destinationProvider: (() -> MessageDestination?)?
+    var routingEnabled: (() -> Bool)?
 
     private var session: URLSession?
     private var delegate: UploadSessionDelegate?
@@ -77,18 +81,25 @@ final class Uploader {
 
     /// Enqueue one in-memory payload (small images). No client-side size cap.
     @discardableResult
-    func enqueue(data: Data, name: String, mediaType: String) -> String? {
+    func enqueue(data: Data, name: String, mediaType: String,
+                 destinationOverride: MessageDestination? = nil) -> String? {
+        let destination = destinationOverride ?? destinationProvider?()
+        if routingEnabled?() == true && destination == nil {
+            return "助手身份尚未同步，不能发送此文件。"
+        }
         let safeName = Self.safeFilename(name)
         let safeMime = Self.safeMediaType(mediaType)
         let boundary = "Ferry-" + UUID().uuidString
-        guard let bodyURL = try? Self.writeBody(data: data, filename: safeName, mediaType: safeMime, boundary: boundary) else {
+        guard let bodyURL = try? Self.writeBody(data: data, filename: safeName, mediaType: safeMime,
+                                                 boundary: boundary, destination: destination) else {
             return "「\(name)」无法准备上传。"
         }
         // Images keep a plain copy of their bytes so they can be re-opened in
         // the image editor before they are sent.
         let sourceURL: URL? = safeMime.hasPrefix("image/") ? (try? Self.writeSource(data, filename: safeName)) : nil
         items.append(Item(id: UUID(), name: safeName, mediaType: safeMime, size: Int64(data.count),
-                          boundary: boundary, bodyURL: bodyURL, sourceURL: sourceURL))
+                          boundary: boundary, bodyURL: bodyURL, sourceURL: sourceURL,
+                          destination: destination))
         pump()
         return nil
     }
@@ -96,18 +107,24 @@ final class Uploader {
     /// Enqueue a file by streaming it into a multipart body temp file (never
     /// reads the whole file into memory). No client-side size cap.
     @discardableResult
-    func enqueue(fileURL: URL, name: String, mediaType: String) -> String? {
+    func enqueue(fileURL: URL, name: String, mediaType: String,
+                 destinationOverride: MessageDestination? = nil) -> String? {
+        let destination = destinationOverride ?? destinationProvider?()
+        if routingEnabled?() == true && destination == nil {
+            return "助手身份尚未同步，不能发送此文件。"
+        }
         let safeName = Self.safeFilename(name)
         let safeMime = Self.safeMediaType(mediaType)
         let boundary = "Ferry-" + UUID().uuidString
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         guard let bodyURL = try? Self.writeBodyStreaming(sourceURL: fileURL, filename: safeName,
-                                                         mediaType: safeMime, boundary: boundary) else {
+                                                         mediaType: safeMime, boundary: boundary,
+                                                         destination: destination) else {
             return "「\(name)」无法准备上传。"
         }
         items.append(Item(id: UUID(), name: safeName, mediaType: safeMime, size: size,
-                          boundary: boundary, bodyURL: bodyURL))
+                          boundary: boundary, bodyURL: bodyURL, destination: destination))
         pump()
         return nil
     }
@@ -123,6 +140,11 @@ final class Uploader {
     /// Re-queue a failed item and restart the sequential pump.
     func retry(_ id: UUID) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        if routingEnabled?() == true && items[index].destination == nil {
+            items[index].phase = .failed
+            items[index].error = "原发送对话不可用，已阻止重试。"
+            return
+        }
         items[index].phase = .waiting
         items[index].progress = 0
         items[index].error = nil
@@ -133,6 +155,7 @@ final class Uploader {
     /// uploads nothing until `completeTranscode` is called with the result.
     @discardableResult
     func enqueueTranscoding(name: String) -> UUID {
+        let destination = destinationProvider?()
         let safeName = Self.safeFilename(name)
         let boundary = "Ferry-" + UUID().uuidString
         let bodyURL = FileManager.default.temporaryDirectory
@@ -140,7 +163,8 @@ final class Uploader {
         FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
         let id = UUID()
         items.append(Item(id: id, name: safeName, mediaType: "video/mp4", size: 0,
-                          boundary: boundary, bodyURL: bodyURL, phase: .transcoding))
+                          boundary: boundary, bodyURL: bodyURL, destination: destination,
+                          phase: .transcoding))
         return id
     }
 
@@ -150,12 +174,17 @@ final class Uploader {
     @discardableResult
     func completeTranscode(_ id: UUID, fileURL: URL, name: String, mediaType: String) -> String? {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
+        if routingEnabled?() == true && items[index].destination == nil {
+            failTranscode(id, error: "无法确定原发送对话，已阻止上传。")
+            return "无法确定原发送对话，已阻止上传。"
+        }
         let safeName = Self.safeFilename(name)
         let safeMime = Self.safeMediaType(mediaType)
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         guard let bodyURL = try? Self.writeBodyStreaming(sourceURL: fileURL, filename: safeName,
-                                                         mediaType: safeMime, boundary: items[index].boundary) else {
+                                                         mediaType: safeMime, boundary: items[index].boundary,
+                                                         destination: items[index].destination) else {
             failTranscode(id, error: "「\(name)」无法准备上传。")
             return "「\(name)」无法准备上传。"
         }
@@ -177,6 +206,10 @@ final class Uploader {
     }
 
     func removeFinished() {
+        for item in items where item.phase == .done || item.phase == .failed {
+            try? FileManager.default.removeItem(at: item.bodyURL)
+            if let source = item.sourceURL { try? FileManager.default.removeItem(at: source) }
+        }
         items.removeAll { $0.phase == .done || $0.phase == .failed }
     }
 
@@ -228,14 +261,6 @@ final class Uploader {
             pump()
             return
         }
-        defer {
-            try? FileManager.default.removeItem(at: items[index].bodyURL)
-            // The editable copy is only needed while the item is still pending.
-            if let source = items[index].sourceURL {
-                try? FileManager.default.removeItem(at: source)
-                items[index].sourceURL = nil
-            }
-        }
 
         if let error = error {
             let ns = error as NSError
@@ -259,6 +284,11 @@ final class Uploader {
             if let message = try? JSONDecoder().decode(MessagePayload.self, from: data ?? Data()) {
                 items[index].phase = .done
                 items[index].progress = 1
+                try? FileManager.default.removeItem(at: items[index].bodyURL)
+                if let source = items[index].sourceURL {
+                    try? FileManager.default.removeItem(at: source)
+                    items[index].sourceURL = nil
+                }
                 onCreated?(message)
             } else {
                 items[index].phase = .failed
@@ -288,11 +318,13 @@ final class Uploader {
         return url
     }
 
-    private static func writeBody(data: Data, filename: String, mediaType: String, boundary: String) throws -> URL {
+    private static func writeBody(data: Data, filename: String, mediaType: String,
+                                  boundary: String, destination: MessageDestination?) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".multipart")
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let handle = try FileHandle(forWritingTo: url)
         do {
+            try writeRouteFields(to: handle, boundary: boundary, destination: destination)
             try handle.write(contentsOf: Data("--\(boundary)\r\n".utf8))
             try handle.write(contentsOf: Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8))
             try handle.write(contentsOf: Data("Content-Type: \(mediaType)\r\n\r\n".utf8))
@@ -309,12 +341,14 @@ final class Uploader {
     /// Build a multipart body temp file by streaming `sourceURL` in 1 MB chunks
     /// (so large files never live in memory): boundary headers, then the file
     /// bytes, then the closing boundary.
-    private static func writeBodyStreaming(sourceURL: URL, filename: String, mediaType: String, boundary: String) throws -> URL {
+    private static func writeBodyStreaming(sourceURL: URL, filename: String, mediaType: String,
+                                           boundary: String, destination: MessageDestination?) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".multipart")
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let output = try FileHandle(forWritingTo: url)
         let input = try FileHandle(forReadingFrom: sourceURL)
         do {
+            try writeRouteFields(to: output, boundary: boundary, destination: destination)
             try output.write(contentsOf: Data("--\(boundary)\r\n".utf8))
             try output.write(contentsOf: Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8))
             try output.write(contentsOf: Data("Content-Type: \(mediaType)\r\n\r\n".utf8))
@@ -332,6 +366,20 @@ final class Uploader {
         try output.close()
         try input.close()
         return url
+    }
+
+    /// The Go protocol accepts assistant, assistant_id, and route as form
+    /// parts before the one file part. Legacy uploads contain only file.
+    private static func writeRouteFields(to handle: FileHandle, boundary: String,
+                                         destination: MessageDestination?) throws {
+        guard let destination else { return }
+        for (key, value) in destination.fields.sorted(by: { $0.key < $1.key }) {
+            guard !value.contains("\r"), !value.contains("\n") else {
+                throw URLError(.badURL)
+            }
+            try handle.write(contentsOf: Data(
+                "--\(boundary)\r\nContent-Disposition: form-data; name=\"\(key)\"\r\n\r\n\(value)\r\n".utf8))
+        }
     }
 
     static func safeFilename(_ name: String) -> String {

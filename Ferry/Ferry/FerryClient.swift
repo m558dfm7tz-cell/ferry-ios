@@ -2,6 +2,15 @@ import Foundation
 import UIKit
 
 protocol FerryServicing {
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool
     func join(endpoint: ServerEndpoint, password: String, name: String) async throws -> AccessClaim
     func currentDevice(endpoint: ServerEndpoint, token: String) async throws -> Device
@@ -9,6 +18,8 @@ protocol FerryServicing {
     func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload
     func attachment(endpoint: ServerEndpoint, token: String, path: String) async throws -> Data
     func attachmentFile(endpoint: ServerEndpoint, token: String, path: String, filename: String?) async throws -> URL
     func downloadLink(endpoint: ServerEndpoint, token: String, messageID: String) async throws -> DownloadLinkPayload
@@ -20,6 +31,77 @@ protocol FerryServicing {
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
     func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String, action: String,
+                                path: String) async throws -> HelperOperation
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String, action: String,
+                                path: String, offset: Int) async throws -> HelperOperation
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String, id: String) async throws -> HelperOperation
+}
+
+// Test mocks and legacy adapters may implement only the original API.
+// Routing is never silently dropped when an unsupported adapter is used.
+extension FerryServicing {
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
+        throw URLError(.unsupportedURL)
+    }
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot {
+        throw URLError(.unsupportedURL)
+    }
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile {
+        throw URLError(.unsupportedURL)
+    }
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload {
+        throw URLError(.unsupportedURL)
+    }
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String) async throws -> HelperOperation {
+        throw URLError(.unsupportedURL)
+    }
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String, offset: Int) async throws -> HelperOperation {
+        guard offset == 0 else { throw URLError(.unsupportedURL) }
+        return try await requestHelperOperation(endpoint: endpoint, token: token, action: action, path: path)
+    }
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String,
+                             id: String) async throws -> HelperOperation {
+        throw URLError(.unsupportedURL)
+    }
+}
+
+/// The directory list is never a chat message; responses expire on Go restart.
+struct HelperDirectoryEntry: Codable, Identifiable {
+    let name: String
+    let path: String
+    let kind: String
+    var size: Int64? = nil
+    var id: String { path }
+}
+struct HelperOperation: Codable {
+    let id: String
+    let action: String
+    let status: String
+    var path: String? = nil
+    var entries: [HelperDirectoryEntry]? = nil
+    var error: String? = nil
+    var nextOffset: Int? = nil
+    var hasMore: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case id, action, status, path, entries, error
+        case nextOffset = "next_offset"
+        case hasMore = "has_more"
+    }
 }
 
 struct FerryClient: FerryServicing {
@@ -47,6 +129,78 @@ struct FerryClient: FerryServicing {
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 24 * 3600
         self.transferSession = URLSession(configuration: config)
+    }
+
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String = "") async throws -> HelperOperation {
+        try await requestHelperOperation(endpoint: endpoint, token: token,
+                                         action: action, path: path, offset: 0)
+    }
+
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String, offset: Int) async throws -> HelperOperation {
+        struct Body: Encodable {
+            let action: String
+            let path: String
+            let assistant_id: String
+            let offset: Int
+        }
+        let body = try JSONEncoder().encode(Body(action: action, path: path,
+                                                assistant_id: "helper", offset: offset))
+        return try await json(endpoint: endpoint, path: "/api/v1/helper/operations",
+                              method: "POST", token: token, body: body)
+    }
+
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String,
+                             id: String) async throws -> HelperOperation {
+        return try await json(endpoint: endpoint, path: "/api/v1/helper/operations/\(id)",
+                              token: token)
+    }
+
+    func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
+        try await json(endpoint: endpoint, path: "/api/v1/capabilities", token: token)
+    }
+
+    func assistantProfiles(endpoint: ServerEndpoint, token: String) async throws -> AssistantProfilesSnapshot {
+        try await json(endpoint: endpoint, path: "/api/v1/assistant-profiles", token: token)
+    }
+
+    func createAssistantProfile(endpoint: ServerEndpoint, token: String,
+                                displayName: String, avatarText: String,
+                                colorIndex: Int) async throws -> AssistantProfile {
+        let fields: [String: Any] = ["display_name": displayName, "avatar_text": avatarText,
+                                     "color_index": colorIndex]
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles", method: "POST",
+            token: token, body: try JSONSerialization.data(withJSONObject: fields))
+        return response.profile
+    }
+
+    func patchAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                               revision: Int64, changes: [String: String]) async throws -> AssistantProfile {
+        var fields: [String: Any] = ["if_revision": revision]
+        for (key, value) in changes {
+            if key == "hidden" || key == "deleted" {
+                fields[key] = value == "true"
+            } else if key == "color_index", let number = Int(value) {
+                fields[key] = number
+            } else {
+                fields[key] = value
+            }
+        }
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles/\(id)", method: "PATCH",
+            token: token, body: try JSONSerialization.data(withJSONObject: fields))
+        return response.profile
+    }
+
+    func restoreAssistantProfile(endpoint: ServerEndpoint, token: String, id: String,
+                                 revision: Int64) async throws -> AssistantProfile {
+        let response: AssistantProfileResponse = try await json(
+            endpoint: endpoint, path: "/api/v1/assistant-profiles/\(id)/restore",
+            method: "POST", token: token,
+            body: try JSONSerialization.data(withJSONObject: ["if_revision": revision]))
+        return response.profile
     }
 
     func accessStatus(endpoint: ServerEndpoint) async throws -> Bool {
@@ -83,6 +237,15 @@ struct FerryClient: FerryServicing {
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload {
         try await json(endpoint: endpoint, path: "/api/v1/messages/text", method: "POST", token: token,
                        body: try JSONSerialization.data(withJSONObject: ["text": text]))
+    }
+
+    func sendText(endpoint: ServerEndpoint, token: String, text: String,
+                  destination: MessageDestination) async throws -> MessagePayload {
+        var body = destination.fields
+        body["text"] = text
+        return try await json(endpoint: endpoint, path: "/api/v1/messages/text",
+                              method: "POST", token: token,
+                              body: try JSONSerialization.data(withJSONObject: body))
     }
 
     /// `POST /api/v1/files/{id}/download-link`: returns a short-lived (≈90 s)

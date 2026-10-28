@@ -19,7 +19,7 @@ private enum BubbleMetrics {
     /// Selection circle (22) + the row HStack's gap (12).
     static let selectionAllowance: CGFloat = 34
     /// Free space kept on the side opposite the bubble.
-    static let oppositeGap: CGFloat = 32
+    static let oppositeGap: CGFloat = 52
     static let minWidth: CGFloat = 120
 
     static func maxWidth(screen: CGFloat, hasAvatar: Bool, selectionMode: Bool) -> CGFloat {
@@ -27,7 +27,7 @@ private enum BubbleMetrics {
         var cap = row - oppositeGap
         if hasAvatar { cap -= avatarAllowance }
         if selectionMode { cap -= selectionAllowance }
-        return max(min(screen * 0.75, cap), minWidth)
+        return max(min(screen * 0.70, cap), minWidth)
     }
 }
 
@@ -63,6 +63,7 @@ struct MessageRow: View {
     @State private var exportDocument: ExportedFile?
     @State private var shareItem: ShareItem?
     @State private var previewItem: MessagePreview?
+    @State private var lastMediaTapAt: Date = .distantPast
     @State private var showToast = false
     @State private var toastText = ""
 
@@ -74,7 +75,7 @@ struct MessageRow: View {
                                selectionMode: selectionMode)
     }
 
-    private var isImage: Bool { message.file?.mediaType.hasPrefix("image/") == true }
+    private var isImage: Bool { message.file.map { PreviewRouter.isImage($0) } ?? false }
     private var isVideo: Bool {
         guard let file = message.file else { return false }
         return PreviewRouter.isVideo(file)
@@ -83,7 +84,7 @@ struct MessageRow: View {
         let file = message.file
         let mime = file?.mediaType ?? ""
         let name = file?.name ?? ""
-        return PreviewRouter.isImage(mime) || PreviewRouter.isVideo(mime, name: name)
+        return PreviewRouter.isImage(mime, name: name) || PreviewRouter.isVideo(mime, name: name)
     }
     private var imageLoaded: Bool {
         if case .some(.some(_)) = image { return true }
@@ -118,7 +119,7 @@ struct MessageRow: View {
                 // Jump-to-message flash: pulses between a faint and a bright
                 // wash a few times, then fades out (driven by `highlightOn`).
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.yellow.opacity(highlightOn ? 0.42 : 0.10))
+                    .fill(Color.accentColor.opacity(highlightOn ? 0.18 : 0.03))
                     .animation(.easeInOut(duration: 0.2), value: highlightOn)
             }
         }
@@ -131,7 +132,10 @@ struct MessageRow: View {
             }
         }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
-        .fullScreenCover(item: $previewItem) { preview in previewView(for: preview) }
+        .fullScreenCover(item: $previewItem) { preview in
+            previewView(for: preview)
+                .presentationBackground(.clear)
+        }
     }
 
     @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
@@ -139,7 +143,8 @@ struct MessageRow: View {
         case .image:
             if let image = preview.image {
                 ImageViewer(image: image, name: preview.name, mediaType: preview.mediaType,
-                            load: loadFile, onOpenGallery: openMediaGalleryFromPreview,
+                            load: loadFile, loadFileURL: loadFileURL,
+                            onOpenGallery: nil,
                             onEditFinished: sendEditedFromPreview)
             }
         case .video:
@@ -214,11 +219,22 @@ struct MessageRow: View {
         .animation(.easeInOut(duration: 0.15), value: copied)
     }
 
+    /// The old flexible frame stretched even a one-character message to
+    /// the full allowed width. Measure each line at Dynamic Type body size,
+    /// then cap only long text; reserve the separate 12pt bubble paddings.
+    private func textContentWidth(_ text: String) -> CGFloat {
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let longestLine = text.components(separatedBy: .newlines).reduce(CGFloat.zero) { longest, line in
+            max(longest, (line as NSString).size(withAttributes: [.font: font]).width)
+        }
+        return min(max(26, bubbleMaxWidth - 24), max(26, ceil(longestLine) + 5))
+    }
+
     @ViewBuilder private var content: some View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
-                .frame(maxWidth: bubbleMaxWidth, alignment: .leading)
+                .frame(width: textContentWidth(text), alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -230,13 +246,17 @@ struct MessageRow: View {
             case .some(.some(let decoded)):
                 imageBubble(decoded, file: file)
             case .some(.none):
-                FileCard(file: file, maxWidth: bubbleMaxWidth, isCurrent: isCurrent,
-                         isFavorite: isFavorite, saved: saved,
-                         onOpen: openFile,
-                         onSave: { Task { await save() } },
-                         onShare: { Task { await share() } },
-                         onFavorite: { Task { await onToggleFavorite() } },
-                         onCopyLink: { await copyTemporaryLink() })
+                // A temporary network/decode error must never permanently
+                // downgrade a previously valid image into a file card.
+                Button { Task { await loadImage() } } label: {
+                    RoundedRectangle(cornerRadius: 18).fill(.quaternary)
+                        .frame(width: 176, height: 118)
+                        .overlay {
+                            Label("重试图片", systemImage: "arrow.clockwise")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                }
+                .buttonStyle(.plain)
             case .none:
                 RoundedRectangle(cornerRadius: 18).fill(.quaternary)
                     .frame(width: 176, height: 118)
@@ -268,28 +288,39 @@ struct MessageRow: View {
         }
     }
 
+    // Size the hit-test surface to the pixels that are actually displayed.
+    // A flexible maxWidth/maxHeight frame leaves tappable blank margins on
+    // tall/narrow screenshots, sometimes opening the viewer from outside.
+    private func imageBubbleSize(_ image: UIImage) -> CGSize {
+        let width = max(1, image.size.width)
+        let height = max(1, image.size.height)
+        let scale = min(1, min(240 / width, 320 / height))
+        return CGSize(width: width * scale, height: height * scale)
+    }
+
     @ViewBuilder private func imageBubble(_ decoded: UIImage, file: FileInfo) -> some View {
-        Button {
-            if !selectionMode {
-                previewItem = MessagePreview(kind: .image, name: file.name,
-                                             mediaType: file.mediaType, image: decoded)
-            }
-        } label: {
+        let size = imageBubbleSize(decoded)
+        Button(action: openMediaGalleryOnce) {
             Image(uiImage: decoded)
-                .resizable().scaledToFit()
-                .frame(maxWidth: 240, maxHeight: 320)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size.width, height: size.height)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityIdentifier("bubble.image")
+        // UIKit's context menu can claim the Button gesture after a short
+        // tap on some iOS versions. The explicit high-priority tap makes the
+        // ordinary tap reliable; the one-shot gate prevents double opening
+        // if Button and TapGesture both fire.
+        .highPriorityGesture(TapGesture().onEnded { openMediaGalleryOnce() })
         .contextMenu { mediaMenu }
     }
 
     @ViewBuilder private func videoBubble(thumbnail: UIImage?, file: FileInfo) -> some View {
-        Button {
-            openFile()
-        } label: {
+        Button(action: openMediaGalleryOnce) {
             ZStack {
                 if let thumbnail {
                     Image(uiImage: thumbnail)
@@ -319,7 +350,20 @@ struct MessageRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityIdentifier("bubble.video")
+        // UIKit's context menu can claim the Button gesture after a short
+        // tap on some iOS versions. The explicit high-priority tap makes the
+        // ordinary tap reliable; the one-shot gate prevents double opening
+        // if Button and TapGesture both fire.
+        .highPriorityGesture(TapGesture().onEnded { openMediaGalleryOnce() })
         .contextMenu { mediaMenu }
+    }
+
+    private func openMediaGalleryOnce() {
+        guard !selectionMode else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastMediaTapAt) > 0.75 else { return }
+        lastMediaTapAt = now
+        onOpenGallery()
     }
 
     private func openFile() {
@@ -351,8 +395,6 @@ struct MessageRow: View {
                               background: Color(.systemFill)) { Task { await save() } }
             RoundActionButton(systemName: "square.and.arrow.up", label: "分享",
                               background: Color(.systemFill)) { Task { await share() } }
-            RoundActionButton(systemName: "square.grid.2x2", label: "媒体",
-                              background: Color(.systemFill)) { onOpenGallery() }
         }
         .animation(.easeInOut(duration: 0.15), value: saved)
     }
@@ -426,10 +468,11 @@ struct MessageRow: View {
     }
 
     private func share() async {
-        guard let data = await loadFile() else { return }
-        if let url = AttachmentSupport.writeTemporaryFile(data, name: message.file?.name ?? "文件") {
-            shareItem = ShareItem(url: url)
-        }
+        // Stream/cached file URL avoids downloading the attachment into RAM
+        // and writing it again before the system share sheet can appear.
+        guard let url = await loadFileURL() else { return }
+        shareItem = ShareItem(url: AttachmentSupport.namedShareURL(
+            for: url, name: message.file?.name ?? "文件"))
     }
 
     private func copyText() async {
@@ -608,6 +651,11 @@ private struct LinkedText: View {
     let text: String
     let linkColor: Color
 
+    // Constructing NSDataDetector in every row body caused frame drops during
+    // rapid transcript scrolling. It is immutable and shared on the main UI.
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue)
+
     var body: some View {
         Text(attributed)
             .environment(\.openURL, OpenURLAction { url in .systemAction(url) })
@@ -615,9 +663,7 @@ private struct LinkedText: View {
 
     private var attributed: AttributedString {
         var result = AttributedString(text)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return result
-        }
+        guard let detector = Self.linkDetector else { return result }
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         let matches = detector.matches(in: text, options: [], range: nsRange)
         for match in matches {

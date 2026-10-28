@@ -1,0 +1,50 @@
+# Ferry iOS V2: manual-only, unsigned iPhone IPA for Sideloadly.
+# Builds the exact source of the selected branch on a free-tier macOS M2.
+# Does NOT require Apple signing credentials and does NOT publish an app.
+workflows:
+  ferry-ios-sideloadly:
+    name: Ferry iOS V2 - unsigned IPA for Sideloadly
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      xcode: 16.4
+    # No automatic builds: preserve the individual's free build minutes.
+    triggering:
+      events: []
+    scripts:
+      - name: Build the unsigned iPhone Release archive
+        script: |
+          set -euo pipefail
+          mkdir -p "$CM_BUILD_DIR/build"
+          xcodebuild -version
+          xcodebuild \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$CM_BUILD_DIR/build/Ferry-iOS.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$CM_BUILD_DIR/build/Ferry-build.log"
+      - name: Package and verify unsigned IPA
+        script: |
+          set -euo pipefail
+          APP="$CM_BUILD_DIR/build/Ferry-iOS.xcarchive/Products/Applications/Ferry.app"
+          test -d "$APP"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          test "$BUNDLE_ID" = "com.ferry.test" || {
+            echo "Unexpected app identifier: $BUNDLE_ID"
+            exit 1
+          }
+          mkdir -p "$CM_BUILD_DIR/build/ipa/Payload"
+          cp -R "$APP" "$CM_BUILD_DIR/build/ipa/Payload/Ferry.app"
+          cd "$CM_BUILD_DIR/build/ipa"
+          zip -qry -y Ferry-iOS-V2-Unsigned.ipa Payload
+          unzip -t Ferry-iOS-V2-Unsigned.ipa
+          echo "Verified: unsigned com.ferry.test IPA for external signing"
+    artifacts:
+      - build/ipa/Ferry-iOS-V2-Unsigned.ipa
+      - build/Ferry-build.log

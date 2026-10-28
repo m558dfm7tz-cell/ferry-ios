@@ -1,0 +1,70 @@
+name: Verify iOS regressions (no IPA)
+
+on:
+  push:
+    branches: [integration/ferry-v2-safe-20261028]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then sudo xcode-select -s /Applications/Xcode_16.4.app; fi
+          xcodebuild -version
+      - name: Restore incremental simulator cache
+        uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: .ci-derived-data/Build
+          key: ferry-ios-regression-mac15-xcode164-${{ github.sha }}
+          restore-keys: |
+            ferry-ios-regression-mac15-xcode164-
+      - name: Prepare installed simulator
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available
+          SIMULATOR_ID="$(xcrun simctl list devices available | sed -nE 's/.*\(([0-9A-F]{8}-[0-9A-F-]{27,})\).*/\1/p' | head -n 1)"
+          if [ -z "$SIMULATOR_ID" ]; then
+            echo "No available iOS simulator installed in this runner"
+            exit 1
+          fi
+          echo "FERRY_SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
+      - name: Seven existing UI regression tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -destination "platform=iOS Simulator,id=$FERRY_SIMULATOR_ID" \
+            -derivedDataPath "$GITHUB_WORKSPACE/.ci-derived-data" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/ferry-regression.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/ferry-regression.log"
+      - name: Save simulator cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-derived-data/Build
+          key: ferry-ios-regression-mac15-xcode164-${{ github.sha }}
+      - name: Failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-regression-result
+          path: |
+            ${{ runner.temp }}/ferry-regression.log
+            ${{ runner.temp }}/ferry-regression.xcresult
+          retention-days: 3
+          if-no-files-found: warn

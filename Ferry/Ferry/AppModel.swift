@@ -1,10 +1,15 @@
 import Foundation
 import Observation
 import UIKit
+import CryptoKit
+import ImageIO
 
 @MainActor @Observable
 final class AppModel {
     enum Phase: Equatable { case setup, connecting, connected, offline }
+    // Sends a cheap event without making TimelineView observe the whole
+    // media dictionary. Visible cells still observe their own thumbnails.
+    static let mediaDidResolveNotification = Notification.Name("FerryMediaDidResolve")
 
     var serverAddress: String
     var deviceName: String
@@ -12,7 +17,9 @@ final class AppModel {
     var draft = ""
     private(set) var phase: Phase = .setup
     private(set) var currentDevice: Device?
-    private(set) var messages: [MessagePayload] = []
+    private(set) var messages: [MessagePayload] = [] {
+        didSet { invalidateTranscriptCache() }
+    }
     private(set) var statusMessage: String?
     private(set) var credentialWarning: String?
     private(set) var isSending = false
@@ -26,9 +33,151 @@ final class AppModel {
     private(set) var isLoadingOlder = false
     private(set) var isLoadingInitial = false
     private(set) var dayCounts: [String: Int] = [:]
+    private var dayCountsByConversation: [String: [String: Int]] = [:]
 
-    /// The assistant currently being filtered on (nil = 全部, no filter).
-    var selectedAssistantID: String?
+    /// Nil means the transfer tab once new routing is verified.
+    var selectedAssistantID: String? {
+        didSet { invalidateTranscriptCache() }
+    }
+    /// Enable assistant routing only after Go's V2 contract and the complete
+    /// assistant profile list are verified. A live Helper is additionally
+    /// required for pure transfer, not for assistant-addressed messages.
+    private(set) var routeIsolationEnabled = false {
+        didSet { invalidateTranscriptCache() }
+    }
+    private(set) var transferRouteAvailable = false
+    /// Stable server profile identities, to be supplied by future verified
+    /// assistant-profiles API. Never manufacture custom server identifiers.
+    private var verifiedRouteNamesByID: [String: String] = [:]
+    private var lastProfileRefresh: Date?
+
+    /// The selection is captured before sending. Unknown profile IDs must
+    /// fail closed rather than being sent as a normal transfer.
+    private func destinationForMessage(_ message: MessagePayload) -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let id = assistantStore.conversationID(for: message) else { return .transfer }
+        if let base = AssistantStore.builtIn.first(where: { $0.id == id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let name = verifiedRouteNamesByID[id] else { return nil }
+        return .assistant(name: name, id: id)
+    }
+
+    /// External shares must choose an explicit, validated conversation. A
+    /// legacy server without verified route isolation cannot accept shared
+    /// files, because silent fallback could deliver to the wrong assistant.
+    func destinationForExternalShare(_ assistantID: String?) -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let assistantID else {
+            return transferRouteAvailable ? .transfer : nil
+        }
+        guard let assistant = assistantStore.assistants.first(where: { $0.id == assistantID }) else {
+            return nil
+        }
+        if assistant.isBuiltIn,
+           let base = AssistantStore.builtIn.first(where: { $0.id == assistant.id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let name = verifiedRouteNamesByID[assistantID], !name.isEmpty else { return nil }
+        return .assistant(name: name, id: assistantID)
+    }
+
+    private func destinationForSelection() -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let selectedAssistantID else { return .transfer }
+        guard let assistant = assistantStore.assistants.first(where: { $0.id == selectedAssistantID }) else {
+            return nil
+        }
+        if assistant.isBuiltIn,
+           let base = AssistantStore.builtIn.first(where: { $0.id == assistant.id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let routeName = verifiedRouteNamesByID[assistant.id], !routeName.isEmpty else {
+            return nil
+        }
+        return .assistant(name: routeName, id: assistant.id)
+    }
+    /// Go's V2 assistant routing can be verified independently of the Helper.
+    /// Pure transfer stays fail-closed until its *runtime* guard is also true.
+    private func configureVerifiedRouting(generation current: UUID) async {
+        guard current == generation, let endpoint, let token else { return }
+        transferRouteAvailable = false
+        guard let capabilities = try? await client.capabilities(endpoint: endpoint, token: token),
+              capabilities.permitsAssistantRouting,
+              let snapshot = try? await client.assistantProfiles(endpoint: endpoint, token: token),
+              !snapshot.profiles.isEmpty else { return }
+
+        // Never activate with missing/contradictory built-in identities.
+        let ids = Set(snapshot.profiles.map(\.id))
+        guard ids.count == snapshot.profiles.count,
+              AssistantStore.builtIn.allSatisfy({ expected in
+                  snapshot.profiles.contains(where: {
+                      $0.id == expected.id && $0.routeName == expected.name && !$0.deleted
+                  })
+              }), current == generation else { return }
+
+        assistantStore.adoptServerProfiles(snapshot.profiles)
+        invalidateTranscriptCache()
+        verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
+            snapshot.profiles.map { ($0.id, $0.routeName) })
+        lastProfileRefresh = Date()
+        transferRouteAvailable = capabilities.permitsIsolatedTransfer
+        routeIsolationEnabled = true
+    }
+
+    /// A Helper may come online or go offline while the phone stays logged in.
+    /// Always refresh the runtime transfer guard; a previously verified
+    /// assistant identity remains routable if the Helper goes offline.
+    func retryVerifiedRouting() async -> Bool {
+        guard phase == .connected else { return false }
+        let current = generation
+        await configureVerifiedRouting(generation: current)
+        return current == generation && routeIsolationEnabled
+    }
+
+    private func refreshServerProfiles(force: Bool = false) async {
+        guard routeIsolationEnabled, let endpoint, let token else { return }
+        if !force, let lastProfileRefresh,
+           Date().timeIntervalSince(lastProfileRefresh) < 12 { return }
+        lastProfileRefresh = Date()
+        guard let snapshot = try? await client.assistantProfiles(endpoint: endpoint, token: token) else { return }
+        guard routeIsolationEnabled else { return }
+        let ids = Set(snapshot.profiles.map(\.id))
+        guard ids.count == snapshot.profiles.count else { return }
+        assistantStore.adoptServerProfiles(snapshot.profiles)
+        invalidateTranscriptCache()
+        verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
+            snapshot.profiles.map { ($0.id, $0.routeName) })
+        if let selected = selectedAssistantID,
+           assistantStore.serverProfile(id: selected)?.deleted == true {
+            selectAssistant(nil)
+        }
+    }
+
+    static let unclassifiedHistoryID = "unresolved-assistants"
+
+    private func isKnownConversation(_ id: String) -> Bool {
+        assistantStore.assistants.contains(where: { $0.id == id }) ||
+            verifiedRouteNamesByID[id] != nil
+    }
+
+    private func visibleIdentity(for message: MessagePayload) -> String? {
+        guard let id = assistantStore.conversationID(for: message) else { return nil }
+        if id == "legacy-unclassified" || id.hasPrefix("unresolved:") ||
+           !isKnownConversation(id) {
+            return Self.unclassifiedHistoryID
+        }
+        return id
+    }
+
+    var hasUnclassifiedHistory: Bool {
+        routeIsolationEnabled &&
+            messages.contains { visibleIdentity(for: $0) == Self.unclassifiedHistoryID }
+    }
+
+    func conversationIDForJump(_ message: MessagePayload) -> String? {
+        visibleIdentity(for: message)
+    }
     private(set) var unreadAssistantIDs: Set<String> = []
 
     /// Route requested by a tapped notification; consumed by the timeline once
@@ -63,6 +212,18 @@ final class AppModel {
     private(set) var token: String?
     /// The Ferry space the phone-local caches are currently pointed at.
     private(set) var spaceKey: SpaceKey?
+
+    // A media-heavy conversation can contain hundreds of messages. Keyboard
+    // safe-area/layout updates must not refilter all messages and reparse
+    // every RFC3339 timestamp on each SwiftUI view evaluation.
+    @ObservationIgnored private var cachedVisibleMessages: [MessagePayload]?
+    @ObservationIgnored private var cachedDaySections: [DaySection]?
+
+    private func invalidateTranscriptCache() {
+        cachedVisibleMessages = nil
+        cachedDaySections = nil
+    }
+
     private var cursor: Int64 = 0
     /// Deletion-change-log cursor (GET /api/v1/changes?since=…).
     private var changeCursor: Int64 = 0
@@ -73,6 +234,13 @@ final class AppModel {
     private var outbox: [PendingDeletion] = []
     private var isFlushingOutbox = false
     private static let outboxPrefix = "ferry.outbox."
+    /// Dedicated per-space action log for both starring and unstarring.
+    private var favoriteActions: [PendingFavoriteAction] = []
+    private var isFlushingFavoriteActions = false
+    private var isRefreshingFavorites = false
+    private var lastFavoritesFetch: Date?
+    private static let favoritesQueuePrefix = "ferry.pendingFavorites."
+    private static let favoritesMigrationPrefix = "ferry.favoritesMigrationV2."
     private var generation = UUID()
     private var loadingImages: Set<String> = []
     private var loadingThumbnails: Set<String> = []
@@ -101,6 +269,8 @@ final class AppModel {
         deviceName = UIDevice.current.name
         localStore = LocalDataStore(defaults: defaults)
         reviewStore = ReviewStore(defaults: defaults)
+        uploader.destinationProvider = { [weak self] in self?.destinationForSelection() }
+        uploader.routingEnabled = { [weak self] in self?.routeIsolationEnabled == true }
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
         notifier.onRoute = { [weak self] route in self?.apply(notificationRoute: route) }
@@ -111,22 +281,37 @@ final class AppModel {
     }
 
     var imageMessages: [MessagePayload] {
-        messages.filter { $0.file?.mediaType.hasPrefix("image/") == true }
+        let pool = routeIsolationEnabled ? visibleMessages : messages
+        return pool.filter { $0.file.map { PreviewRouter.isImage($0) } ?? false }
     }
 
     /// Every loaded image + video message (non-hidden), for the media gallery.
     var mediaMessages: [MessagePayload] {
-        messages.filter {
+        let pool = routeIsolationEnabled ? visibleMessages : messages
+        return pool.filter {
             guard let file = $0.file else { return false }
-            return PreviewRouter.isImage(file.mediaType) || PreviewRouter.isVideo(file)
+            return PreviewRouter.isImage(file) || PreviewRouter.isVideo(file)
         }
     }
 
     /// Messages shown in the timeline, after applying the active assistant
     /// filter (nil = 全部, everything).
     var visibleMessages: [MessagePayload] {
-        guard let selectedAssistantID else { return messages }
-        return messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+        // Keep observable dependencies even when returning a cached array.
+        _ = messages.count
+        _ = selectedAssistantID
+        _ = routeIsolationEnabled
+        if let cachedVisibleMessages { return cachedVisibleMessages }
+        let result: [MessagePayload]
+        if routeIsolationEnabled {
+            result = messages.filter { visibleIdentity(for: $0) == selectedAssistantID }
+        } else if let selectedAssistantID {
+            result = messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+        } else {
+            result = messages
+        }
+        cachedVisibleMessages = result
+        return result
     }
 
     /// The pinned 待查看 row belongs to the 总管 page and disappears once
@@ -136,10 +321,13 @@ final class AppModel {
     }
 
     var daySections: [DaySection] {
+        // Reading visibleMessages preserves observation of underlying messages.
+        let visible = visibleMessages
+        if let cachedDaySections { return cachedDaySections }
         var sections: [DaySection] = []
         var current: [MessagePayload] = []
         var currentDay: String?
-        for message in visibleMessages {
+        for message in visible {
             let day = TimestampFormat.dayLabel(from: message.createdAt)
             if day != currentDay {
                 if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
@@ -149,6 +337,7 @@ final class AppModel {
             current.append(message)
         }
         if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
+        cachedDaySections = sections
         return sections
     }
 
@@ -208,6 +397,7 @@ final class AppModel {
             accessPassword = ""
             phase = .connected
             uploader.configure(endpoint: endpoint, token: claim.token)
+            await configureVerifiedRouting(generation: current)
             await loadInitial(generation: current)
             await reconcile(generation: current)
             startPolling()
@@ -227,6 +417,8 @@ final class AppModel {
         avatarStore.activate(space: space)
         VideoThumbnailCache.setSpace(space)
         loadOutbox()
+        loadFavoriteActions()
+        lastFavoritesFetch = nil
     }
 
     /// Resolve the space for an origin on reconnect (token-only, no password).
@@ -272,6 +464,84 @@ final class AppModel {
         }
     }
 
+    private var favoriteQueueKey: String {
+        Self.favoritesQueuePrefix + (spaceKey?.value ?? "")
+    }
+
+    private func loadFavoriteActions() {
+        if let data = defaults.data(forKey: favoriteQueueKey),
+           let decoded = try? JSONDecoder().decode([PendingFavoriteAction].self, from: data) {
+            favoriteActions = decoded
+        } else {
+            favoriteActions = []
+        }
+    }
+
+    private func persistFavoriteActions() {
+        if let data = try? JSONEncoder().encode(favoriteActions) {
+            defaults.set(data, forKey: favoriteQueueKey)
+        }
+    }
+
+    /// Pre-existing phone-only stars are imported just once, at a deliberately
+    /// OLD timestamp. Newer server tombstones always win, so upgrading the
+    /// app cannot resurrect a favorite removed earlier on Windows.
+    private func migratePhoneFavoritesOnce() {
+        guard let spaceKey else { return }
+        let key = Self.favoritesMigrationPrefix + spaceKey.value
+        guard !defaults.bool(forKey: key) else { return }
+        for favorite in localStore.favorites
+            where favorite.id.count == 32 &&
+                favorite.id.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) ||
+                                             ($0 >= 97 && $0 <= 102) ||
+                                             ($0 >= 65 && $0 <= 70) }) {
+            let record = favoriteRecord(from: favorite, at: 1)
+            queueFavoriteAction(PendingFavoriteAction(kind: .add,
+                messageID: favorite.id, opAt: 1, record: record), flush: false)
+        }
+        // Queue is persisted before declaring migration complete.
+        defaults.set(true, forKey: key)
+    }
+
+    private func queueFavoriteAction(_ action: PendingFavoriteAction, flush: Bool = true) {
+        // Keep at most the most recent locally queued action per message.
+        // An already in-flight earlier action is safe: the Go server compares
+        // timestamps, and a later action eventually wins.
+        favoriteActions.removeAll { $0.messageID == action.messageID }
+        favoriteActions.append(action)
+        persistFavoriteActions()
+        if flush { Task { await flushFavoriteActions() } }
+    }
+
+    private func flushFavoriteActions() async {
+        guard !isFlushingFavoriteActions, !favoriteActions.isEmpty,
+              let endpoint, let token else { return }
+        isFlushingFavoriteActions = true
+        let current = generation
+        defer { isFlushingFavoriteActions = false }
+        while current == generation, !favoriteActions.isEmpty, !Task.isCancelled {
+            let action = favoriteActions[0]
+            do {
+                switch action.kind {
+                case .add:
+                    guard let record = action.record else { return }
+                    _ = try await client.putFavorite(endpoint: endpoint, token: token,
+                                                     messageID: action.messageID, record: record)
+                case .remove:
+                    _ = try await client.deleteFavorite(endpoint: endpoint, token: token,
+                                                        messageID: action.messageID, opAt: action.opAt)
+                }
+                guard current == generation else { return }
+                favoriteActions.removeAll { $0.id == action.id }
+                persistFavoriteActions()
+                lastFavoritesFetch = nil
+            } catch {
+                // Retain the timestamped action for a later retry.
+                return
+            }
+        }
+    }
+
     /// Queue a deletion made on this phone and try to push it right away.
     private func enqueueDeletion(_ item: PendingDeletion) {
         guard !outbox.contains(where: { $0.id == item.id }) else { return }
@@ -309,8 +579,11 @@ final class AppModel {
             _ = try await client.deleteAllMessages(endpoint: endpoint, token: token)
         case .favorite:
             if let id = item.ids.first {
-                let opAt = Int64(Date().timeIntervalSince1970 * 1000)
-                _ = try await client.deleteFavorite(endpoint: endpoint, token: token, messageID: id, opAt: opAt)
+                // Legacy pre-upgrade outbox entries have no tap timestamp.
+                // Treat them as old, not as newly issued cancels that could
+                // overwrite a more recent favorite created on Windows.
+                _ = try await client.deleteFavorite(endpoint: endpoint, token: token,
+                                                    messageID: id, opAt: 1)
             }
         case .assistant:
             // Read-modify-write so the phone's PUT never clobbers the shared
@@ -368,6 +641,9 @@ final class AppModel {
     /// starts with an "@…" mention is left alone, so an explicit mention (or
     /// the mention picker's own insertion) is never double-tagged.
     func outgoingText(_ draftText: String) -> String {
+        // Once route is verified, preserve the user's text verbatim; the
+        // assistant target is represented by explicit request fields.
+        if routeIsolationEnabled { return draftText }
         guard let selectedAssistantID,
               let assistant = assistantStore.assistants.first(where: { $0.id == selectedAssistantID }) else {
             return draftText
@@ -376,23 +652,38 @@ final class AppModel {
         guard !body.isEmpty else { return draftText }
         // An explicit leading mention already says where the message should go.
         if body.hasPrefix("@") || body.hasPrefix("＠") { return draftText }
-        return catalog.wakeTag(forAssistantName: assistant.name) + " " + body
+        // Display-only renaming must never alter the Windows helper wake tag.
+        let wakeName = assistant.isBuiltIn
+            ? (AssistantStore.builtIn.first(where: { $0.id == assistant.id })?.name ?? assistant.name)
+            : assistant.name
+        return catalog.wakeTag(forAssistantName: wakeName) + " " + body
     }
 
     /// Send `text` as an ordinary outgoing message; true when the server
     /// accepted it. Shared by the composer (which then clears the draft) and by
     /// the 待查看 reply sheet. On failure `statusMessage` is set, as before.
     @discardableResult
-    func sendText(_ text: String) async -> Bool {
+    func sendText(_ text: String, destinationOverride: MessageDestination? = nil) async -> Bool {
         guard let endpoint, let token, !isSending else { return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let destination = destinationOverride ?? destinationForSelection()
+        if routeIsolationEnabled && destination == nil {
+            statusMessage = "助手身份尚未同步，取消发送以防消息误归类。"
+            return false
+        }
         let current = generation
         isSending = true
         defer {
             if current == generation { isSending = false }
         }
         do {
-            let message = try await client.sendText(endpoint: endpoint, token: token, text: text)
+            let message: MessagePayload
+            if let destination {
+                message = try await client.sendText(endpoint: endpoint, token: token,
+                                                    text: text, destination: destination)
+            } else {
+                message = try await client.sendText(endpoint: endpoint, token: token, text: text)
+            }
             guard current == generation else { return false }
             append(message)
             return true
@@ -410,6 +701,37 @@ final class AppModel {
             }
             return false
         }
+    }
+
+    /// Run a structured action only in the built-in Helper conversation.
+    /// Directory navigation stays out of messages/history; the existing Go
+    /// device token is used without prompting the user again.
+    func helperOperation(action: String, path: String = "") async throws -> [HelperDirectoryEntry] {
+        let result = try await helperOperationPage(action: action, path: path)
+        return result.entries ?? []
+    }
+
+    /// A result includes pagination state only for directory operations.
+    /// Do not write temporary folder data into the regular chat timeline.
+    func helperOperationPage(action: String, path: String = "", offset: Int = 0) async throws -> HelperOperation {
+        guard selectedAssistantID == "helper", routeIsolationEnabled,
+              let endpoint, let token else {
+            throw FerryClient.ClientError.rejected("请先连接支持助手操作的 Ferry Windows 服务。")
+        }
+        let request = try await client.requestHelperOperation(
+            endpoint: endpoint, token: token, action: action, path: path, offset: offset)
+        let pollingAttempts = action == "send_file" ? 1600 : 90
+        for _ in 0..<pollingAttempts {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(750))
+            let result = try await client.pollHelperOperation(
+                endpoint: endpoint, token: token, id: request.id)
+            if result.status == "done" { return result }
+            if result.status == "failed" {
+                throw FerryClient.ClientError.rejected(result.error ?? "电脑未完成操作")
+            }
+        }
+        throw FerryClient.ClientError.rejected("电脑助手未响应，请检查 FerryHelper 是否在运行。")
     }
 
     /// Reply to a 待查看 item: an ordinary message quoting it (see
@@ -444,6 +766,8 @@ final class AppModel {
         if let id {
             unreadAssistantIDs.remove(id)
             clearUnread(forAssistant: id)
+        } else if routeIsolationEnabled {
+            clearUnreadForVisibleConversation()
         } else {
             unreadAssistantIDs.removeAll()
             clearAllUnread()
@@ -457,10 +781,120 @@ final class AppModel {
     /// while the assistant still resolves, and its custom avatar media is
     /// removed from disk. Falls back to 全部 when it was the active filter.
     func deleteAssistant(id: String) {
+        guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
+        if routeIsolationEnabled {
+            mutateServerProfile(id: id, changes: ["deleted": "true"])
+            return
+        }
+        if AssistantStore.builtIn.contains(where: { $0.id == id }) {
+            assistantStore.deleteBuiltIn(id: id)
+        invalidateTranscriptCache()
+            avatarStore.reset(for: id)
+            clearUnread(forAssistant: id)
+            unreadAssistantIDs.remove(id)
+            if selectedAssistantID == id { selectAssistant(nil) }
+            return
+        }
         let name = assistantStore.custom.first(where: { $0.id == id })?.name
         removeAssistantLocally(id: id)
         if let name {
             enqueueDeletion(PendingDeletion(kind: .assistant, name: name))
+        }
+    }
+
+    func restoreBuiltInAssistants() {
+        if routeIsolationEnabled {
+            Task {
+                for profile in assistantStore.serverProfiles ?? []
+                    where profile.hidden && !profile.deleted {
+                    await mutateServerProfileNow(id: profile.id, changes: ["hidden": "false"])
+                }
+            }
+            return
+        }
+        assistantStore.restoreBuiltIns()
+        invalidateTranscriptCache()
+    }
+
+    func hideBuiltInAssistant(id: String) {
+        guard !AssistantStore.protectedAssistantIDs.contains(id) else { return }
+        if routeIsolationEnabled {
+            mutateServerProfile(id: id, changes: ["hidden": "true"])
+            return
+        }
+        assistantStore.hideBuiltIn(id: id)
+        invalidateTranscriptCache()
+        if selectedAssistantID == id { selectAssistant(nil) }
+    }
+
+    func resetDeletedBuiltInAssistants() {
+        if routeIsolationEnabled {
+            Task {
+                guard let endpoint, let token else { return }
+                for profile in assistantStore.serverProfiles ?? [] where profile.deleted {
+                    do {
+                        _ = try await client.restoreAssistantProfile(endpoint: endpoint, token: token,
+                                                                      id: profile.id, revision: profile.revision)
+                    } catch {
+                        statusMessage = "恢复助手失败：\(error.localizedDescription)"
+                    }
+                }
+                await refreshServerProfiles(force: true)
+            }
+            return
+        }
+        assistantStore.resetDeletedBuiltIns()
+    }
+
+    func addAssistant(name: String, avatarText: String, colorIndex: Int) {
+        if !routeIsolationEnabled {
+            _ = assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+        invalidateTranscriptCache()
+            return
+        }
+        Task {
+            guard let endpoint, let token else { return }
+            do {
+                _ = try await client.createAssistantProfile(endpoint: endpoint, token: token,
+                                                             displayName: name, avatarText: avatarText,
+                                                             colorIndex: colorIndex)
+                await refreshServerProfiles(force: true)
+            } catch {
+                statusMessage = "新建助手失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func updateAssistant(_ assistant: Assistant) {
+        if !routeIsolationEnabled {
+            assistantStore.update(assistant)
+            return
+        }
+        mutateServerProfile(id: assistant.id, changes: [
+            "display_name": assistant.name,
+            "avatar_text": assistant.avatarText,
+            "color_index": String(assistant.colorIndex)
+        ])
+    }
+
+    private func mutateServerProfile(id: String, changes: [String: String]) {
+        Task { await mutateServerProfileNow(id: id, changes: changes) }
+    }
+
+    private func mutateServerProfileNow(id: String, changes: [String: String]) async {
+        guard routeIsolationEnabled,
+              let profile = assistantStore.serverProfile(id: id),
+              let endpoint, let token else { return }
+        do {
+            _ = try await client.patchAssistantProfile(endpoint: endpoint, token: token,
+                                                       id: id, revision: profile.revision,
+                                                       changes: changes)
+            await refreshServerProfiles(force: true)
+            if changes["deleted"] == "true" || changes["hidden"] == "true",
+               selectedAssistantID == id { selectAssistant(nil) }
+        } catch {
+            statusMessage = "助手资料更新失败：\(error.localizedDescription)"
+            await refreshServerProfiles(force: true)
         }
     }
 
@@ -472,6 +906,7 @@ final class AppModel {
         unreadAssistantIDs.remove(id)
         avatarStore.reset(for: id)
         assistantStore.removeCustom(id: id)
+        invalidateTranscriptCache()
         if selectedAssistantID == id { selectAssistant(nil) }
     }
 
@@ -517,24 +952,129 @@ final class AppModel {
     /// server host. Silently no-ops when there is no endpoint yet (and never
     /// fetches in `-uiTestMock` mode because the endpoint is nil there).
     func refreshCommandCatalog() {
-        catalog.refresh(host: endpoint?.baseURL.host)
+        catalog.refresh(endpoint: endpoint, token: token)
+    }
+
+    /// Disk cache is separated by Ferry space so identical message IDs from
+    /// different server/password pairs never reuse each other's photos.
+    private func mediaCacheURL(for message: MessagePayload, ext: String = "img") -> URL? {
+        guard let space = spaceKey?.value,
+              let root = FileManager.default.urls(for: .cachesDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let key = space + ":" + message.id + ":" + (message.file?.downloadURL ?? "")
+        let digest = SHA256.hash(data: Data(key.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return root.appendingPathComponent("ferry-media", isDirectory: true)
+                   .appendingPathComponent(digest + "." + ext)
+    }
+
+    func retryImage(for message: MessagePayload) async {
+        images.removeValue(forKey: message.id)
+        await loadImage(for: message)
+    }
+
+    // Chat cells only need a small bitmap. Decode away from the main actor
+    // so opening the keyboard never waits for a full-resolution screenshot.
+    // The original compressed bytes remain in the per-space disk cache.
+    private nonisolated static func chatThumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 960,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
     }
 
     func loadImage(for message: MessagePayload) async {
-        guard let file = message.file, file.mediaType.hasPrefix("image/") else { return }
+        guard let file = message.file, PreviewRouter.isImage(file) else { return }
         guard images[message.id] == nil, !loadingImages.contains(message.id) else { return }
-        guard let endpoint, let token else { return }
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
         let current = generation
         loadingImages.insert(message.id)
-        defer { loadingImages.remove(message.id) }
+        defer {
+            loadingImages.remove(message.id)
+            NotificationCenter.default.post(name: Self.mediaDidResolveNotification, object: nil)
+        }
+
+        // Never block the main actor on disk I/O or image decompression.
+        if let cacheURL {
+            let cached = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: cacheURL)
+            }.value
+            if let cached {
+                let thumbnail = await Task.detached(priority: .userInitiated) {
+                    Self.chatThumbnail(cached)
+                }.value
+                guard current == generation else { return }
+                if let thumbnail {
+                    images[message.id] = thumbnail
+                    return
+                }
+            }
+        }
+        guard let endpoint, let token else { return }
         do {
-            let data = try await client.attachment(endpoint: endpoint, token: token, path: file.downloadURL)
+            let data = try await client.attachment(endpoint: endpoint, token: token,
+                                                    path: file.downloadURL)
             guard current == generation else { return }
-            images[message.id] = UIImage(data: data)
+            let thumbnail = await Task.detached(priority: .userInitiated) {
+                Self.chatThumbnail(data)
+            }.value
+            guard current == generation else { return }
+            if let thumbnail {
+                images[message.id] = thumbnail
+            } else {
+                images[message.id] = UIImage?.none
+            }
+            if let cacheURL, data.count <= 12_000_000 {
+                // Original quality is retained for fullscreen zoom/edit/save,
+                // but cached off the main thread.
+                Task.detached(priority: .utility) {
+                    try? FileManager.default.createDirectory(
+                        at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? data.write(to: cacheURL, options: .atomic)
+                }
+            }
         } catch {
             guard current == generation else { return }
             images[message.id] = UIImage?.none
         }
+    }
+
+    /// Gallery/editor/OCR get the original, never the chat thumbnail. The
+    /// per-space cache is checked first; large uncached files are fetched.
+    func fullImage(for message: MessagePayload) async -> UIImage? {
+        guard let file = message.file, PreviewRouter.isImage(file),
+              let endpoint, let token else { return nil }
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
+        let current = generation
+        if let cacheURL {
+            let cached = await Task.detached(priority: .userInitiated) {
+                try? Data(contentsOf: cacheURL)
+            }.value
+            if let cached {
+                let image = await Task.detached(priority: .userInitiated) {
+                    UIImage(data: cached)
+                }.value
+                guard current == generation else { return nil }
+                if let image { return image }
+            }
+        }
+        guard let data = try? await client.attachment(
+            endpoint: endpoint, token: token, path: file.downloadURL),
+              current == generation else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)
+        }.value
     }
 
     func loadVideoThumbnail(for message: MessagePayload) async {
@@ -548,7 +1088,10 @@ final class AppModel {
         guard let endpoint, let token else { return }
         let current = generation
         loadingThumbnails.insert(message.id)
-        defer { loadingThumbnails.remove(message.id) }
+        defer {
+            loadingThumbnails.remove(message.id)
+            NotificationCenter.default.post(name: Self.mediaDidResolveNotification, object: nil)
+        }
         do {
             let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
             guard current == generation else { return }
@@ -570,6 +1113,11 @@ final class AppModel {
     }
 
     func clearAllMessages() {
+        // The existing API is global, not "clear this transfer thread".
+        guard !routeIsolationEnabled else {
+            statusMessage = "尚不支持仅清空互传。为防误删其他助手的历史消息，已取消操作。"
+            return
+        }
         let maxSequence = messages.map(\.sequence).max() ?? 0
         localStore.clearAll(upTo: maxSequence)
         messages.removeAll()
@@ -578,13 +1126,25 @@ final class AppModel {
     }
 
     func toggleFavorite(_ message: MessagePayload) async {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
         if localStore.isFavorite(message.id) {
             localStore.removeFavorite(message.id)
-            enqueueDeletion(PendingDeletion(kind: .favorite, ids: [message.id]))
+            queueFavoriteAction(PendingFavoriteAction(kind: .remove,
+                                                      messageID: message.id, opAt: now))
         } else {
-            var data: Data?
-            if message.file != nil { data = await fileData(for: message) }
-            localStore.addFavorite(message, fileData: data)
+            // Show the star and submit the immutable operation immediately.
+            // Large attachment downloads must not block server synchronization.
+            localStore.addFavorite(message, fileData: nil)
+            queueFavoriteAction(PendingFavoriteAction(kind: .add,
+                messageID: message.id, opAt: now,
+                record: favoriteRecord(from: FavoriteMessage(message: message,
+                                                             localFileName: nil), at: now)))
+            if message.file != nil {
+                let current = generation
+                if let data = await fileData(for: message), current == generation {
+                    localStore.attachFavoriteFile(message.id, data: data)
+                }
+            }
         }
     }
 
@@ -592,14 +1152,25 @@ final class AppModel {
     /// Returns a Chinese error message on failure, or nil on success. The
     /// original message (when there was one) is left untouched.
     @discardableResult
-    func sendEditedImage(_ image: UIImage, originalName: String?) -> String? {
+    func sendEditedImage(_ image: UIImage, originalName: String?,
+                         sourceMessage: MessagePayload? = nil) -> String? {
         let ext = ((originalName ?? "") as NSString).pathExtension.lowercased()
         let mediaType = ext == "png" ? "image/png" : "image/jpeg"
         guard let encoded = EditedImageExport.encode(image, originalMediaType: mediaType) else {
             return "编辑后的图片无法导出。"
         }
         let name = EditedImageExport.name(for: originalName ?? "编辑", mime: encoded.mime)
-        return uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime)
+        let originalTarget: MessageDestination?
+        if let sourceMessage, routeIsolationEnabled {
+            guard let target = destinationForMessage(sourceMessage) else {
+                return "原消息所属助手未同步，已取消编辑后发送。"
+            }
+            originalTarget = target
+        } else {
+            originalTarget = nil
+        }
+        return uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime,
+                                destinationOverride: originalTarget)
     }
 
     func fileData(for message: MessagePayload) async -> Data? {
@@ -614,8 +1185,27 @@ final class AppModel {
         guard let file = message.file, let endpoint, let token else { return nil }
         let current = generation
         do {
-            let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
+            // Reuse a downloaded attachment for share/save/preview so opening
+            // the system share sheet never downloads the same file twice.
+            let ext = (file.name as NSString).pathExtension.lowercased()
+            let suffix = ext.isEmpty ? "dat" : ext
+            let cacheURL = mediaCacheURL(for: message,
+                ext: PreviewRouter.isImage(file) ? suffix : "share." + suffix)
+            if let cacheURL, FileManager.default.fileExists(atPath: cacheURL.path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
+               (attrs[.size] as? NSNumber)?.int64Value == file.size {
+                return cacheURL
+            }
+            let url = try await client.attachmentFile(endpoint: endpoint, token: token,
+                                                      path: file.downloadURL, filename: file.name)
             guard current == generation else { return nil }
+            if let cacheURL {
+                try? FileManager.default.createDirectory(
+                    at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: cacheURL)
+                try? FileManager.default.copyItem(at: url, to: cacheURL)
+                if FileManager.default.fileExists(atPath: cacheURL.path) { return cacheURL }
+            }
             return url
         } catch {
             guard current == generation else { return nil }
@@ -648,9 +1238,19 @@ final class AppModel {
         isLoadingOlder = false
         isLoadingInitial = false
         dayCounts = [:]
+        dayCountsByConversation = [:]
         dayIndexStarted = false
         countedMessageIDs = []
         selectedAssistantID = nil
+        routeIsolationEnabled = false
+        transferRouteAvailable = false
+        verifiedRouteNamesByID = [:]
+        assistantStore.adoptServerProfiles(nil)
+        lastProfileRefresh = nil
+        lastFavoritesFetch = nil
+        favoriteActions = []
+        isFlushingFavoriteActions = false
+        isRefreshingFavorites = false
         unreadAssistantIDs = []
         unreadMessageIDs = []
         // 已看 state is phone-local and keyed by item id, so it survives a
@@ -679,6 +1279,7 @@ final class AppModel {
             statusMessage = nil
             activate(space: space(for: endpoint.origin))
             uploader.configure(endpoint: endpoint, token: token)
+            await configureVerifiedRouting(generation: current)
             await loadInitial(generation: current)
             await reconcile(generation: current)
             startPolling()
@@ -697,6 +1298,8 @@ final class AppModel {
             while !Task.isCancelled {
                 await self?.refreshMessages(generation: current)
                 await self?.refreshChanges(generation: current)
+                await self?.flushFavoriteActions()
+                await self?.refreshFavorites(generation: current)
                 await self?.flushOutbox()
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -708,7 +1311,7 @@ final class AppModel {
         do {
             let page = try await client.messages(endpoint: endpoint, token: token, after: cursor)
             guard current == generation else { return }
-            page.messages.forEach(append)
+            appendBatch(page.messages)
             cursor = page.nextCursor
             phase = .connected
             statusMessage = nil
@@ -736,6 +1339,10 @@ final class AppModel {
             return
         } catch {
             // Best-effort: retried on the next poll tick.
+        }
+        if routeIsolationEnabled {
+            await refreshServerProfiles()
+            return
         }
         do {
             let state = try await client.assistantState(endpoint: endpoint, token: token)
@@ -767,7 +1374,10 @@ final class AppModel {
                 removeMessageLocally(id: change.itemID)
             }
         case "favorite":
-            localStore.removeFavorite(change.itemID)
+            // Change events may have arrived late, after a more recent add.
+            // Fetch the current server snapshot instead of blindly clearing
+            // a star and its offline file using a stale delete notification.
+            lastFavoritesFetch = nil
         default:
             break
         }
@@ -807,10 +1417,12 @@ final class AppModel {
     /// device removed, then advance the deletion-log cursor past history.
     private func reconcile(generation current: UUID) async {
         guard current == generation, let endpoint, let token else { return }
-        if let payload = try? await client.favorites(endpoint: endpoint, token: token) {
-            await reconcileFavorites(payload.favorites)
-        }
-        if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
+        migratePhoneFavoritesOnce()
+        await flushFavoriteActions()
+        await refreshFavorites(generation: current, force: true)
+        if routeIsolationEnabled {
+            await refreshServerProfiles(force: true)
+        } else if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
             await adoptServerAssistants(state)
         }
         if let page = try? await client.changes(endpoint: endpoint, token: token, since: 0) {
@@ -818,37 +1430,34 @@ final class AppModel {
         }
     }
 
-    /// Unify the phone's favorites with the shared server list. Phone-local
-    /// favorites the server doesn't know about are pushed first (so nothing is
-    /// lost), then the phone adopts the merged list: favorites removed on
-    /// another device disappear, and favorites starred elsewhere appear (their
-    /// media type is inferred from the server's file-kind; bytes are re-fetched
-    /// from the server when opened).
-    private func reconcileFavorites(_ serverFavorites: [ServerFavorite]) async {
-        let serverIDs = Set(serverFavorites.map(\.id))
-        for local in localStore.favorites where !serverIDs.contains(local.id) {
-            await pushFavorite(local)
-        }
-        guard let endpoint, let token,
-              let payload = try? await client.favorites(endpoint: endpoint, token: token) else { return }
-        let merged = payload.favorites
-        let mergedIDs = Set(merged.map(\.id))
-        for local in localStore.favorites where !mergedIDs.contains(local.id) {
-            localStore.removeFavorite(local.id)
-        }
-        let localIDs = Set(localStore.favorites.map(\.id))
-        for server in merged where !localIDs.contains(server.id) {
-            localStore.addFavorite(messagePayload(from: server), fileData: nil)
+    /// The server is authoritative. Local queued actions alone are exempt
+    /// until the corresponding PUT/DELETE has completed successfully.
+    private func refreshFavorites(generation current: UUID, force: Bool = false) async {
+        guard current == generation, let endpoint, let token, !isRefreshingFavorites else { return }
+        if !force, let previous = lastFavoritesFetch,
+           Date().timeIntervalSince(previous) < 3 { return }
+        isRefreshingFavorites = true
+        defer { isRefreshingFavorites = false }
+        do {
+            let payload = try await client.favorites(endpoint: endpoint, token: token)
+            guard current == generation else { return }
+            let serverIDs = Set(payload.favorites.map(\.id))
+            let pendingIDs = Set(favoriteActions.map(\.messageID))
+            for local in localStore.favorites
+                where !serverIDs.contains(local.id) && !pendingIDs.contains(local.id) {
+                localStore.removeFavorite(local.id)
+            }
+            for server in payload.favorites
+                where !pendingIDs.contains(server.id) && !localStore.isFavorite(server.id) {
+                localStore.addFavorite(messagePayload(from: server), fileData: nil)
+            }
+            lastFavoritesFetch = Date()
+        } catch {
+            // Keep the last visible snapshot, and retry on the next poll.
         }
     }
 
-    private func pushFavorite(_ local: FavoriteMessage) async {
-        guard let endpoint, let token else { return }
-        _ = try? await client.putFavorite(endpoint: endpoint, token: token,
-                                          messageID: local.id, record: favoriteRecord(from: local))
-    }
-
-    private func favoriteRecord(from local: FavoriteMessage) -> FavoriteRecord {
+    private func favoriteRecord(from local: FavoriteMessage, at opAt: Int64) -> FavoriteRecord {
         let message = local.message
         let isFile = message.kind == .file
         return FavoriteRecord(id: message.id,
@@ -859,7 +1468,7 @@ final class AppModel {
                               sender: message.senderName,
                               senderKind: message.senderKind,
                               createdAt: message.createdAt,
-                              favoritedAt: Int64(Date().timeIntervalSince1970 * 1000))
+                              favoritedAt: opAt)
     }
 
     private func messagePayload(from server: ServerFavorite) -> MessagePayload {
@@ -933,6 +1542,7 @@ final class AppModel {
             avatarStore.reset(for: assistant.id)
         }
         assistantStore.replaceCustom(with: adopted)
+        invalidateTranscriptCache()
         knownServerAssistantNames = Set(adopted.map(\.name))
         if let selected = selectedAssistantID,
            !assistantStore.assistants.contains(where: { $0.id == selected }) {
@@ -966,6 +1576,7 @@ final class AppModel {
         hasOlder = page.hasOlder
         cursor = max(messages.map(\.sequence).max() ?? 0, page.nextCursor)
         dayCounts = [:]
+        dayCountsByConversation = [:]
         countedMessageIDs = []
         countDays(messages)
         reviewStore.rebuild(from: messages)
@@ -1008,12 +1619,22 @@ final class AppModel {
         cursor = max(cursor, visible.map(\.sequence).max() ?? cursor)
     }
 
+    /// Calendar markers use the active conversation in verified routing mode.
+    var visibleDayCounts: [String: Int] {
+        guard routeIsolationEnabled else { return dayCounts }
+        return dayCountsByConversation[selectedAssistantID ?? "__transfer__"] ?? [:]
+    }
+
     private func countDays(_ msgs: [MessagePayload]) {
         for message in msgs where !countedMessageIDs.contains(message.id) {
             countedMessageIDs.insert(message.id)
             guard let date = TimestampFormat.date(from: message.createdAt) else { continue }
             let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
             dayCounts[key, default: 0] += 1
+            if routeIsolationEnabled {
+                let identity = visibleIdentity(for: message) ?? "__transfer__"
+                dayCountsByConversation[identity, default: [:]][key, default: 0] += 1
+            }
         }
     }
 
@@ -1069,7 +1690,7 @@ final class AppModel {
         let target = Calendar.current.startOfDay(for: day)
         let targetKey = DayKey.string(from: target)
 
-        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+        if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
             return .found(hit.id)
         }
         // A day newer than the newest loaded message cannot exist in history.
@@ -1083,12 +1704,12 @@ final class AppModel {
         while hasOlder, !Task.isCancelled, pages < Self.maxHistoryPages {
             guard await loadOlder() else { break }
             pages += 1
-            if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+            if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
                 return .found(hit.id)
             }
         }
         if Task.isCancelled { return .cancelled }
-        if let hit = messages.first(where: { Self.messageDayKey($0) == targetKey }) {
+        if let hit = visibleMessages.first(where: { Self.messageDayKey($0) == targetKey }) {
             return .found(hit.id)
         }
         return .empty
@@ -1104,6 +1725,19 @@ final class AppModel {
     /// by the date-jump feature. The query matches the text body or file name
     /// (case-insensitive, Chinese OK). `messages` already excludes locally
     /// hidden/cleared messages, so results respect those too.
+    /// Load an older favorited message before jumping across conversations.
+    /// No server-side mutation; preserve the existing global pagination cursor.
+    func ensureMessageLoaded(id: String) async -> Bool {
+        if messages.contains(where: { $0.id == id }) { return true }
+        var count = 0
+        while hasOlder && count < Self.maxHistoryPages && !Task.isCancelled {
+            guard await loadOlder() else { break }
+            count += 1
+            if messages.contains(where: { $0.id == id }) { return true }
+        }
+        return false
+    }
+
     func searchMessages(query: String, filter: SearchFilter, maxPages: Int = 40) async -> [MessagePayload] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         // File-type filters (图片/视频/文件) may list their whole category
@@ -1149,16 +1783,27 @@ final class AppModel {
         }
     }
 
-    private func append(_ message: MessagePayload) {
-        guard !localStore.isHidden(message) else { return }
-        guard !messages.contains(where: { $0.id == message.id }) else { return }
-        messages.append(message)
+    /// Coalesce a network page into a single sort and observation update.
+    private func appendBatch(_ incoming: [MessagePayload]) {
+        guard !incoming.isEmpty else { return }
+        var knownIDs = Set(messages.map(\.id))
+        let fresh = incoming.filter {
+            !localStore.isHidden($0) && knownIDs.insert($0.id).inserted
+        }
+        guard !fresh.isEmpty else { return }
+        messages.append(contentsOf: fresh)
         messages.sort { $0.sequence < $1.sequence }
-        cursor = max(cursor, message.sequence)
-        countDays([message])
-        reviewStore.ingest(message: message)
-        markUnreadIfNeeded(message)
-        registerIncoming(message)
+        cursor = max(cursor, fresh.map(\.sequence).max() ?? cursor)
+        countDays(fresh)
+        for message in fresh {
+            reviewStore.ingest(message: message)
+            markUnreadIfNeeded(message)
+            registerIncoming(message)
+        }
+    }
+
+    private func append(_ message: MessagePayload) {
+        appendBatch([message])
     }
 
     /// A newly arrived assistant message is "unseen" only while a *different*
@@ -1168,6 +1813,12 @@ final class AppModel {
     /// assistant with a wake tag.
     private func markUnreadIfNeeded(_ message: MessagePayload) {
         guard !message.isCurrentDevice else { return }
+        if routeIsolationEnabled {
+            if let id = visibleIdentity(for: message), id != selectedAssistantID {
+                unreadAssistantIDs.insert(id)
+            }
+            return
+        }
         guard let assistantID = assistantStore.assistant(for: message)?.id else { return }
         if let selectedAssistantID, selectedAssistantID != assistantID {
             unreadAssistantIDs.insert(assistantID)
@@ -1181,7 +1832,7 @@ final class AppModel {
         guard !message.isCurrentDevice else { return }
         guard notificationSettings.isEnabled else { return }
         let assistant = assistantStore.assistant(for: message)
-        guard !isConversationVisible(assistant) else { return }
+        guard !isConversationVisible(message) else { return }
         guard message.sequence > notificationSettings.lastNotifiedSequence else { return }
         notificationSettings.lastNotifiedSequence = message.sequence
         unreadMessageIDs.insert(message.id)
@@ -1190,23 +1841,34 @@ final class AppModel {
     }
 
     /// Whether the message's conversation is on screen right now.
-    private func isConversationVisible(_ assistant: Assistant?) -> Bool {
-        // `.offline` counts as visible too: a message that arrives while a
-        // transient error is being repaired is still on screen.
+    private func isConversationVisible(_ message: MessagePayload) -> Bool {
         guard isActive, phase == .connected || phase == .offline else { return false }
-        guard let selectedAssistantID else { return true } // 全部 shows everything
-        return assistant?.id == selectedAssistantID
+        if routeIsolationEnabled {
+            return visibleIdentity(for: message) == selectedAssistantID
+        }
+        guard let selectedAssistantID else { return true }
+        return assistantStore.assistant(for: message)?.id == selectedAssistantID
     }
 
     private func markVisibleAsRead() {
-        if let selectedAssistantID { clearUnread(forAssistant: selectedAssistantID) }
+        if routeIsolationEnabled { clearUnreadForVisibleConversation() }
+        else if let selectedAssistantID { clearUnread(forAssistant: selectedAssistantID) }
         else { clearAllUnread() }
+    }
+
+    private func clearUnreadForVisibleConversation() {
+        unreadMessageIDs = unreadMessageIDs.filter { id in
+            guard let message = messages.first(where: { $0.id == id }) else { return true }
+            return visibleIdentity(for: message) != selectedAssistantID
+        }
+        updateBadge()
     }
 
     private func clearUnread(forAssistant id: String) {
         guard !unreadMessageIDs.isEmpty else { return }
         unreadMessageIDs = unreadMessageIDs.filter { messageID in
             guard let message = messages.first(where: { $0.id == messageID }) else { return true }
+            if routeIsolationEnabled { return visibleIdentity(for: message) != id }
             return assistantStore.assistant(for: message)?.id != id
         }
         updateBadge()

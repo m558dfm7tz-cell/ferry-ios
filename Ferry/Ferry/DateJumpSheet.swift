@@ -119,7 +119,7 @@ struct DateJumpSheet: View {
 
     private func hasMessages(_ date: Date) -> Bool {
         let key = DayKey.string(from: Calendar.current.startOfDay(for: date))
-        return (model.dayCounts[key] ?? 0) > 0
+        return (model.visibleDayCounts[key] ?? 0) > 0
     }
 
     private func changeMonth(_ delta: Int) {

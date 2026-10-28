@@ -170,6 +170,19 @@ final class LocalDataStore {
         persistFavorites()
     }
 
+    /// Local offline copy may finish downloading after its favorite was already
+    /// added/sent. Attach the bytes without changing the favorite or its ID.
+    func attachFavoriteFile(_ id: String, data: Data) {
+        guard let index = favorites.firstIndex(where: { $0.id == id }),
+              favorites[index].localFileName == nil,
+              favorites[index].message.file != nil else { return }
+        let message = favorites[index].message
+        guard let filename = Self.writeToFavorites(data: data, message: message,
+                                                   folder: favoritesFolder) else { return }
+        favorites[index] = FavoriteMessage(message: message, localFileName: filename)
+        persistFavorites()
+    }
+
     func removeFavorite(_ id: String) {
         guard let index = favorites.firstIndex(where: { $0.id == id }) else { return }
         if let localFileName = favorites[index].localFileName {

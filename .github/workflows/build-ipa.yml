@@ -3,7 +3,11 @@ name: Build IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'fix/ios-ui-media-20261027', 'fix/ios-108-six-ui-fixes-20261028', 'fix/ios-130-seven-ui-20261028', 'fix/ios131-eight-fixes-share-20261028', 'fix/ios133-free-sign-six-regressions-20261028']
+
+concurrency:
+  group: ferry-ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

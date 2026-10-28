@@ -25,6 +25,26 @@
 	<string>Ferry 将你收到的照片和视频保存到相册。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Ferry 读取你的照片和视频，以便选择并发送到你的电脑。</string>
+	<!-- Allow the system's Open In / Copy to Ferry document handoff.
+         This requires no App Group entitlement or Share Extension. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Ferry 文件</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+				<string>public.image</string>
+				<string>public.movie</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 </dict>

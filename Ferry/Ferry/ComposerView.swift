@@ -6,13 +6,15 @@ import UIKit
 /// the right, with a WeChat-style panel (文件 / 拍摄) and per-item upload queue.
 struct ComposerView: View {
     @Bindable var model: AppModel
-    var focused: FocusState<Bool>.Binding
+    var focused: Binding<Bool>
 
-    @State private var showImagePicker = false
-    @State private var showPlus = false
+    @Binding var showImagePicker: Bool
+    @Binding var showPlus: Bool
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var showEditor = false
+    @State private var showHelperTextInput = false
+    @State private var showHelperFileBrowser = false
     @State private var pasted = false
     @State private var errorMessage: String?
     @State private var textFieldHeight: CGFloat = 44
@@ -23,11 +25,9 @@ struct ComposerView: View {
     @State private var editTarget: ImageEditTarget?
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
 
-    /// The attachment destination the plus panel asked for. It is opened only
-    /// after the panel has finished dismissing — see the `.sheet` below.
-    private enum PendingAttachment { case file, camera }
-    @State private var pendingAttachment: PendingAttachment?
     @State private var didWarmUpAttachments = false
+    @State private var keyboardPresented = false
+    @State private var pendingAlbumAfterKeyboard = false
 
     /// A queued image opened in the editor. `id` is the upload item it will
     /// replace when the edit is confirmed.
@@ -50,30 +50,107 @@ struct ComposerView: View {
                                   onSelectCommand: selectCommand)
                     .frame(maxWidth: 320, alignment: .leading)
             }
-            inputBar
+            if model.selectedAssistantID == "helper" {
+                if showHelperTextInput {
+                    HStack(spacing: 6) {
+                        Button {
+                            // Resign the actual UIKit first responder before
+                            // removing its hosting UIViewRepresentable. Keeping
+                            // focus during the same SwiftUI update could reopen
+                            // the keyboard over the quick-action panel.
+                            showPlus = false
+                            pendingAlbumAfterKeyboard = false
+                            dismissComposerKeyboard()
+                            Task { @MainActor in
+                                await Task.yield()
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showHelperTextInput = false
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 19))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("快捷操作")
+                        .accessibilityIdentifier("helper-return-to-actions")
+                        .buttonStyle(.plain)
+                        // The full composer may overflow on narrow phones;
+                        // always keep this mode-switch button tappable.
+                        .layoutPriority(1)
+                        .zIndex(2)
+                        inputBar
+                            .frame(maxWidth: .infinity)
+                    }
+                } else {
+                    HelperQuickActionsView(model: model) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showHelperTextInput = true
+                        }
+                        // Allow UITextView to mount in the hierarchy before
+                        // requesting the native keyboard.
+                        Task { @MainActor in
+                            await Task.yield()
+                            if showHelperTextInput && model.selectedAssistantID == "helper" {
+                                focused.wrappedValue = true
+                            }
+                        }
+                    } onBrowse: {
+                        showHelperFileBrowser = true
+                    }
+                }
+            } else {
+                inputBar
+            }
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
+        // No full-width opaque glass rectangle around the input capsule.
+        // Messages fade gently beneath the original independent input field.
+        .background {
+            LinearGradient(colors: [
+                Color.chatBackground.opacity(0),
+                Color.chatBackground.opacity(0.67),
+                Color.chatBackground
+            ], startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
         .onAppear { refreshPasteAvailability() }
+        .onChange(of: model.selectedAssistantID) { _, selected in
+            if selected == "helper" {
+                // New entry into the built-in Helper always starts in the
+                // quick-action mode. Never carry a prior chat's keyboard over.
+                showHelperTextInput = false
+                showPlus = false
+                focused.wrappedValue = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardPresented = false
+            if pendingAlbumAfterKeyboard {
+                pendingAlbumAfterKeyboard = false
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40)) { showImagePicker = true }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             refreshPasteAvailability()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refreshPasteAvailability()
         }
-        // Previously the panel called `dismiss()` and then presented the file
-        // importer / camera in the same run-loop turn. UIKit drops or defers a
-        // presentation that arrives while another dismissal is still animating,
-        // which is what made the next screen appear "a beat late". Record the
-        // choice instead and open it from `onDismiss`, i.e. once the panel is
-        // really gone.
-        .sheet(isPresented: $showPlus, onDismiss: { openPendingAttachment() }) {
-            PlusPanel(onFile: { pendingAttachment = .file },
-                      onCamera: { pendingAttachment = .camera })
-        }
+        // The two options are inline, so selecting one needs no sheet-dismiss
+        // animation before UIKit can present the camera or document picker.
         .onChange(of: showPlus) { _, isShown in
             guard isShown, !didWarmUpAttachments else { return }
             didWarmUpAttachments = true
             AttachmentWarmup.prepare()
+        }
+        .sheet(isPresented: $showHelperFileBrowser) {
+            HelperFileBrowserView(model: model)
         }
         .sheet(isPresented: $showEditor) {
             ExpandEditorView(text: $model.draft,
@@ -87,9 +164,6 @@ struct ComposerView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
             handleFiles(result)
-        }
-        .fullScreenCover(isPresented: $showImagePicker) {
-            AlbumPickerView(model: model)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(mediaTypes: [UTType.image.identifier, UTType.movie.identifier]) { result in
@@ -220,7 +294,15 @@ struct ComposerView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            Button { showImagePicker = true } label: {
+            Button {
+                showPlus = false
+                if focused.wrappedValue || keyboardPresented {
+                    pendingAlbumAfterKeyboard = true
+                    dismissComposerKeyboard()
+                } else {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40)) { showImagePicker = true }
+                }
+            } label: {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 24, weight: .light))
                     .foregroundStyle(.white)
@@ -251,7 +333,9 @@ struct ComposerView: View {
                              // inside the capsule instead of growing further.
                              maxLines: 6,
                              textColor: .white,
-                             tintColor: .white,
+                             // A visible blue selection tint on the dark
+                             // composer distinguishes a range from two handles.
+                             tintColor: UIColor(red: 0.32, green: 0.72, blue: 1.0, alpha: 1),
                              alwaysScrolls: false,
                              minHeight: 44,
                              onMentionChange: { context in
@@ -259,12 +343,35 @@ struct ComposerView: View {
                                  activeTarget = nil
                                  if context != nil { model.refreshCommandCatalog() }
                              },
-                             accessibilityIdentifier: "composer-input")
-                .frame(height: textFieldHeight)
-                // Hard guarantee that long text can never be painted outside
-                // the capsule: the text view is sized by `textFieldHeight`, and
-                // clipping keeps a stale intermediate height from overflowing.
-                .clipped()
+                             accessibilityIdentifier: "composer-input",
+                             attachmentMode: $showPlus,
+                             onAttachmentFile: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     showFileImporter = true
+                                 }
+                             },
+                             onAttachmentCamera: {
+                                 dismissComposerKeyboard()
+                                 showPlus = false
+                                 Task { @MainActor in
+                                     await Task.yield()
+                                     openCamera()
+                                 }
+                             })
+                .frame(height: max(44, textFieldHeight), alignment: .center)
+                // UIKit selection/menu must keep its own text container layout.
+                // Shift the entire one-line native view down slightly inside
+                // the capsule instead of modifying textContainerInset from
+                // layoutSubviews (which previously broke copy/paste).
+                // Placeholder is already vertically centered by its
+                // native UILabel. Only compensate the text when nonempty;
+                // shifting the empty UITextView moved "输入消息..." too low.
+                // Native text insets manage the caret and glyph baseline.
+                // Do not shift the entire UIKit view when focus changes:
+                // that also shifts the placeholder and edit-menu geometry.
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
@@ -272,7 +379,9 @@ struct ComposerView: View {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.85))
-                                .frame(width: 24, height: 24)
+                                // Same visible icon, minimum 44pt hit region.
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("展开")
@@ -289,10 +398,31 @@ struct ComposerView: View {
         .background(capsuleColor, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
+    private func dismissComposerKeyboard() {
+        focused.wrappedValue = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+
     private var plusButton: some View {
-        Button { showPlus = true } label: {
+        Button {
+            if showPlus {
+                // End the native first responder BEFORE resetting its inputView,
+                // otherwise the software keyboard flashes for one frame.
+                dismissComposerKeyboard()
+                showPlus = false
+            } else {
+                pendingAlbumAfterKeyboard = false
+                // Keep the UITextView first responder and change only its
+                // native inputView; the keyboard swaps in one UIKit animation.
+                showPlus = true
+                focused.wrappedValue = true
+            }
+        } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
+                .rotationEffect(.degrees(showPlus ? 45 : 0))
+                .animation(.easeInOut(duration: 0.22), value: showPlus)
                 .frame(width: barButtonSize, height: barButtonSize)
                 .foregroundStyle(.white)
         }
@@ -319,17 +449,6 @@ struct ComposerView: View {
     /// Web-style send button: filled near-white circle with a dark up arrow.
     private var sendButtonFill: Color {
         Color(red: 0.93, green: 0.94, blue: 0.96)
-    }
-
-    /// Opens whatever the plus panel picked. Runs from the sheet's `onDismiss`,
-    /// so the panel is fully gone before the next presentation starts.
-    private func openPendingAttachment() {
-        guard let pending = pendingAttachment else { return }
-        pendingAttachment = nil
-        switch pending {
-        case .file: showFileImporter = true
-        case .camera: openCamera()
-        }
     }
 
     private func openCamera() {
@@ -429,8 +548,19 @@ struct ComposerView: View {
             return
         }
         let name = EditedImageExport.name(for: target.name, mime: encoded.mime)
+        guard let pending = model.uploader.items.first(where: { $0.id == target.id }) else {
+            errorMessage = "待发送的原图片已不存在。"
+            return
+        }
+        let originalDestination = pending.destination
+        if model.routeIsolationEnabled && originalDestination == nil {
+            errorMessage = "原图片的目标助手不明确，已阻止重新发送。"
+            return
+        }
         model.uploader.remove(target.id)
-        if let error = model.uploader.enqueue(data: encoded.data, name: name, mediaType: encoded.mime) {
+        if let error = model.uploader.enqueue(data: encoded.data, name: name,
+                                               mediaType: encoded.mime,
+                                               destinationOverride: originalDestination) {
             errorMessage = error
         }
     }
@@ -522,22 +652,14 @@ private enum AttachmentWarmup {
 struct PlusPanel: View {
     let onFile: () -> Void
     let onCamera: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         HStack(spacing: 16) {
-            // Record the choice first, then dismiss: the parent opens the real
-            // picker once this panel has finished animating away.
-            panelButton("文件", systemImage: "folder") {
-                onFile(); dismiss()
-            }
-            panelButton("拍摄", systemImage: "camera") {
-                onCamera(); dismiss()
-            }
+            panelButton("文件", systemImage: "folder", action: onFile)
+            panelButton("拍摄", systemImage: "camera", action: onCamera)
         }
-        .padding(24)
-        .presentationDetents([.height(180)])
-        .presentationDragIndicator(.visible)
+        .padding(12)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func panelButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -548,7 +670,8 @@ struct PlusPanel: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 96)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(Color(uiColor: .tertiarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -565,7 +688,7 @@ struct ExpandEditorView: View {
     let onSend: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @State private var mentionContext: MentionContext?
     @State private var activeTarget: MentionTarget?
     @State private var insertCommand: TextInsertion?
@@ -654,5 +777,231 @@ struct ExpandEditorView: View {
         insertCommand = TextInsertion(id: UUID(), range: context.range, text: command.insertText)
         mentionContext = nil
         activeTarget = nil
+    }
+}
+
+
+// A Helper-only command surface. No chat messages are created for browsing.
+// The original full composer remains available via a reversible mode switch.
+private struct HelperQuickActionsView: View {
+    let model: AppModel
+    let onText: () -> Void
+    let onBrowse: () -> Void
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                guard !busy else { return }
+                busy = true
+                Task {
+                    defer { busy = false }
+                    do { _ = try await model.helperOperation(action: "screenshot") }
+                    catch { self.error = error.localizedDescription }
+                }
+            } label: {
+                Label("截图", systemImage: "camera.viewfinder")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .disabled(busy)
+            .accessibilityIdentifier("helper-quick-screenshot")
+
+            Button(action: onBrowse) {
+                Label("找文件", systemImage: "folder")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("helper-quick-browse")
+
+            Button(action: onText) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 19))
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("文字输入")
+            .accessibilityIdentifier("helper-quick-keyboard")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 18))
+        .alert("电脑助手操作失败", isPresented: Binding(
+            get: { error != nil },
+            set: { if !$0 { error = nil } }
+        )) {
+            Button("好", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+}
+
+private struct HelperFileBrowserView: View {
+    let model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var folders: [HelperDirectoryEntry] = []
+    @State private var entries: [HelperDirectoryEntry] = []
+    @State private var nextOffset: Int?
+    @State private var chosenFile: HelperDirectoryEntry?
+    @State private var askingSend = false
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "desktopcomputer")
+                        Text(folders.isEmpty ? "此电脑" : folders.map(\.name).joined(separator: " / "))
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        if !folders.isEmpty {
+                            Button("返回") { Task { await goBack() } }
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                if busy {
+                    HStack { Spacer(); ProgressView("正在读取电脑文件…"); Spacer() }
+                }
+                ForEach(entries) { entry in
+                    Button {
+                        if entry.kind == "file" {
+                            chosenFile = entry
+                            askingSend = true
+                        } else {
+                            Task { await openFolder(entry) }
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: entry.kind == "drive" ? "internaldrive" :
+                                    entry.kind == "folder" ? "folder" : "doc")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.name)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                if entry.kind == "file", let size = entry.size {
+                                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if entry.kind != "file" {
+                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("helper-file-\(entry.name)")
+                }
+                if nextOffset != nil {
+                    Button {
+                        Task { await loadMore() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("加载更多文件", systemImage: "arrow.down.circle")
+                            Spacer()
+                        }
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("helper-file-load-more")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.chatBackground)
+            .navigationTitle("电脑文件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") { dismiss() }.disabled(busy)
+                }
+            }
+            .task { await refresh(path: nil) }
+            .confirmationDialog("发送电脑文件到助手？", isPresented: $askingSend,
+                                titleVisibility: .visible) {
+                if let chosenFile {
+                    Button("发送「\(chosenFile.name)」") {
+                        Task { await sendFile(chosenFile) }
+                    }
+                }
+                Button("取消", role: .cancel) { chosenFile = nil }
+            } message: {
+                if let chosenFile {
+                    let kind = URL(fileURLWithPath: chosenFile.path).pathExtension.uppercased()
+                    let size = ByteCountFormatter.string(fromByteCount: chosenFile.size ?? 0,
+                                                          countStyle: .file)
+                    Text("名称：\(chosenFile.name)\n类型：\(kind.isEmpty ? "文件" : kind)\n大小：\(size)")
+                }
+            }
+            .alert("读取电脑文件失败", isPresented: Binding(
+                get: { error != nil },
+                set: { if !$0 { error = nil } }
+            )) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+
+    private func refresh(path: String?) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await model.helperOperationPage(
+                action: path == nil ? "drives" : "list", path: path ?? "", offset: 0)
+            entries = result.entries ?? []
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func openFolder(_ folder: HelperDirectoryEntry) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await model.helperOperationPage(
+                action: "list", path: folder.path, offset: 0)
+            folders.append(folder)
+            entries = result.entries ?? []
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func loadMore() async {
+        guard !busy, let offset = nextOffset, let current = folders.last else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await model.helperOperationPage(
+                action: "list", path: current.path, offset: offset)
+            let existing = Set(entries.map(\.path))
+            entries.append(contentsOf: (result.entries ?? []).filter { !existing.contains($0.path) })
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func goBack() async {
+        guard !folders.isEmpty else { return }
+        folders.removeLast()
+        await refresh(path: folders.last?.path)
+    }
+
+    private func sendFile(_ file: HelperDirectoryEntry) async {
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await model.helperOperation(action: "send_file", path: file.path)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

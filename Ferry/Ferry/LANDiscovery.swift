@@ -14,7 +14,9 @@ enum LANDiscovery {
     // The Windows FerryDesktop client boots the Go service with
     // `-listen 127.0.0.1:42819 -lan -lan-listen <IPv4>:42819` (FerryBootstrapper.cs),
     // so the LAN-facing HTTP origin is `<IPv4>:42819`.
-    static let scanPort = 42819
+    // Current Windows native service and earlier Ferry server installs use
+    // different LAN-facing ports; probe both instead of assuming one.
+    static let scanPorts = [42819, 42817]
     private static let batchSize = 48
     private static let probeTimeout: TimeInterval = 1.5
 
@@ -23,7 +25,7 @@ enum LANDiscovery {
     /// fails while it is pending, so one cheap probe is fired before the scan.
     static func warmUp() async {
         guard let ip = primaryIPv4(), let base = subnetBase(ip) else { return }
-        _ = await probe(host: "\(base).1")
+        _ = await probe(host: "\(base).1", port: scanPorts[0])
     }
 
     static func scan() async -> [DiscoveredServer] {
@@ -36,7 +38,7 @@ enum LANDiscovery {
             results = await sweep(base: base, skip: ip)
         }
         results.sort { $0.origin < $1.origin }
-        return results
+        return Array(Set(results)).sorted { $0.origin < $1.origin }
     }
 
     /// Preferred LAN IPv4. iOS lists Wi-Fi as `en0`; cellular (`pdp_ip*`) and
@@ -89,7 +91,9 @@ enum LANDiscovery {
             let chunk = Array(hosts[chunkStart..<min(chunkStart + batchSize, hosts.count)])
             let origins = await withTaskGroup(of: String?.self, returning: [String].self) { group in
                 for ip in chunk {
-                    group.addTask { await probe(host: ip) }
+                    for port in scanPorts {
+                        group.addTask { await probe(host: ip, port: port) }
+                    }
                 }
                 var found: [String] = []
                 for await origin in group {
@@ -102,8 +106,8 @@ enum LANDiscovery {
         return results
     }
 
-    private static func probe(host: String) async -> String? {
-        let origin = "http://\(host):\(scanPort)"
+    private static func probe(host: String, port: Int) async -> String? {
+        let origin = "http://\(host):\(port)"
         guard let url = URL(string: origin + "/api/v1/access") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = probeTimeout

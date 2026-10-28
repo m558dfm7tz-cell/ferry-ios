@@ -53,6 +53,7 @@
 		1A0000000000000000000132 /* ReviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000131 /* ReviewViews.swift */; };
 		1A0000000000000000000142 /* AlbumPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000141 /* AlbumPickerView.swift */; };
 		1A0000000000000000000063 /* FerryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000061 /* FerryUITests.swift */; };
+		1A0000000000000000000203 /* ShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000202 /* ShareInbox.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -105,6 +106,7 @@
 		1A0000000000000000000141 /* AlbumPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumPickerView.swift; sourceTree = "<group>"; };
 		1A0000000000000000000060 /* FerryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FerryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000061 /* FerryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FerryUITests.swift; sourceTree = "<group>"; };
+		1A0000000000000000000202 /* ShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareInbox.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -155,6 +157,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0000000000000000000006 /* FerryApp.swift */,
+				1A0000000000000000000202 /* ShareInbox.swift */,
 				1A0000000000000000000016 /* Models.swift */,
 				1A0000000000000000000017 /* ServerEndpoint.swift */,
 				1A0000000000000000000018 /* CredentialStore.swift */,
@@ -306,6 +309,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0000000000000000000009 /* FerryApp.swift in Sources */,
+				1A0000000000000000000203 /* ShareInbox.swift in Sources */,
 				1A0000000000000000000021 /* Models.swift in Sources */,
 				1A0000000000000000000022 /* ServerEndpoint.swift in Sources */,
 				1A0000000000000000000023 /* CredentialStore.swift in Sources */,

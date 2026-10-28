@@ -1086,7 +1086,7 @@ struct ImageEditorView: View {
 
     @State private var tool: EditorTool = .pen
     @State private var isCropping = false
-    @State private var cropRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
+    @State private var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
     @State private var colorIndex = 2
     @State private var penThickness: CGFloat = 0.016
     @State private var mosaicThickness: CGFloat = 0.07
@@ -1497,7 +1497,7 @@ struct ImageEditorView: View {
     private func select(_ item: EditorTool) {
         selectedTextIndex = nil
         if item == .crop {
-            cropRect = CGRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
+            cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
             isCropping = true
             tool = .crop
         } else {
