@@ -1,8 +1,6 @@
 name: Verify native iOS Share Extension
 
 on:
-  push:
-    branches: [feature/ios-share-extension-20261029]
   workflow_dispatch:
 
 concurrency:
