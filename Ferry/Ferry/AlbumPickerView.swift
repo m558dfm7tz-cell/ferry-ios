@@ -427,11 +427,11 @@ struct AlbumPickerView: View {
         finishingDragDismiss = true
         // Keep the overlay mounted until the downward exit finishes so it does
         // not suddenly jump back to y = 0 during the parent state transition.
-        withAnimation(.easeOut(duration: 0.20)) {
+        withAnimation(.timingCurve(0.20, 0.75, 0.28, 1, duration: 0.40)) {
             dismissDrag = UIScreen.main.bounds.height + 120
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(205))
+            try? await Task.sleep(for: .milliseconds(415))
             closePicker()
         }
     }
@@ -577,9 +577,7 @@ struct AlbumPickerView: View {
     // MARK: - Selection
 
     private func isSelectable(_ asset: PHAsset) -> Bool {
-        // This build sends still images only; videos are shown (with their
-        // duration) but become selectable in the next step.
-        asset.mediaType == .image
+        asset.mediaType == .image || asset.mediaType == .video
     }
 
     private func selectionIndex(for asset: PHAsset) -> Int? {
@@ -634,6 +632,26 @@ struct AlbumPickerView: View {
         let live = liveEnabled
         Task { @MainActor in
             for asset in picks {
+                if asset.mediaType == .video {
+                    // Keep video bytes out of memory. The existing uploader
+                    // copies them into its multipart queue synchronously.
+                    guard let videoURL = await loadAlbumVideoMP4(for: asset) else {
+                        sendError = "无法读取或转换所选视频，请确认照片权限及 iCloud 下载状态。"
+                        isSending = false
+                        return
+                    }
+                    let filename = MediaLoader.generatedName(prefix: "视频", mime: "video/mp4")
+                    let uploadError = model.uploader.enqueue(fileURL: videoURL,
+                                                            name: filename,
+                                                            mediaType: "video/mp4")
+                    try? FileManager.default.removeItem(at: videoURL)
+                    if let uploadError {
+                        sendError = uploadError
+                        isSending = false
+                        return
+                    }
+                    continue
+                }
                 let id = asset.localIdentifier
                 let loaded: (data: Data, mime: String, name: String)?
                 if let editedImage = edited[id],
@@ -642,7 +660,11 @@ struct AlbumPickerView: View {
                 } else {
                     loaded = await loadSendData(for: asset, manager: imageManager, sendOriginal: original)
                 }
-                guard let loaded else { continue }
+                guard let loaded else {
+                    sendError = "无法读取所选照片，请确认照片权限及 iCloud 下载状态。"
+                    isSending = false
+                    return
+                }
                 if let error = model.uploader.enqueue(data: loaded.data, name: loaded.name, mediaType: loaded.mime) {
                     sendError = error
                     isSending = false
@@ -1099,11 +1121,13 @@ private struct AlbumPreviewView: View {
 
     private var canEdit: Bool {
         guard let asset = currentAsset else { return false }
-        return isSelectable(asset)
+        // A video can be selected/sent, but still-image editing must remain
+        // unavailable for video assets.
+        return asset.mediaType == .image
     }
 
     private func isSelectable(_ asset: PHAsset) -> Bool {
-        asset.mediaType == .image
+        asset.mediaType == .image || asset.mediaType == .video
     }
 
     private func selectionIndex(for asset: PHAsset) -> Int? {
@@ -1141,7 +1165,7 @@ private struct AlbumPreviewView: View {
     }
 
     private func startEditing() {
-        guard let asset = currentAsset, isSelectable(asset) else { return }
+        guard let asset = currentAsset, asset.mediaType == .image else { return }
         let base = editedImages[asset.localIdentifier]
         Task { @MainActor in
             // `?? await …` is not allowed (the `??` autoclosure is not async),
@@ -1256,6 +1280,45 @@ private func loadFullImage(for asset: PHAsset, manager: PHCachingImageManager) a
             continuation.resume(returning: image)
         }
     }
+}
+
+/// Stream a library video to a temporary file and hand back an MP4 for the
+/// existing file-upload queue. PHAssetResourceManager streams in chunks, so
+/// a long 4K video is never loaded into a Data object in memory.
+private func loadAlbumVideoMP4(for asset: PHAsset) async -> URL? {
+    guard asset.mediaType == .video else { return nil }
+    let resources = PHAssetResource.assetResources(for: asset)
+    guard let video = resources.first(where: { $0.type == .fullSizeVideo })
+                    ?? resources.first(where: { $0.type == .video }) else { return nil }
+    let originalExtension = (video.originalFilename as NSString).pathExtension.lowercased()
+    let ext = originalExtension.isEmpty ? "mov" : originalExtension
+    let rawURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("album-video-\(UUID().uuidString).\(ext)")
+    let copied: Bool = await withCheckedContinuation { continuation in
+        FileManager.default.createFile(atPath: rawURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: rawURL) else {
+            continuation.resume(returning: false)
+            return
+        }
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().requestData(for: video, options: options) { chunk in
+            try? handle.write(contentsOf: chunk)
+        } completionHandler: { error in
+            try? handle.close()
+            continuation.resume(returning: error == nil)
+        }
+    }
+    guard copied else {
+        try? FileManager.default.removeItem(at: rawURL)
+        return nil
+    }
+    // Original MP4 is already suitable; other formats go through the app's
+    // existing video transcoder for consistent receiving/previewing.
+    if ext == "mp4" { return rawURL }
+    let converted = await MediaLoader.transcodeToMP4(from: rawURL)
+    try? FileManager.default.removeItem(at: rawURL)
+    return converted
 }
 
 /// Extract the Live Photo paired video (a MOV) for `asset` and transcode it to
