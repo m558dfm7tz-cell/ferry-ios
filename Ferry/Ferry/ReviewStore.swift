@@ -45,6 +45,8 @@ final class ReviewStore {
     var readStatusSync: any ReviewReadStatusSyncing = NoopReviewReadStatusSync()
 
     private let defaults: UserDefaults
+    private let legacySpace: String?
+    private var activeSpace: String?
 
     private enum Keys {
         static let seen = "ferry.local.reviewSeenIDs"
@@ -53,8 +55,24 @@ final class ReviewStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        seenIDs = Set(defaults.stringArray(forKey: Keys.seen) ?? [])
-        pendingSyncIDs = defaults.stringArray(forKey: Keys.pending) ?? []
+        let priorOrigin = defaults.string(forKey: "ferry.server.origin")
+        let mapping = defaults.dictionary(forKey: "ferry.spaceKeys") as? [String: String] ?? [:]
+        legacySpace = priorOrigin.map { mapping[$0] ?? $0 }
+    }
+
+    func activate(space: SpaceKey) {
+        activeSpace = space.value
+        let seenKey = Keys.seen + "." + space.folderName
+        let pendingKey = Keys.pending + "." + space.folderName
+        if defaults.object(forKey: seenKey) == nil, legacySpace == space.value {
+            // The legacy unscoped read-state belongs only to the previously
+            // connected server. Preserve it without deleting the old keys.
+            defaults.set(defaults.stringArray(forKey: Keys.seen) ?? [], forKey: seenKey)
+            defaults.set(defaults.stringArray(forKey: Keys.pending) ?? [], forKey: pendingKey)
+        }
+        seenIDs = Set(defaults.stringArray(forKey: seenKey) ?? [])
+        pendingSyncIDs = defaults.stringArray(forKey: pendingKey) ?? []
+        items = []
     }
 
     /// Number of items not yet marked 已看 — the "（N）" on the pinned entry.
@@ -120,6 +138,12 @@ final class ReviewStore {
         persistPending()
     }
 
-    private func persistSeen() { defaults.set(Array(seenIDs), forKey: Keys.seen) }
-    private func persistPending() { defaults.set(pendingSyncIDs, forKey: Keys.pending) }
+    private func persistSeen() {
+        guard let space = activeSpace else { return }
+        defaults.set(Array(seenIDs), forKey: Keys.seen + "." + SpaceKey(value: space).folderName)
+    }
+    private func persistPending() {
+        guard let space = activeSpace else { return }
+        defaults.set(pendingSyncIDs, forKey: Keys.pending + "." + SpaceKey(value: space).folderName)
+    }
 }
