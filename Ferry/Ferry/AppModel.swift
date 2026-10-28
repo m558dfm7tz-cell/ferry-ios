@@ -7,6 +7,9 @@ import ImageIO
 @MainActor @Observable
 final class AppModel {
     enum Phase: Equatable { case setup, connecting, connected, offline }
+    // Sends a cheap event without making TimelineView observe the whole
+    // media dictionary. Visible cells still observe their own thumbnails.
+    static let mediaDidResolveNotification = Notification.Name("FerryMediaDidResolve")
 
     var serverAddress: String
     var deviceName: String
@@ -996,7 +999,10 @@ final class AppModel {
         let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
         let current = generation
         loadingImages.insert(message.id)
-        defer { loadingImages.remove(message.id) }
+        defer {
+            loadingImages.remove(message.id)
+            NotificationCenter.default.post(name: Self.mediaDidResolveNotification, object: nil)
+        }
 
         // Never block the main actor on disk I/O or image decompression.
         if let cacheURL {
@@ -1082,7 +1088,10 @@ final class AppModel {
         guard let endpoint, let token else { return }
         let current = generation
         loadingThumbnails.insert(message.id)
-        defer { loadingThumbnails.remove(message.id) }
+        defer {
+            loadingThumbnails.remove(message.id)
+            NotificationCenter.default.post(name: Self.mediaDidResolveNotification, object: nil)
+        }
         do {
             let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
             guard current == generation else { return }
