@@ -316,11 +316,21 @@ final class ComposerUITextView: UITextView {
     }
 
     @objc private func handleAttachmentTap() {
-        // Only active when the attachment inputView replaces the keyboard.
-        // Normal typing/selection and edit-menu remain UIKit-owned.
+        // The tap is handled by the actual UITextView, not by a SwiftUI
+        // overlay, so normal selection and the native edit menu stay intact.
         guard isShowingAttachmentInput else { return }
+        // Clear UIKit's replacement inputView immediately before updating the
+        // SwiftUI binding. Otherwise its old attachment buttons can remain
+        // in the accessibility tree while SwiftUI waits for another update.
+        isShowingAttachmentInput = false
+        attachmentTap?.isEnabled = false
+        inputView = nil
+        if isFirstResponder {
+            reloadInputViews()
+        } else {
+            becomeFirstResponder()
+        }
         onTapWhileShowingAttachment?()
-        if !isFirstResponder { becomeFirstResponder() }
     }
     var onWidthChanged: (() -> Void)?
     private var lastLaidOutWidth: CGFloat = 0
