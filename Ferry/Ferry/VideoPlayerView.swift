@@ -17,6 +17,7 @@ struct VideoPlayerView: View {
     let mediaType: String
     /// When hosted by the mixed-media pager, close the whole viewer instead
     /// of dismissing a nonexistent nested presentation.
+    var isActive: Bool = true
     var onClose: (() -> Void)? = nil
     var onVerticalDrag: ((CGFloat) -> Void)? = nil
 
@@ -70,8 +71,22 @@ struct VideoPlayerView: View {
         .overlay { if showToast { toastView } }
         .statusBarHidden()
         .onAppear(perform: setup)
-        .onReceive(ticker) { _ in updateTime() }
-        .onDisappear { player.pause() }
+        .onChange(of: isActive) { _, active in
+            if active {
+                player.play()
+                isPlaying = true
+            } else {
+                player.pause()
+                isPlaying = false
+            }
+        }
+        .onReceive(ticker) { _ in
+            if isActive { updateTime() }
+        }
+        .onDisappear {
+            player.pause()
+            isPlaying = false
+        }
     }
 
     private var scale: CGFloat { 1 - min(1, abs(dragOffset) / 600) * 0.2 }
@@ -141,8 +156,10 @@ struct VideoPlayerView: View {
 
     private func setup() {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
-        player.play()
-        isPlaying = true
+        if isActive {
+            player.play()
+            isPlaying = true
+        }
     }
 
     private func togglePlay() {
