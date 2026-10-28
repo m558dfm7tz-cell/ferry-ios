@@ -95,6 +95,20 @@ final class ShareViewController: UIViewController {
     private func importProvider(_ provider: NSItemProvider, into dir: URL) async throws -> ImportedEntry? {
         // URLs from Safari are links; files from Files, Photos and other
         // applications are staged as original bytes whenever available.
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
+           let item = try? await loadItem(provider, type: UTType.fileURL.identifier),
+           let source = item as? URL, source.isFileURL {
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            let ext = source.pathExtension.isEmpty ? "bin" : source.pathExtension
+            let file = UUID().uuidString + "." + ext
+            let dest = dir.appendingPathComponent(file)
+            try FileManager.default.copyItem(at: source, to: dest)
+            let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+            return ImportedEntry(id: UUID().uuidString, kind: "file",
+                                 name: source.lastPathComponent, mediaType: mime,
+                                 filename: file, text: nil)
+        }
         let registered = provider.registeredTypeIdentifiers
         let fileType = registered.first { identifier in
             guard let type = UTType(identifier) else { return false }
