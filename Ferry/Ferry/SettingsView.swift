@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage("ferry.sendOriginalVideo") private var sendOriginalVideo = false
     @Bindable private var notificationSettings = NotificationSettings.shared
     let model: AppModel
+    @State private var editingOrigin: String?
+    @State private var editedName = ""
 
     var body: some View {
         NavigationStack {
@@ -28,6 +30,41 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: {
                     Text("视频发送")
+                }
+
+                Section {
+                    ForEach(model.savedComputers) { computer in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(computer.name)
+                                Text(computer.origin).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if model.endpoint?.origin == computer.origin {
+                                Text("当前").foregroundStyle(.secondary).font(.caption)
+                            } else {
+                                Button("切换") {
+                                    dismiss()
+                                    Task { await model.switchComputer(origin: computer.origin) }
+                                }
+                            }
+                            Button {
+                                editedName = computer.name
+                                editingOrigin = computer.origin
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .onDelete { offsets in
+                        let computers = model.savedComputers
+                        for index in offsets { model.removeSavedComputer(origin: computers[index].origin) }
+                    }
+                    Text("新增电脑请在连接页面输入地址、扫码或局域网发现；切换后仅监听选中的电脑。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: {
+                    Text("已保存的电脑")
                 }
 
                 Section {
@@ -59,6 +96,17 @@ struct SettingsView: View {
                 } footer: {
                     Text("可设为图片或视频（视频静音循环播放）。头像保存在本机，暂未与服务器同步。")
                 }
+            }
+            .alert("修改电脑名称", isPresented: Binding(
+                get: { editingOrigin != nil },
+                set: { if !$0 { editingOrigin = nil } }
+            )) {
+                TextField("电脑名称", text: $editedName)
+                Button("保存") {
+                    if let origin = editingOrigin { model.renameComputer(origin: origin, name: editedName) }
+                    editingOrigin = nil
+                }
+                Button("取消", role: .cancel) { editingOrigin = nil }
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
