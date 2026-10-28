@@ -27,10 +27,13 @@ import UIKit
 struct AlbumPickerView: View {
     let model: AppModel
     let onClose: (() -> Void)?
+    let onDragDismissed: (() -> Void)?
 
-    init(model: AppModel, onClose: (() -> Void)? = nil) {
+    init(model: AppModel, onClose: (() -> Void)? = nil,
+         onDragDismissed: (() -> Void)? = nil) {
         self.model = model
         self.onClose = onClose
+        self.onDragDismissed = onDragDismissed
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -432,7 +435,10 @@ struct AlbumPickerView: View {
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(415))
-            closePicker()
+            // The picker itself is already fully offscreen. A second delayed
+            // parent transition otherwise leaves an invisible hit-test layer.
+            if let onDragDismissed { onDragDismissed() }
+            else { closePicker() }
         }
     }
 
