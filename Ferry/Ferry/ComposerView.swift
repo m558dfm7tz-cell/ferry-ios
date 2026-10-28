@@ -54,26 +54,48 @@ struct ComposerView: View {
                 if showHelperTextInput {
                     HStack(spacing: 6) {
                         Button {
-                            focused.wrappedValue = false
+                            // Resign the actual UIKit first responder before
+                            // removing its hosting UIViewRepresentable. Keeping
+                            // focus during the same SwiftUI update could reopen
+                            // the keyboard over the quick-action panel.
                             showPlus = false
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showHelperTextInput = false
+                            pendingAlbumAfterKeyboard = false
+                            dismissComposerKeyboard()
+                            Task { @MainActor in
+                                await Task.yield()
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showHelperTextInput = false
+                                }
                             }
                         } label: {
                             Image(systemName: "square.grid.2x2")
                                 .font(.system(size: 19))
                                 .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .accessibilityLabel("快捷操作")
+                        .accessibilityIdentifier("helper-return-to-actions")
                         .buttonStyle(.plain)
+                        // The full composer may overflow on narrow phones;
+                        // always keep this mode-switch button tappable.
+                        .layoutPriority(1)
+                        .zIndex(2)
                         inputBar
+                            .frame(maxWidth: .infinity)
                     }
                 } else {
                     HelperQuickActionsView(model: model) {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             showHelperTextInput = true
                         }
-                        focused.wrappedValue = true
+                        // Allow UITextView to mount in the hierarchy before
+                        // requesting the native keyboard.
+                        Task { @MainActor in
+                            await Task.yield()
+                            if showHelperTextInput && model.selectedAssistantID == "helper" {
+                                focused.wrappedValue = true
+                            }
+                        }
                     } onBrowse: {
                         showHelperFileBrowser = true
                     }
