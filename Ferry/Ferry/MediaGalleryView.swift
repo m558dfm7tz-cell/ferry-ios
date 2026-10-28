@@ -331,8 +331,9 @@ private struct MediaPagerView: View {
                                         // A real AVPlayerLayer may swallow the parent
                                         // TabView pan. Change exactly one page here,
                                         // unless TabView already moved it itself.
-                                        guard currentIndex == index else { return }
-                                        let next = index + (distance < 0 ? 1 : -1)
+                                        guard messages.indices.contains(currentIndex),
+                                              messages[currentIndex].id == message.id else { return }
+                                        let next = currentIndex + (distance < 0 ? 1 : -1)
                                         guard messages.indices.contains(next) else { return }
                                         withAnimation(.easeOut(duration: 0.24)) {
                                             currentIndex = next
