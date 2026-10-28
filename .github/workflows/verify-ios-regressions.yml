@@ -1,8 +1,6 @@
 name: Verify iOS regressions (no IPA)
 
 on:
-  push:
-    branches: [integration/ferry-v2-safe-20261028]
   workflow_dispatch:
 
 concurrency:
