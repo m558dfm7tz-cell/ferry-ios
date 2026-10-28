@@ -55,7 +55,7 @@ final class MessageNotifier {
     }
 
     /// Show one local notification for a single new message.
-    func notify(message: MessagePayload, assistant: Assistant?) async {
+    func notify(message: MessagePayload, assistant: Assistant?, origin: String) async {
         guard settings.isEnabled else { return }
         guard await isAuthorized() else { return }
         let content = UNMutableNotificationContent()
@@ -66,10 +66,11 @@ final class MessageNotifier {
         // Group by conversation so iOS stacks a burst under one header.
         content.threadIdentifier = assistant?.id ?? "device-\(message.senderName)"
         content.userInfo[NotificationPayloadKey.messageID] = message.id
+        content.userInfo[NotificationPayloadKey.origin] = origin
         if let assistantID = assistant?.id {
             content.userInfo[NotificationPayloadKey.assistantID] = assistantID
         }
-        let request = UNNotificationRequest(identifier: "ferry.message.\(message.id)",
+        let request = UNNotificationRequest(identifier: "ferry.message.\(origin).\(message.id)",
                                             content: content,
                                             trigger: nil)
         try? await center.add(request)
@@ -112,7 +113,8 @@ final class FerryNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
         let userInfo = response.notification.request.content.userInfo
         let route = NotificationRoute(
             assistantID: userInfo[NotificationPayloadKey.assistantID] as? String,
-            messageID: userInfo[NotificationPayloadKey.messageID] as? String
+            messageID: userInfo[NotificationPayloadKey.messageID] as? String,
+            origin: userInfo[NotificationPayloadKey.origin] as? String
         )
         Task { @MainActor in MessageNotifier.shared.onRoute?(route) }
         completionHandler()
