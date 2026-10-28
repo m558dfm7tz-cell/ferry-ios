@@ -115,6 +115,7 @@ struct ComposerTextView: UIViewRepresentable {
         let wantsAttachment = attachmentMode?.wrappedValue == true
         if wantsAttachment != textView.isShowingAttachmentInput {
             textView.isShowingAttachmentInput = wantsAttachment
+            textView.attachmentTap?.isEnabled = wantsAttachment
             if wantsAttachment {
                 let menu = context.coordinator.attachmentInputView()
                 menu.onFile = onAttachmentFile
@@ -289,33 +290,7 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
-        /// iOS 16+: put 全选 in the third slot of the edit menu (long-press and
-        /// double-tap alike). The system omits it once a range is already
-        /// selected (double-tap on a word), so we always supply our own and
-        /// drop any duplicate the system happened to include. Cut/Copy/Paste
-        /// and every other system action are kept as-is.
-        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
-                      suggestedActions: [UIMenuElement]) -> UIMenu? {
-            let length = (textView.text as NSString).length
-            guard length > 0 else { return UIMenu(children: suggestedActions) }
-
-            var actions = suggestedActions.filter { !Self.isSelectAll($0) }
-            let selectAll = UIAction(title: "全选") { _ in
-                textView.selectedRange = NSRange(location: 0, length: length)
-            }
-            actions.insert(selectAll, at: min(2, actions.count))
-            return UIMenu(children: actions)
-        }
-
-        /// Titles the system uses for "select all" (the app ships zh-Hans, but
-        /// the simulator/CI may run another language).
-        private static let selectAllTitles: Set<String> = ["全选", "选择全部", "Select All"]
-
-        private static func isSelectAll(_ element: UIMenuElement) -> Bool {
-            if let action = element as? UIAction { return selectAllTitles.contains(action.title) }
-            if let menu = element as? UIMenu { return selectAllTitles.contains(menu.title) }
-            return false
-        }
+        // Native UITextView handles edit-menu actions without interception.
     }
 }
 
@@ -324,11 +299,15 @@ final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
     var isShowingAttachmentInput = false
     var onTapWhileShowingAttachment: (() -> Void)?
+    fileprivate var attachmentTap: UITapGestureRecognizer?
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleAttachmentTap))
         tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.isEnabled = false
+        attachmentTap = tap
         addGestureRecognizer(tap)
     }
 
@@ -337,11 +316,10 @@ final class ComposerUITextView: UITextView {
     }
 
     @objc private func handleAttachmentTap() {
-        if isShowingAttachmentInput {
-            onTapWhileShowingAttachment?()
-        }
-        // Keep the native responder even when the scroll/keyboard gesture
-        // recognizers compete for a tap on the empty composer.
+        // Only active when the attachment inputView replaces the keyboard.
+        // Normal typing/selection and edit-menu remain UIKit-owned.
+        guard isShowingAttachmentInput else { return }
+        onTapWhileShowingAttachment?()
         if !isFirstResponder { becomeFirstResponder() }
     }
     var onWidthChanged: (() -> Void)?
