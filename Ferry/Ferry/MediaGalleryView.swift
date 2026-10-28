@@ -309,6 +309,9 @@ private struct MediaPagerView: View {
                 ImageViewer(image: decoded, name: name, mediaType: mediaType,
                             load: { await model.fileData(for: message) },
                             loadFileURL: { await model.fileURL(for: message) },
+                            loadFullImage: isCurrent
+                                ? { await model.fullImage(for: message) }
+                                : nil,
                             // The top-right grid control already exists;
                             // don't display a second one in the action strip.
                             onOpenGallery: nil, onClose: onCloseViewer,
