@@ -31,6 +31,9 @@ protocol FerryServicing {
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
     func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String, action: String,
+                                path: String) async throws -> HelperOperation
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String, id: String) async throws -> HelperOperation
 }
 
 // Test mocks and legacy adapters may implement only the original API.
@@ -59,6 +62,31 @@ extension FerryServicing {
                   destination: MessageDestination) async throws -> MessagePayload {
         throw URLError(.unsupportedURL)
     }
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String) async throws -> HelperOperation {
+        throw URLError(.unsupportedURL)
+    }
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String,
+                             id: String) async throws -> HelperOperation {
+        throw URLError(.unsupportedURL)
+    }
+}
+
+/// The directory list is never a chat message; responses expire on Go restart.
+struct HelperDirectoryEntry: Codable, Identifiable {
+    let name: String
+    let path: String
+    let kind: String
+    var size: Int64? = nil
+    var id: String { path }
+}
+struct HelperOperation: Codable {
+    let id: String
+    let action: String
+    let status: String
+    var path: String? = nil
+    var entries: [HelperDirectoryEntry]? = nil
+    var error: String? = nil
 }
 
 struct FerryClient: FerryServicing {
@@ -86,6 +114,20 @@ struct FerryClient: FerryServicing {
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 24 * 3600
         self.transferSession = URLSession(configuration: config)
+    }
+
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String = "") async throws -> HelperOperation {
+        struct Body: Encodable { let action: String; let path: String }
+        let body = try JSONEncoder().encode(Body(action: action, path: path))
+        return try await json(endpoint: endpoint, path: "/api/v1/helper/operations",
+                              method: "POST", token: token, body: body)
+    }
+
+    func pollHelperOperation(endpoint: ServerEndpoint, token: String,
+                             id: String) async throws -> HelperOperation {
+        return try await json(endpoint: endpoint, path: "/api/v1/helper/operations/\(id)",
+                              token: token)
     }
 
     func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
