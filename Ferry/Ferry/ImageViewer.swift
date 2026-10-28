@@ -308,16 +308,31 @@ final class ZoomableImageUIView: UIView, UIScrollViewDelegate, UIGestureRecogniz
             // Drag-dismiss is disabled while zoomed so pinch/pan keeps working.
             guard scrollView.zoomScale <= 1.01 else { return false }
             let velocity = dismissPan.velocity(in: self)
-            // Let the gallery handle left/right paging; dismiss vertically only.
-            return abs(velocity.y) > abs(velocity.x) * 1.25
+            // Recognize a deliberate vertical gesture before the parent
+            // TabView pager. The old 1.25 ratio handed slightly diagonal
+            // up/down drags to horizontal paging on the iPhone.
+            let translation = dismissPan.translation(in: self)
+            let x = max(abs(velocity.x), abs(translation.x) * 4)
+            let y = max(abs(velocity.y), abs(translation.y) * 4)
+            return y > x * 1.08
         }
         return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === dismissPan || otherGestureRecognizer === dismissPan else { return false }
-        return scrollView.zoomScale <= 1.01
+        // A vertical dismissal must own this gesture exclusively; otherwise
+        // the surrounding page TabView can also turn to the next image.
+        return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Parent paging pan must wait for the vertical dismiss pan to decide
+        // its direction. Horizontal pans reject in shouldBegin and then page.
+        return gestureRecognizer === dismissPan &&
+               scrollView.zoomScale <= 1.01 &&
+               otherGestureRecognizer is UIPanGestureRecognizer
     }
 
     private func centerContent() {
