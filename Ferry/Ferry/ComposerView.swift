@@ -333,7 +333,9 @@ struct ComposerView: View {
                              // inside the capsule instead of growing further.
                              maxLines: 6,
                              textColor: .white,
-                             tintColor: .white,
+                             // A visible blue selection tint on the dark
+                             // composer distinguishes a range from two handles.
+                             tintColor: UIColor(red: 0.32, green: 0.72, blue: 1.0, alpha: 1),
                              alwaysScrolls: false,
                              minHeight: 44,
                              onMentionChange: { context in
