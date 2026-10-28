@@ -39,11 +39,27 @@ struct MediaGalleryView: View {
                                    if initialMessageID != nil { dismiss() }
                                    else { self.selectedMessage = nil }
                                })
+            } else if initialMessageID != nil {
+                // A freshly resumed app may not have hydrated mediaMessages
+                // on the first frame. Never flash the all-media grid.
+                Color.black.ignoresSafeArea()
+                    .overlay { ProgressView().tint(.white) }
             } else {
                 mediaGrid
             }
         }
+        .onAppear { reconcileInitialMedia() }
+        .onChange(of: model.mediaMessages.map(\.id)) { _, _ in
+            reconcileInitialMedia()
+        }
+    }
 
+    private func reconcileInitialMedia() {
+        guard let target = initialMessageID, selectedMessage == nil else { return }
+        let current = model.mediaMessages
+        guard let message = current.first(where: { $0.id == target }) else { return }
+        scopedMessages = current
+        selectedMessage = message
     }
 
     private var mediaGrid: some View {
@@ -62,6 +78,7 @@ struct MediaGalleryView: View {
                     .padding(3)
                 }
             }
+            .background(Color.chatBackground.ignoresSafeArea())
             .navigationTitle("媒体")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -162,14 +179,11 @@ private struct MediaPagerView: View {
                 .ignoresSafeArea()
             TabView(selection: $currentIndex) {
                 ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                    Group {
-                        if abs(index - currentIndex) <= 1 {
-                            page(for: message, isCurrent: index == currentIndex)
-                        } else {
-                            Color.clear
-                        }
-                    }
-                    .tag(index)
+                    // Keep page identity and layout stable throughout the
+                    // swipe. Replacing neighboring pages during a TabView
+                    // transition caused the visible "bounce back" artifact.
+                    page(for: message, isCurrent: index == currentIndex)
+                        .tag(index)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
