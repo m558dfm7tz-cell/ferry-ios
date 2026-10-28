@@ -215,7 +215,13 @@ struct TimelineView: View {
                     // Mount a complete opaque page below the screen before
                     // animating its single outer offset. Async photo loading
                     // can no longer animate each grid row during presentation.
-                    AlbumPickerView(model: model, onClose: { showAlbumPicker = false })
+                    AlbumPickerView(model: model,
+                                    onClose: { showAlbumPicker = false },
+                                    onDragDismissed: {
+                                        albumMounted = false
+                                        albumRevealed = false
+                                        showAlbumPicker = false
+                                    })
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         // No opaque backing outside the moved picker content:
                         // dragging down reveals the actual timeline.
@@ -226,6 +232,7 @@ struct TimelineView: View {
                 }
             }
             .ignoresSafeArea()
+            .allowsHitTesting(albumMounted)
         }
         .onChange(of: showAlbumPicker, initial: true) { _, opened in
             if opened {
