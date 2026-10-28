@@ -39,15 +39,38 @@ struct VideoPlayerView: View {
             Color.black
                 .opacity(max(0, 1 - Double(abs(dragOffset) / 380)))
                 .ignoresSafeArea()
-            PlayerLayerView(player: player)
+            PlayerLayerView(player: player, onVerticalPan: { state, distance, velocity in
+                switch state {
+                case .changed:
+                    dragOffset = distance
+                    onVerticalDrag?(distance)
+                case .ended:
+                    if abs(distance) > 120 || abs(velocity) > 900 {
+                        if let onClose { onClose() } else { dismiss() }
+                    } else {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            dragOffset = 0
+                            onVerticalDrag?(0)
+                        }
+                    }
+                case .cancelled, .failed:
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                        dragOffset = 0
+                        onVerticalDrag?(0)
+                    }
+                default:
+                    break
+                }
+            })
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .scaleEffect(scale)
                 .opacity(opacity)
                 .offset(y: dragOffset)
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
-                // Let the outer TabView handle horizontal paging.
-                .simultaneousGesture(dismissDrag)
+                // The UIKit vertical-only pan recognizer is installed on
+                // PlayerContainerUIView. It rejects horizontal gestures
+                // before recognition, leaving TabView paging uninterrupted.
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
@@ -134,26 +157,6 @@ struct VideoPlayerView: View {
         .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private var dismissDrag: some Gesture {
-        DragGesture()
-            .onChanged { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                dragOffset = value.translation.height
-                onVerticalDrag?(dragOffset)
-            }
-            .onEnded { value in
-                let velocityY = value.predictedEndTranslation.height
-                if abs(dragOffset) > 120 || abs(velocityY) > 900 {
-                    if let onClose { onClose() } else { dismiss() }
-                } else {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        dragOffset = 0
-                        onVerticalDrag?(0)
-                    }
-                }
-            }
-    }
-
     private func setup() {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         if isActive {
@@ -200,26 +203,53 @@ struct VideoPlayerView: View {
     }
 }
 
-/// Hosts an AVPlayerLayer as a UIView so SwiftUI can overlay controls on top.
+/// The pan recognizer rejects horizontal movement in shouldBegin instead
+/// of competing with the surrounding TabView's left/right swipe gesture.
 private struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
+    let onVerticalPan: (UIGestureRecognizer.State, CGFloat, CGFloat) -> Void
 
     func makeUIView(context: Context) -> PlayerContainerUIView {
         let view = PlayerContainerUIView()
         view.player = player
+        view.onVerticalPan = onVerticalPan
         return view
     }
 
     func updateUIView(_ uiView: PlayerContainerUIView, context: Context) {
         uiView.player = player
+        uiView.onVerticalPan = onVerticalPan
     }
 }
 
-private final class PlayerContainerUIView: UIView {
+private final class PlayerContainerUIView: UIView, UIGestureRecognizerDelegate {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
 
     var player: AVPlayer? {
         get { (layer as? AVPlayerLayer)?.player }
         set { (layer as? AVPlayerLayer)?.player = newValue }
+    }
+
+    var onVerticalPan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleVerticalPan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        addGestureRecognizer(pan)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: self)
+        // A horizontal or ambiguous drag stays with the parent pager.
+        return abs(velocity.y) > abs(velocity.x) * 1.25
+    }
+
+    @objc private func handleVerticalPan(_ pan: UIPanGestureRecognizer) {
+        onVerticalPan?(pan.state, pan.translation(in: self).y, pan.velocity(in: self).y)
     }
 }
