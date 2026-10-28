@@ -3,6 +3,10 @@ import UIKit
 
 struct RootView: View {
     @Bindable var model: AppModel
+    @State private var sharedBatch: FerrySharedBatch?
+    @State private var shareRecipient: String?
+    @State private var shareError: String?
+    @State private var sharingNow = false
 
     var body: some View {
         ZStack {
@@ -11,7 +15,144 @@ struct RootView: View {
             if model.phase == .setup || model.phase == .connecting { AccessView(model: model) }
             else { TimelineView(model: model) }
         }
-        .task { await model.start() }
+        .task {
+            await model.start()
+            discoverIncomingShare()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            discoverIncomingShare()
+        }
+        .onChange(of: model.phase == .connected) { _, active in
+            if active { discoverIncomingShare() }
+        }
+        .sheet(item: $sharedBatch, onDismiss: {
+            shareRecipient = nil
+            shareError = nil
+        }) { batch in
+            incomingShareSheet(batch)
+                .interactiveDismissDisabled(sharingNow)
+        }
+    }
+
+    private func discoverIncomingShare() {
+        guard model.phase == .connected, sharedBatch == nil else { return }
+        sharedBatch = FerryShareInbox.readPending()
+        shareRecipient = nil
+        shareError = nil
+    }
+
+    @ViewBuilder
+    private func incomingShareSheet(_ batch: FerrySharedBatch) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Label("来自其他 App 的分享", systemImage: "square.and.arrow.down")
+                        .font(.headline)
+                    Text("请选择收件对话。只有点击确认发送之后，Ferry 才会开始上传；关闭此窗口不会丢弃待发送文件。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    ForEach(batch.entries) { entry in
+                        Label(entry.name, systemImage: entry.kind == .text ? "text.alignleft" : "doc")
+                            .font(.subheadline)
+                            .lineLimit(2)
+                    }
+                    Divider()
+                    Text("发送到").font(.headline)
+                    if model.routeIsolationEnabled {
+                        shareDestinationRow(title: "互传", subtitle: "仅发送到 Windows／iPhone 互传",
+                                            id: "__transfer__")
+                        ForEach(model.assistantStore.assistants) { assistant in
+                            shareDestinationRow(title: assistant.name,
+                                                subtitle: "独立助手对话", id: assistant.id)
+                        }
+                    } else {
+                        Label("当前服务器尚未确认支持独立消息路由。为防止误发，暂不能发送外部分享。",
+                              systemImage: "exclamationmark.shield")
+                            .foregroundStyle(.orange)
+                            .font(.footnote)
+                    }
+                    if let shareError {
+                        Text(shareError).font(.footnote).foregroundStyle(.red)
+                    }
+                    Button {
+                        Task { await confirmSharedItems(batch) }
+                    } label: {
+                        if sharingNow { ProgressView() }
+                        else { Text("确认发送到所选对话") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity)
+                    .disabled(sharingNow || shareRecipient == nil || !model.routeIsolationEnabled)
+                }
+                .padding(20)
+            }
+            .background(Color.chatBackground.ignoresSafeArea())
+            .navigationTitle("分享至 Ferry")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("稍后") { sharedBatch = nil }
+                        .disabled(sharingNow)
+                }
+            }
+        }
+    }
+
+    private func shareDestinationRow(title: String, subtitle: String, id: String) -> some View {
+        Button { shareRecipient = id; shareError = nil } label: {
+            HStack(spacing: 12) {
+                Image(systemName: shareRecipient == id ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(shareRecipient == id ? Color.cyan : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .background(Color(uiColor: .secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func confirmSharedItems(_ batch: FerrySharedBatch) async {
+        guard let selected = shareRecipient,
+              let destination = model.destinationForExternalShare(
+                selected == "__transfer__" ? nil : selected) else {
+            shareError = "请先选择已验证的目标对话。"
+            return
+        }
+        sharingNow = true
+        defer { sharingNow = false }
+        var remaining = batch
+        for entry in batch.entries {
+            if entry.kind == .text {
+                guard let text = entry.text,
+                      await model.sendText(text, destinationOverride: destination) else {
+                    shareError = "发送文字失败。已发送的条目不会重复发送。"
+                    return
+                }
+            } else {
+                guard let url = FerryShareInbox.fileURL(batch: batch, entry: entry) else {
+                    shareError = "分享文件已不存在，请重新从原 App 分享。"
+                    return
+                }
+                if let error = model.uploader.enqueue(fileURL: url, name: entry.name,
+                                                       mediaType: entry.mediaType,
+                                                       destinationOverride: destination) {
+                    shareError = error
+                    return
+                }
+            }
+            FerryShareInbox.markQueued(entry, from: &remaining)
+        }
+        FerryShareInbox.remove(batch)
+        sharedBatch = nil
+        // Do not navigate or change the user's currently selected conversation.
+        // The upload queue has already captured the explicit route for each item.
     }
 }
 
