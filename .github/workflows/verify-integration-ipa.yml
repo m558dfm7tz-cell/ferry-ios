@@ -1,0 +1,48 @@
+name: Verify integration unsigned IPA (not for installation)
+
+on:
+  push:
+    branches: [integration/ferry-v2-safe-20261028]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ios-archive:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_16.4.app ]; then sudo xcode-select -s /Applications/Xcode_16.4.app; fi
+          xcodebuild -version
+      - name: Archive iPhone Release without Apple signing
+        run: |
+          set -euo pipefail
+          xcodebuild -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Ferry-Integration.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package candidate for build verification only
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/Ferry-Integration.xcarchive/Products/Applications/Ferry.app"
+          mkdir -p "$RUNNER_TEMP/verify-payload/Payload"
+          cp -R "$RUNNER_TEMP/Ferry-Integration.xcarchive/Products/Applications/Ferry.app" "$RUNNER_TEMP/verify-payload/Payload/Ferry.app"
+          cd "$RUNNER_TEMP/verify-payload"
+          zip -qr -y "$RUNNER_TEMP/Ferry-integration-UNVERIFIED-unsigned.ipa" Payload
+          unzip -t "$RUNNER_TEMP/Ferry-integration-UNVERIFIED-unsigned.ipa"
+      - name: Upload unverified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ferry-integration-UNVERIFIED-unsigned-ipa
+          path: ${{ runner.temp }}/Ferry-integration-UNVERIFIED-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 3
