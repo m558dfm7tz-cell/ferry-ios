@@ -24,6 +24,8 @@ struct TimelineView: View {
     @State private var transcriptUserDragging = false
     @State private var showAttachmentPanel = false
     @State private var showAlbumPicker = false
+    @State private var albumMounted = false
+    @State private var albumRevealed = false
     @State private var selectionMode = false
     @State private var selectedIDs: Set<String> = []
     @State private var selectionAlert: SelectionAlert?
@@ -208,20 +210,44 @@ struct TimelineView: View {
             }
         }
         .overlay {
-            if showAlbumPicker {
-                AlbumPickerView(model: model, onClose: {
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40)) {
-                        showAlbumPicker = false
+            GeometryReader { geometry in
+                if albumMounted {
+                    // Mount a complete opaque page below the screen before
+                    // animating its single outer offset. Async photo loading
+                    // can no longer animate each grid row during presentation.
+                    AlbumPickerView(model: model, onClose: { showAlbumPicker = false })
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .background(Color.chatBackground)
+                        .ignoresSafeArea()
+                        .offset(y: albumRevealed ? 0 :
+                                max(geometry.size.height, UIScreen.main.bounds.height) + 120)
+                        .zIndex(10)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onChange(of: showAlbumPicker, initial: true) { _, opened in
+            if opened {
+                albumMounted = true
+                albumRevealed = false
+                Task { @MainActor in
+                    // Insert first, then animate the composed page as one layer.
+                    try? await Task.sleep(for: .milliseconds(75))
+                    guard showAlbumPicker else { return }
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.43)) {
+                        albumRevealed = true
                     }
-                })
-                .ignoresSafeArea()
-                // Slide the complete opaque picker, not a cross-faded set of
-                // rows; the closing direction is the same, just more relaxed.
-                .transition(.move(edge: .bottom))
-                .zIndex(10)
+                }
+            } else if albumMounted {
+                withAnimation(.timingCurve(0.20, 0.75, 0.28, 1, duration: 0.43)) {
+                    albumRevealed = false
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(450))
+                    if !showAlbumPicker { albumMounted = false }
+                }
             }
         }
-        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40), value: showAlbumPicker)
         .overlay { if showToast { toastView } }
 
     }
