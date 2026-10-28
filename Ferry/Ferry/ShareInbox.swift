@@ -20,12 +20,69 @@ struct FerrySharedBatch: Codable, Identifiable {
 }
 
 enum FerryShareInbox {
-    static let appGroup = "group.com.ferry.test.shared"
+    // Personal-Team / Sideloadly compatible: iOS copies "Open In" documents
+    // to this app's own Documents/Inbox. Do NOT request an App Group.
     private static let folder = "IncomingShares"
 
+    private static var documents: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+    }
+
     static func root() -> URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?
-            .appendingPathComponent(folder, isDirectory: true)
+        documents?.appendingPathComponent(folder, isDirectory: true)
+    }
+
+    /// Copy a document delivered by iOS Open In / Copy to Ferry into a durable
+    /// pending batch. Never upload or change the selected conversation here.
+    @discardableResult
+    static func importDocument(_ source: URL) throws -> Bool {
+        guard source.isFileURL, source.hasDirectoryPath == false,
+              let root = root() else { return false }
+        let access = source.startAccessingSecurityScopedResource()
+        defer { if access { source.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let id = UUID().uuidString
+        let folderURL = root.appendingPathComponent(id, isDirectory: true)
+        try fm.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        do {
+            let original = source.lastPathComponent
+            let fallbackName = original.isEmpty ? "分享文件" : original
+            let ext = source.pathExtension
+            let destFilename = UUID().uuidString + (ext.isEmpty ? "" : "." + ext)
+            let mime = UTType(filenameExtension: ext)?.preferredMIMEType ??
+                "application/octet-stream"
+            try fm.copyItem(at: source, to: folderURL.appendingPathComponent(destFilename))
+            let entry = FerrySharedEntry(id: UUID().uuidString, kind: .file,
+                                         name: fallbackName, mediaType: mime,
+                                         filename: destFilename, text: nil)
+            let batch = FerrySharedBatch(id: id, createdAt: Date(), entries: [entry])
+            let data = try JSONEncoder().encode(batch)
+            try data.write(to: folderURL.appendingPathComponent("request.json"), options: .atomic)
+            return true
+        } catch {
+            try? fm.removeItem(at: folderURL)
+            throw error
+        }
+    }
+
+    /// Legacy document handoff may populate Documents/Inbox without invoking
+    /// onOpenURL. Import on app foreground; delete ONLY the local Inbox copy
+    /// after a successful durable copy into the pending queue.
+    static func collectSystemInbox() {
+        guard let documents else { return }
+        let inbox = documents.appendingPathComponent("Inbox", isDirectory: true)
+        let fm = FileManager.default
+        guard let children = try? fm.contentsOfDirectory(
+            at: inbox, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]) else { return }
+        for url in children {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                else { continue }
+            if (try? importDocument(url)) == true {
+                try? fm.removeItem(at: url)
+            }
+        }
     }
 
     static func readPending() -> FerrySharedBatch? {
