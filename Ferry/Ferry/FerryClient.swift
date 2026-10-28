@@ -33,6 +33,8 @@ protocol FerryServicing {
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
     func requestHelperOperation(endpoint: ServerEndpoint, token: String, action: String,
                                 path: String) async throws -> HelperOperation
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String, action: String,
+                                path: String, offset: Int) async throws -> HelperOperation
     func pollHelperOperation(endpoint: ServerEndpoint, token: String, id: String) async throws -> HelperOperation
 }
 
@@ -66,6 +68,11 @@ extension FerryServicing {
                                 action: String, path: String) async throws -> HelperOperation {
         throw URLError(.unsupportedURL)
     }
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String, offset: Int) async throws -> HelperOperation {
+        guard offset == 0 else { throw URLError(.unsupportedURL) }
+        return try await requestHelperOperation(endpoint: endpoint, token: token, action: action, path: path)
+    }
     func pollHelperOperation(endpoint: ServerEndpoint, token: String,
                              id: String) async throws -> HelperOperation {
         throw URLError(.unsupportedURL)
@@ -87,6 +94,14 @@ struct HelperOperation: Codable {
     var path: String? = nil
     var entries: [HelperDirectoryEntry]? = nil
     var error: String? = nil
+    var nextOffset: Int? = nil
+    var hasMore: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case id, action, status, path, entries, error
+        case nextOffset = "next_offset"
+        case hasMore = "has_more"
+    }
 }
 
 struct FerryClient: FerryServicing {
@@ -118,8 +133,20 @@ struct FerryClient: FerryServicing {
 
     func requestHelperOperation(endpoint: ServerEndpoint, token: String,
                                 action: String, path: String = "") async throws -> HelperOperation {
-        struct Body: Encodable { let action: String; let path: String; let assistant_id: String }
-        let body = try JSONEncoder().encode(Body(action: action, path: path, assistant_id: "helper"))
+        try await requestHelperOperation(endpoint: endpoint, token: token,
+                                         action: action, path: path, offset: 0)
+    }
+
+    func requestHelperOperation(endpoint: ServerEndpoint, token: String,
+                                action: String, path: String, offset: Int) async throws -> HelperOperation {
+        struct Body: Encodable {
+            let action: String
+            let path: String
+            let assistant_id: String
+            let offset: Int
+        }
+        let body = try JSONEncoder().encode(Body(action: action, path: path,
+                                                assistant_id: "helper", offset: offset))
         return try await json(endpoint: endpoint, path: "/api/v1/helper/operations",
                               method: "POST", token: token, body: body)
     }
