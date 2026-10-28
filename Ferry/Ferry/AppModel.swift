@@ -1001,7 +1001,11 @@ final class AppModel {
     /// Drop the pending notification route once the timeline has applied it.
     func consumeNotificationRoute() { pendingRoute = nil }
 
-    private func apply(notificationRoute route: NotificationRoute) { pendingRoute = route }
+    private func apply(notificationRoute route: NotificationRoute) {
+        // Ignore stale banners from a different saved computer.
+        guard route.origin == nil || route.origin == endpoint?.origin else { return }
+        pendingRoute = route
+    }
 
     /// Trigger a (throttled) FerryHelper command-catalog fetch for the current
     /// server host. Silently no-ops when there is no endpoint yet (and never
@@ -1277,6 +1281,9 @@ final class AppModel {
         pollTask?.cancel()
         pollTask = nil
         generation = UUID()
+        notificationSettings.activeOrigin = endpoint.origin
+        // Old-server banners must not remain actionable after a switch.
+        Task { await notifier.clearAll() }
         self.endpoint = endpoint
         self.token = token
         currentDevice = nil
@@ -1896,7 +1903,12 @@ final class AppModel {
         notificationSettings.lastNotifiedSequence = message.sequence
         unreadMessageIDs.insert(message.id)
         updateBadge()
-        Task { await notifier.notify(message: message, assistant: assistant) }
+        if let origin = endpoint?.origin {
+            Task { [weak self] in
+                guard let self, self.endpoint?.origin == origin else { return }
+                await notifier.notify(message: message, assistant: assistant, origin: origin)
+            }
+        }
     }
 
     /// Whether the message's conversation is on screen right now.
