@@ -118,8 +118,8 @@ struct FerryClient: FerryServicing {
 
     func requestHelperOperation(endpoint: ServerEndpoint, token: String,
                                 action: String, path: String = "") async throws -> HelperOperation {
-        struct Body: Encodable { let action: String; let path: String }
-        let body = try JSONEncoder().encode(Body(action: action, path: path))
+        struct Body: Encodable { let action: String; let path: String; let assistant_id: String }
+        let body = try JSONEncoder().encode(Body(action: action, path: path, assistant_id: "helper"))
         return try await json(endpoint: endpoint, path: "/api/v1/helper/operations",
                               method: "POST", token: token, body: body)
     }
