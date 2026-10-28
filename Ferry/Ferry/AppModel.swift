@@ -610,12 +610,15 @@ final class AppModel {
     /// (offline or a server error) so items are retried on the next poll tick;
     /// successful items are dequeued as they are acknowledged.
     private func flushOutbox() async {
-        guard !outbox.isEmpty, !isFlushingOutbox, let endpoint, token != nil else { return }
+        guard !outbox.isEmpty, !isFlushingOutbox, let endpoint, let token else { return }
+        let current = generation
         isFlushingOutbox = true
-        defer { isFlushingOutbox = false }
+        defer { if current == generation { isFlushingOutbox = false } }
         for item in outbox {
+            guard current == generation && !Task.isCancelled else { return }
             do {
-                try await perform(item)
+                try await perform(item, endpoint: endpoint, token: token)
+                guard current == generation else { return }
                 outbox.removeAll { $0.id == item.id }
                 persistOutbox()
             } catch is CancellationError {
@@ -626,8 +629,7 @@ final class AppModel {
         }
     }
 
-    private func perform(_ item: PendingDeletion) async throws {
-        guard let endpoint, let token else { throw FerryClient.ClientError.invalidResponse }
+    private func perform(_ item: PendingDeletion, endpoint: ServerEndpoint, token: String) async throws {
         switch item.kind {
         case .messages:
             _ = try await client.deleteMessages(endpoint: endpoint, token: token, ids: item.ids)
@@ -770,18 +772,22 @@ final class AppModel {
     /// A result includes pagination state only for directory operations.
     /// Do not write temporary folder data into the regular chat timeline.
     func helperOperationPage(action: String, path: String = "", offset: Int = 0) async throws -> HelperOperation {
+        let current = generation
         guard selectedAssistantID == "helper", routeIsolationEnabled,
               let endpoint, let token else {
             throw FerryClient.ClientError.rejected("请先连接支持助手操作的 Ferry Windows 服务。")
         }
         let request = try await client.requestHelperOperation(
             endpoint: endpoint, token: token, action: action, path: path, offset: offset)
+        guard current == generation else { throw CancellationError() }
         let pollingAttempts = action == "send_file" ? 1600 : 90
         for _ in 0..<pollingAttempts {
+            guard current == generation else { throw CancellationError() }
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(750))
             let result = try await client.pollHelperOperation(
                 endpoint: endpoint, token: token, id: request.id)
+            guard current == generation else { throw CancellationError() }
             if result.status == "done" { return result }
             if result.status == "failed" {
                 throw FerryClient.ClientError.rejected(result.error ?? "电脑未完成操作")
@@ -1312,6 +1318,7 @@ final class AppModel {
         lastProfileRefresh = nil
         lastFavoritesFetch = nil
         favoriteActions = []
+        isFlushingOutbox = false
         isFlushingFavoriteActions = false
         isRefreshingFavorites = false
         unreadAssistantIDs = []
