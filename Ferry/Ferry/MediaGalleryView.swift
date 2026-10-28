@@ -13,6 +13,9 @@ struct MediaGalleryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
     @State private var wantsGrid = false
+    @State private var gridAtTop = true
+    @State private var gridDrag: CGFloat = 0
+    @State private var gridClosing = false
     /// Freeze this chat's media identity for the life of the viewer; a server
     /// refresh cannot silently repopulate the pager with another chat's media.
     @State private var scopedMessages: [MessagePayload]
@@ -83,12 +86,49 @@ struct MediaGalleryView: View {
                 }
             }
             .background(Color.chatBackground.ignoresSafeArea())
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, offset in
+                gridAtTop = offset <= 2
+            }
             .navigationTitle("媒体")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() } }
             }
         }
+        .background(Color.chatBackground.ignoresSafeArea())
+        .offset(y: gridDrag)
+        // Same pull-down interaction as the composer album: only dismiss
+        // when starting at the top; otherwise keep the normal grid scroll.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                .onChanged { value in
+                    guard !gridClosing, gridAtTop,
+                          value.translation.height > 0,
+                          value.translation.height > abs(value.translation.width) else { return }
+                    gridDrag = value.translation.height
+                }
+                .onEnded { value in
+                    guard !gridClosing else { return }
+                    let shouldClose = gridDrag > 140 ||
+                        (gridDrag > 40 && value.predictedEndTranslation.height > 240)
+                    if shouldClose {
+                        gridClosing = true
+                        withAnimation(.timingCurve(0.2, 0.75, 0.28, 1, duration: 0.38)) {
+                            gridDrag = UIScreen.main.bounds.height + 100
+                        }
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(390))
+                            dismiss()
+                        }
+                    } else {
+                        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                            gridDrag = 0
+                        }
+                    }
+                }
+        )
     }
 
     @ViewBuilder private func cell(for message: MessagePayload) -> some View {
@@ -283,7 +323,9 @@ private struct MediaPagerView: View {
                     }
                 }
             } else if let url = videoURLs[message.id] {
-                VideoPlayerView(url: url, name: name, mediaType: mediaType)
+                VideoPlayerView(url: url, name: name, mediaType: mediaType,
+                                onClose: onCloseViewer,
+                                onVerticalDrag: { verticalDrag = $0 })
             } else {
                 Color.clear.overlay { ProgressView().tint(.white) }
                     .task { await prepareVideo(message) }
