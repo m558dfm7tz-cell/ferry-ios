@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Rapid successive iOS fixes should never leave older unsigned archives
+# queued and consuming additional macOS runner minutes.
+concurrency:
+  group: ios-integration-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unsigned-ios-archive:
     runs-on: macos-15
