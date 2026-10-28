@@ -100,6 +100,15 @@ struct ComposerTextView: UIViewRepresentable {
         textView.textColor = textColor
         textView.tintColor = tintColor
         textView.placeholderLabel.isHidden = !text.isEmpty
+        // The composer offsets its native view by 4pt when the empty input
+        // gains focus, to align the caret with typed text. Counter-translate
+        // only the UILabel (not UITextView insets/contentOffset/selection).
+        // The unfocused placeholder and the focused empty placeholder stay
+        // at exactly the same visual Y position.
+        let compensatePlaceholder = !alwaysScrolls && minHeight >= 44 &&
+            text.isEmpty && isFocused.wrappedValue
+        textView.placeholderLabel.transform = CGAffineTransform(
+            translationX: 0, y: compensatePlaceholder ? -4 : 0)
 
         if let command = insertCommand {
             // Apply on the next main-queue turn and clear the binding there
