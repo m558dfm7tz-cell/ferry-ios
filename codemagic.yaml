@@ -35,7 +35,7 @@ workflows:
           APP="$CM_BUILD_DIR/build/Ferry-iOS.xcarchive/Products/Applications/Ferry.app"
           test -d "$APP"
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
-          test "$BUNDLE_ID" = "com.ferry.test" || {
+          test "$BUNDLE_ID" = "com.ferry.test.multi" || {
             echo "Unexpected app identifier: $BUNDLE_ID"
             exit 1
           }
@@ -70,6 +70,31 @@ workflows:
           echo "Building commit $(git rev-parse HEAD)" | tee "$CM_BUILD_DIR/build/source-commit.txt"
           xcodebuild -version
           xcrun simctl list devices available
+      - name: Build an isolated side-by-side iPhone test app
+        script: |
+          set -euo pipefail
+          # These changes occur in Codemagic's ephemeral checkout ONLY.
+          # Keep the repository's normal bundle ID for future production merges.
+          python3 - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path("Ferry/Ferry.xcodeproj/project.pbxproj"),
+              Path("Ferry/Ferry.entitlements"),
+              Path("Ferry/Ferry/Ferry.entitlements"),
+              Path("Ferry/FerryShare/FerryShare.entitlements"),
+              Path("Ferry/Ferry/ShareInbox.swift"),
+              Path("Ferry/FerryShare/ShareViewController.swift"),
+          ]
+          for path in paths:
+              if not path.exists():
+                  raise SystemExit(f"Missing iOS bundle config: {path}")
+              before = path.read_text()
+              after = before.replace("com.ferry.test", "com.ferry.test.multi")
+              if before == after:
+                  raise SystemExit(f"Expected bundle/group marker missing in {path}")
+              path.write_text(after)
+          print("Isolated test bundle: com.ferry.test.multi")
+          PY
       - name: Archive unsigned iPhone Release build
         script: |
           set -euo pipefail
