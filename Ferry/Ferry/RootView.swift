@@ -35,7 +35,17 @@ struct RootView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            Task { await importSystemInbox() }
+            Task {
+                await importSystemInbox()
+                // After updating Go/FerryHelper on Windows, the previously
+                // paired phone may return to Ferry without logging in again.
+                // Recheck runtime transfer capability on foreground so the
+                // 互传 composer can recover as soon as the correct Helper
+                // connects, without weakening the server route guard.
+                if model.phase == .connected {
+                    _ = await model.retryVerifiedRouting()
+                }
+            }
         }
         .onChange(of: model.phase == .connected) { _, active in
             if active { discoverIncomingShare() }
