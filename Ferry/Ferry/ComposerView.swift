@@ -334,8 +334,10 @@ struct ComposerView: View {
     private var plusButton: some View {
         Button {
             if showPlus {
-                showPlus = false
+                // End the native first responder BEFORE resetting its inputView,
+                // otherwise the software keyboard flashes for one frame.
                 dismissComposerKeyboard()
+                showPlus = false
             } else {
                 pendingAlbumAfterKeyboard = false
                 // Keep the UITextView first responder and change only its
