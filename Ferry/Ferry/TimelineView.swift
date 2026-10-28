@@ -48,6 +48,10 @@ struct TimelineView: View {
     @State private var jumpHoldingID: String?
     @State private var keyboardVisible = false
     @State private var keyboardWasAtBottom = false
+    // Pin the transcript throughout the keyboard's entire safe-area animation.
+    // A media row loading must not flip the bottom anchor mid-transition.
+    @State private var keyboardAnchorLocked = false
+    @State private var mediaAnchorTask: Task<Void, Never>?
     @State private var followMediaMessageID: String?
 
     private static let bottomAnchorID = "timeline-bottom"
@@ -58,6 +62,8 @@ struct TimelineView: View {
         .publisher(for: UIResponder.keyboardWillShowNotification)
     private let keyboardWillHidePublisher = NotificationCenter.default
         .publisher(for: UIResponder.keyboardWillHideNotification)
+    private let keyboardDidHidePublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardDidHideNotification)
 
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
@@ -358,7 +364,7 @@ struct TimelineView: View {
                     // iOS 18 automatically keeps the bottom attached as the
                     // keyboard changes the viewport size. Do not force another
                     // scrollTo after its animation (costly with media rows).
-                    .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
+                    .defaultScrollAnchor((isFollowingTail || keyboardAnchorLocked) ? .bottom : nil, for: .sizeChanges)
                 .onChange(of: pendingScroll) { _, request in
                     guard let request else { return }
                     proxy.scrollTo(request.id, anchor: request.anchor)
@@ -421,7 +427,10 @@ struct TimelineView: View {
                     // of the keyboard animation (the visible height changes), so
                     // only write when a value actually flips: an unconditional
                     // @State write re-evaluated the whole body every frame.
-                    if state.atBottom != old.atBottom {
+                    // During keyboard geometry transitions, offset/height
+                    // calculations are transient. Writing false here rebuilds
+                    // every media row and can detach the bottom anchor.
+                    if !keyboardAnchorLocked && state.atBottom != old.atBottom {
                         atBottom = state.atBottom
                         if state.atBottom { showNewPill = false }
                     }
@@ -454,6 +463,9 @@ struct TimelineView: View {
                 }
                 .onReceive(keyboardWillHidePublisher) { note in
                     restoreAfterKeyboard(note)
+                }
+                .onReceive(keyboardDidHidePublisher) { _ in
+                    completeKeyboardDismissal()
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
                     if !atBottom {
@@ -580,16 +592,32 @@ struct TimelineView: View {
     /// scrollTo, which previously jolted media-heavy conversations.
     private func followKeyboard(_ note: Notification) {
         guard !keyboardVisible else { return }
-        keyboardWasAtBottom = isFollowingTail && atBottom
+        keyboardWasAtBottom = isFollowingTail && !transcriptUserDragging
+        keyboardAnchorLocked = keyboardWasAtBottom
         keyboardVisible = true
+        mediaAnchorTask?.cancel()
         keyboardFollowTask?.cancel()
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
         guard keyboardVisible else { return }
         keyboardVisible = false
-        keyboardWasAtBottom = false
+        // Keep the bottom pin until keyboardDidHide. Releasing it at
+        // keyboardWillHide caused media rows to remain stranded above the
+        // newly enlarged viewport.
         keyboardFollowTask?.cancel()
+    }
+
+    private func completeKeyboardDismissal() {
+        let shouldRestore = keyboardAnchorLocked && keyboardWasAtBottom &&
+            isFollowingTail && !transcriptUserDragging &&
+            jumpHoldingID == nil && !showAlbumPicker && !showAttachmentPanel
+        keyboardAnchorLocked = false
+        keyboardWasAtBottom = false
+        guard shouldRestore else { return }
+        // One post-animation correction for media heights, never a timed
+        // repeated scroll during the keyboard animation itself.
+        queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
     }
 
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
@@ -660,11 +688,16 @@ struct TimelineView: View {
             return
         }
         guard isFollowingTail, !transcriptUserDragging else { return }
-        // LazyVStack remeasures an image on the next layout pass. Following
-        // every media load (not only the first) fixes consecutive photo sends.
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard jumpHoldingID == nil, isFollowingTail, !transcriptUserDragging else { return }
+        // A burst of many image/video downloads used to enqueue a separate
+        // scrollTo for EVERY image (80ms after each arrival). Coalesce the
+        // entire burst into one anchor correction and never scroll the list
+        // while the keyboard is animating.
+        mediaAnchorTask?.cancel()
+        mediaAnchorTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled, !keyboardVisible, !keyboardAnchorLocked,
+                  jumpHoldingID == nil, isFollowingTail,
+                  !transcriptUserDragging else { return }
             queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
         }
     }
