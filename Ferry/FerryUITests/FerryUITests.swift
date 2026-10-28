@@ -45,6 +45,8 @@ final class FerryUITests: XCTestCase {
         let imageBubble = app.buttons["bubble.image"].firstMatch
         XCTAssertTrue(imageBubble.waitForExistence(timeout: 8))
         tap(imageBubble)
+        print("FERRY_MEDIA_AFTER_TAP_FRAME " + String(describing: imageBubble.frame))
+        print("FERRY_MEDIA_AFTER_TAP_HIERARCHY\n" + app.debugDescription)
         let grid = app.buttons["viewer-open-gallery"].firstMatch
         XCTAssertTrue(grid.waitForExistence(timeout: 8),
                       "chat photo should open full-screen preview first")
@@ -68,6 +70,7 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(file.waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["composer-attachment-camera"].exists)
         tap(input)
+        print("FERRY_KEYBOARD_AFTER_TAP_HIERARCHY\n" + app.debugDescription)
         XCTAssertFalse(file.waitForExistence(timeout: 2),
                        "attachment input must switch back to software keyboard")
     }
