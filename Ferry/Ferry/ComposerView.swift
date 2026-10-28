@@ -757,7 +757,7 @@ private struct HelperQuickActionsView: View {
                 Task {
                     defer { busy = false }
                     do { _ = try await model.helperOperation(action: "screenshot") }
-                    catch { error = error.localizedDescription }
+                    catch { self.error = error.localizedDescription }
                 }
             } label: {
                 Label("截图", systemImage: "camera.viewfinder")
@@ -891,7 +891,7 @@ private struct HelperFileBrowserView: View {
             entries = try await model.helperOperation(
                 action: path == nil ? "drives" : "list", path: path ?? "")
         } catch {
-            error = error.localizedDescription
+            self.error = error.localizedDescription
         }
     }
 
@@ -903,7 +903,7 @@ private struct HelperFileBrowserView: View {
             folders.append(folder)
             entries = found
         } catch {
-            error = error.localizedDescription
+            self.error = error.localizedDescription
         }
     }
 
@@ -920,7 +920,7 @@ private struct HelperFileBrowserView: View {
             _ = try await model.helperOperation(action: "send_file", path: file.path)
             dismiss()
         } catch {
-            error = error.localizedDescription
+            self.error = error.localizedDescription
         }
     }
 }
