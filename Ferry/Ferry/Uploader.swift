@@ -107,8 +107,9 @@ final class Uploader {
     /// Enqueue a file by streaming it into a multipart body temp file (never
     /// reads the whole file into memory). No client-side size cap.
     @discardableResult
-    func enqueue(fileURL: URL, name: String, mediaType: String) -> String? {
-        let destination = destinationProvider?()
+    func enqueue(fileURL: URL, name: String, mediaType: String,
+                 destinationOverride: MessageDestination? = nil) -> String? {
+        let destination = destinationOverride ?? destinationProvider?()
         if routingEnabled?() == true && destination == nil {
             return "助手身份尚未同步，不能发送此文件。"
         }
