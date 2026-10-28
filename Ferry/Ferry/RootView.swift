@@ -7,6 +7,8 @@ struct RootView: View {
     @State private var shareRecipient: String?
     @State private var shareError: String?
     @State private var sharingNow = false
+    @State private var importingNow = false
+    @State private var importError: String?
 
     var body: some View {
         ZStack {
@@ -21,13 +23,29 @@ struct RootView: View {
         }
         .onOpenURL { url in
             guard url.isFileURL else { return }
-            Task { await importExternalFile(url) }
+            Task {
+                // Open In may have already copied into Documents/Inbox.
+                // Use the same single importer as the foreground scan.
+                if url.path.contains("/Documents/Inbox/") {
+                    await importSystemInbox()
+                } else {
+                    await importExternalFile(url)
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { await importSystemInbox() }
         }
         .onChange(of: model.phase == .connected) { _, active in
             if active { discoverIncomingShare() }
+        }
+        .alert("文件导入失败", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("好", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "")
         }
         .sheet(item: $sharedBatch, onDismiss: {
             shareRecipient = nil
@@ -46,6 +64,9 @@ struct RootView: View {
     }
 
     private func importSystemInbox() async {
+        guard !importingNow else { return }
+        importingNow = true
+        defer { importingNow = false }
         await Task.detached(priority: .userInitiated) {
             FerryShareInbox.collectSystemInbox()
         }.value
@@ -59,8 +80,7 @@ struct RootView: View {
             }.value
             if imported { discoverIncomingShare() }
         } catch {
-            shareError = "无法导入文件：\(error.localizedDescription)"
-            discoverIncomingShare()
+            importError = error.localizedDescription
         }
     }
 
