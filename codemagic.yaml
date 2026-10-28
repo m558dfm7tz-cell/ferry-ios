@@ -50,12 +50,12 @@ workflows:
       - build/Ferry-build.log
 
   ferry-ios-multi-computer-validation:
-    name: Ferry iOS - multi-computer tests and unsigned IPA
+    name: Ferry iOS - multi-computer unsigned IPA (manual test)
     instance_type: mac_mini_m2
     max_build_duration: 45
     environment:
       xcode: 16.4
-    # Manual only: select feat/multi-computer-isolation-20261029 in Codemagic.
+    # Manual-only compile and IPA packaging. No simulator/UI tests; user validates on their device.
     triggering:
       events: []
     scripts:
@@ -70,28 +70,6 @@ workflows:
           echo "Building commit $(git rev-parse HEAD)" | tee "$CM_BUILD_DIR/build/source-commit.txt"
           xcodebuild -version
           xcrun simctl list devices available
-      - name: Run existing iOS simulator UI regressions
-        script: |
-          set -euo pipefail
-          # Select an installed iPhone simulator instead of hard-coding a runtime.
-          SIMULATOR_ID="$(xcrun simctl list devices available |
-            sed -nE 's/.*iPhone 16 \(([0-9A-F-]{36})\).*/\1/p' | head -n 1)"
-          if [ -z "$SIMULATOR_ID" ]; then
-            SIMULATOR_ID="$(xcrun simctl list devices available |
-              sed -nE 's/.*iPhone[^()]*\(([0-9A-F-]{36})\).*/\1/p' | head -n 1)"
-          fi
-          test -n "$SIMULATOR_ID" || { echo "No available iPhone simulator"; exit 1; }
-          xcrun simctl boot "$SIMULATOR_ID" || true
-          xcrun simctl bootstatus "$SIMULATOR_ID" -b
-          xcodebuild test \
-            -project Ferry/Ferry.xcodeproj \
-            -scheme Ferry \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
-            -parallel-testing-enabled NO \
-            -resultBundlePath "$CM_BUILD_DIR/build/Ferry-multi-computer-tests.xcresult" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            2>&1 | tee "$CM_BUILD_DIR/build/Ferry-multi-computer-tests.log"
       - name: Archive unsigned iPhone Release build
         script: |
           set -euo pipefail
@@ -125,6 +103,5 @@ workflows:
           echo "Archive packaged. Real-device verification is still required."
     artifacts:
       - build/multi-computer-ipa/Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa
-      - build/Ferry-multi-computer-tests.log
       - build/Ferry-multi-computer-build.log
       - build/source-commit.txt
