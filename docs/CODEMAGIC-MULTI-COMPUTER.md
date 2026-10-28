@@ -26,3 +26,10 @@
 本分支已移除新建的 GitHub iOS 验证工作流，并将此前四个 iOS GitHub Actions 工作流改为仅 `workflow_dispatch`（手动）形式，避免在此分支成为基线后自动运行。**`main` 分支尚未合并这些修改，所以 main 上已有的自动 GitHub Actions 触发器仍在；本分支不能替代对 main 的管理。**
 
 构建配置失败时只需修复开发分支的 `codemagic.yaml`；不会影响 Go/Windows/Helper 或生产数据库。若放弃新方案，可从该开发分支恢复 `codemagic.yaml` 的原始 `main` 版本，不需要撤销 iOS 业务代码。
+
+
+### Side-by-side installation safety (2026-10-29)
+
+The manual multi-computer Codemagic workflow now applies an **ephemeral build-only** bundle-ID and App Group rewrite in its checkout: `com.ferry.test.multi` and `group.com.ferry.test.multi.shared`. This keeps the unsigned test IPA separate from an installed regular Ferry app using `com.ferry.test`; no production project settings are committed. After external signing (e.g. Sideloadly), verify the signed IPA still uses the multi-computer test identifier before installing. The isolated test app has new Keychain, local storage and App Group and therefore must be paired to each test server independently. If the signing utility rewrites the bundle identifier to conflict with production, **do not install it**. Native share-extension capabilities depend on external signing entitlements and must be tested separately.
+
+The workflow deliberately does **not** run iOS UI tests or simulator tests. Its Release IPA archive has not yet been confirmed successful in Codemagic. Build outputs are unsigned and not App Store installable.
