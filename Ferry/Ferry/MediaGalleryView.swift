@@ -248,6 +248,8 @@ private struct MediaPagerView: View {
             .accessibilityIdentifier("viewer-open-gallery")
             .padding(.top, max(12, safeTop + 6))
             .padding(.trailing, 16)
+            .opacity(abs(verticalDrag) > 0.5 ? 0 : 1)
+            .allowsHitTesting(abs(verticalDrag) <= 0.5)
         }
         .overlay(alignment: .top) {
             Text("\(currentIndex + 1) / \(messages.count)")
@@ -256,6 +258,7 @@ private struct MediaPagerView: View {
                 .padding(.top, max(12, safeTop + 18))
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("media-pager-position")
+                .opacity(abs(verticalDrag) > 0.5 ? 0 : 1)
         }
         .overlay { if showToast { toastView } }
         .statusBarHidden()
