@@ -20,16 +20,25 @@ struct FerrySharedBatch: Codable, Identifiable {
 }
 
 enum FerryShareInbox {
-    // Personal-Team / Sideloadly compatible: iOS copies "Open In" documents
-    // to this app's own Documents/Inbox. Do NOT request an App Group.
+    // Native Share Extensions run in a different sandbox. Both targets must
+    // use the same signed App Group; standalone Open In still uses Documents
+    // as a compatibility fallback when a group is unavailable.
+    static let appGroupID = "group.com.ferry.test.shared"
     private static let folder = "IncomingShares"
 
     private static var documents: URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 
+    static var hasShareExtensionStorage: Bool {
+        FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) != nil
+    }
+
     static func root() -> URL? {
-        documents?.appendingPathComponent(folder, isDirectory: true)
+        let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID)
+        return (group ?? documents)?.appendingPathComponent(folder, isDirectory: true)
     }
 
     /// Copy a document delivered by iOS Open In / Copy to Ferry into a durable
