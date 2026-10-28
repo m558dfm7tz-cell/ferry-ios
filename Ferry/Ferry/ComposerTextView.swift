@@ -324,8 +324,12 @@ struct ComposerTextView: UIViewRepresentable {
 }
 
 /// `UITextView` subclass that hosts a placeholder label (shown when empty).
-final class ComposerUITextView: UITextView {
+final class ComposerUITextView: UITextView, UIEditMenuInteractionDelegate {
     let placeholderLabel = UILabel()
+    // A separate native edit-menu interaction provides a deterministic fallback
+    // when UIKit moves the selection handles but does not display its own menu.
+    private lazy var fallbackEditMenu = UIEditMenuInteraction(delegate: self)
+    private var lastFallbackMenuAt: Date = .distantPast
     var isShowingAttachmentInput = false
     var onTapWhileShowingAttachment: (() -> Void)?
     fileprivate var attachmentTap: UITapGestureRecognizer?
@@ -349,6 +353,84 @@ final class ComposerUITextView: UITextView {
         tap.isEnabled = false
         attachmentTap = tap
         addGestureRecognizer(tap)
+
+        addInteraction(fallbackEditMenu)
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleEditLongPress(_:)))
+        longPress.minimumPressDuration = 0.55
+        longPress.cancelsTouchesInView = false
+        longPress.delaysTouchesBegan = false
+        longPress.delegate = attachmentTapDelegate
+        addGestureRecognizer(longPress)
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleEditDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delaysTouchesBegan = false
+        doubleTap.delegate = attachmentTapDelegate
+        addGestureRecognizer(doubleTap)
+    }
+
+    @objc private func handleEditLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .ended, !isShowingAttachmentInput else { return }
+        requestFallbackEditMenu(at: gesture.location(in: self))
+    }
+
+    @objc private func handleEditDoubleTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, !isShowingAttachmentInput else { return }
+        requestFallbackEditMenu(at: gesture.location(in: self))
+    }
+
+    private func requestFallbackEditMenu(at location: CGPoint) {
+        // Let UIKit commit its native double-tap selection before reading the
+        // range or showing the fallback. The recognizers never cancel its touch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.window != nil, self.isEditable, self.isSelectable,
+                  !self.isShowingAttachmentInput else { return }
+            guard Date().timeIntervalSince(self.lastFallbackMenuAt) >= 0.4 else { return }
+            let hasSelection = self.selectedRange.length > 0
+            let canPaste = UIPasteboard.general.hasStrings
+            let hasText = !self.text.isEmpty
+            guard hasSelection || canPaste || hasText else { return }
+            self.lastFallbackMenuAt = Date()
+            let anchor: CGPoint
+            if let selection = self.selectedTextRange, !selection.isEmpty {
+                let rect = self.firstRect(for: selection)
+                anchor = CGPoint(x: rect.midX, y: rect.minY)
+            } else {
+                anchor = location
+            }
+            self.fallbackEditMenu.presentEditMenu(
+                with: UIEditMenuConfiguration(identifier: nil, sourcePoint: anchor))
+        }
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction,
+                             menuFor configuration: UIEditMenuConfiguration,
+                             suggestedActions: [UIMenuElement]) -> UIMenu? {
+        // Explicit commands are essential: on some iPhone versions the native
+        // suggestions array is empty although a text selection is active.
+        var actions: [UIMenuElement] = []
+        let count = (text as NSString).length
+        if selectedRange.length > 0 {
+            actions.append(UIAction(title: "剪切", image: UIImage(systemName: "scissors")) { [weak self] _ in
+                self?.cut(nil)
+            })
+            actions.append(UIAction(title: "复制", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                self?.copy(nil)
+            })
+        }
+        if UIPasteboard.general.hasStrings {
+            actions.append(UIAction(title: "粘贴", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+                self?.paste(nil)
+            })
+        }
+        if count > 0 && selectedRange.length < count {
+            actions.append(UIAction(title: "全选") { [weak self] _ in
+                self?.selectAll(nil)
+            })
+        }
+        return actions.isEmpty ? nil : UIMenu(children: actions)
     }
 
     required init?(coder: NSCoder) {
@@ -386,23 +468,12 @@ final class ComposerUITextView: UITextView {
         placeholderLabel.frame = CGRect(origin: origin,
                                         size: CGSize(width: bounds.width - origin.x * 2,
                                                      height: placeholderLabel.font.lineHeight))
-        // Center actual text/caret and placeholder in the same capsule,
-        // including after UIKit changes the keyboard's inputView. Keep the
-        // original multiline sizing/scrolling for a growing composer.
-        // UIKit may wrap a single paragraph to 2+ visual lines without any
-        // newline character. Only center an actual *one-line* layout.
-        layoutManager.ensureLayout(for: textContainer)
-        let usedHeight = layoutManager.usedRect(for: textContainer).height
-        let actualLineHeight = font?.lineHeight ?? 20
-        if bounds.height <= 60, usedHeight <= actualLineHeight + 2 {
-            let lineHeight = font?.lineHeight ?? 20
-            let center = max(0, (bounds.height - lineHeight) / 2)
-            if abs(textContainerInset.top - center) > 0.5 {
-                textContainerInset = UIEdgeInsets(top: center, left: 0,
-                                                 bottom: center, right: 0)
-            }
-            if abs(contentOffset.y) > 0.5 { contentOffset = .zero }
-        }
+        // Do not change textContainerInset or contentOffset while UIKit is
+        // laying out selection handles / its edit menu. refreshLayout(_:)
+        // already handles the one-line vertical centering when text changes.
+        // Mutating either property from layoutSubviews can repeatedly reset
+        // selection rects and hide the blue selection highlight.
+
     }
 }
 
