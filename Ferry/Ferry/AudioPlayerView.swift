@@ -32,6 +32,7 @@ struct AudioPlayerView: View {
                 Slider(value: $currentTime, in: 0...max(duration, 0.001)) { editing in
                     if !editing { player?.currentTime = currentTime }
                 }
+                .tint(.cyan)
 
                 HStack {
                     Text(TimeText.mmss(currentTime)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -51,6 +52,7 @@ struct AudioPlayerView: View {
                         .accessibilityLabel("前进 15 秒")
                 }
                 .font(.title)
+                .foregroundStyle(.white)
                 .buttonStyle(.plain)
 
                 if let errorMessage {
@@ -64,8 +66,12 @@ struct AudioPlayerView: View {
                                   onToast: { text in flashToast(text) })
             }
             .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.chatBackground.ignoresSafeArea())
             .navigationTitle("音频")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color.chatBackground, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() } }
             }
