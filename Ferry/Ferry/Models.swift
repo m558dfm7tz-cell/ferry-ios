@@ -466,3 +466,10 @@ struct PendingDeletion: Codable, Equatable, Identifiable, Sendable {
         self.name = name
     }
 }
+
+// Non-secret saved-server shortcut; tokens stay in Keychain.
+struct SavedComputer: Codable, Identifiable, Equatable {
+    var origin: String
+    var name: String
+    var id: String { origin }
+}
