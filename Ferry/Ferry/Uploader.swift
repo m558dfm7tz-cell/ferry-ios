@@ -51,24 +51,36 @@ final class Uploader {
     private var token: String?
     private var activeTask: URLSessionUploadTask?
     private var activeItemID: UUID?
+    /// Changes whenever an upload session is cancelled or replaced.
+    /// Callbacks from a previous computer may still arrive after cancellation;
+    /// they must never modify the new computer's queue or auth state.
+    private var sessionEpoch = UUID()
 
     /// Reconfigure for a session, or tear everything down when the device is
     /// no longer connected (nil endpoint/token).
     func configure(endpoint: ServerEndpoint?, token: String?) {
+        // Never reuse one URLSession and its callbacks across two server/token
+        // identities. This also cancels queued multipart uploads on a switch.
+        if self.endpoint != endpoint || self.token != token {
+            teardown()
+        }
         self.endpoint = endpoint
         self.token = token
-        if endpoint == nil || token == nil {
-            teardown()
-        } else {
+        if endpoint != nil && token != nil {
             ensureSession()
         }
     }
 
     func teardown() {
+        // Invalidate callback identity before cancelling, since cancellation
+        // itself triggers asynchronous delegate completion.
+        sessionEpoch = UUID()
         activeTask?.cancel()
         session?.invalidateAndCancel()
         session = nil
         delegate = nil
+        endpoint = nil
+        token = nil
         for item in items {
             try? FileManager.default.removeItem(at: item.bodyURL)
             if let source = item.sourceURL { try? FileManager.default.removeItem(at: source) }
@@ -215,14 +227,17 @@ final class Uploader {
 
     private func ensureSession() {
         guard session == nil else { return }
+        let epoch = sessionEpoch
         let d = UploadSessionDelegate()
         d.onProgress = { [weak self] progress in
-            guard let self, let id = self.activeItemID,
+            guard let self, self.sessionEpoch == epoch,
+                  let id = self.activeItemID,
                   let index = self.items.firstIndex(where: { $0.id == id }) else { return }
             self.items[index].progress = progress
         }
         d.onComplete = { [weak self] data, response, error in
-            self?.finish(data: data, response: response, error: error)
+            guard let self, self.sessionEpoch == epoch else { return }
+            self.finish(data: data, response: response, error: error)
         }
         delegate = d
         // Transfer session with generous timeouts for large files; JSON API
