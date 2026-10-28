@@ -138,7 +138,9 @@ struct ImageViewer: View {
                             onCancel: { showEditor = false })
         }
         .statusBarHidden()
-        .task {
+        .task(id: loadFullImage != nil) {
+            // A TabView may create the page before it becomes visible.
+            // Start loading the original when the page becomes active.
             if let loadFullImage {
                 originalImage = await loadFullImage()
             }
