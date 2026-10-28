@@ -468,6 +468,7 @@ final class AppModel {
     private func activate(space: SpaceKey) {
         spaceKey = space
         localStore.activate(space: space)
+        reviewStore.activate(space: space)
         assistantStore.activate(space: space)
         avatarStore.activate(space: space)
         VideoThumbnailCache.setSpace(space)
