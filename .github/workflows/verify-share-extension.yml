@@ -1,0 +1,41 @@
+name: Verify native iOS Share Extension
+
+on:
+  push:
+    branches: [feature/ios-share-extension-20261029]
+  workflow_dispatch:
+
+concurrency:
+  group: ferry-ios-share-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-share-extension:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_16.4.app ]; then sudo xcode-select -s /Applications/Xcode_16.4.app; fi
+          xcodebuild -version
+      - name: Validate project and build both app and extension
+        run: |
+          set -euo pipefail
+          xcodebuild -list -project Ferry/Ferry.xcodeproj
+          xcodebuild -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/FerryShare.xcarchive" \
+            archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          host="$RUNNER_TEMP/FerryShare.xcarchive/Products/Applications/Ferry.app"
+          test -d "$host"
+          test -d "$host/PlugIns/FerryShare.appex"
+          /usr/libexec/PlistBuddy -c "Print NSExtension:NSExtensionPointIdentifier" "$host/PlugIns/FerryShare.appex/Info.plist" | grep -Fx 'com.apple.share-services'
+          echo "Share extension is embedded; device installation still needs matching App Group provisioning/signing"
