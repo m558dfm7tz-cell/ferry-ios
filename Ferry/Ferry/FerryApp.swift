@@ -29,7 +29,13 @@ final class FerryAppDelegate: NSObject, UIApplicationDelegate {
         MainActor.assumeIsolated {
             MessageNotifier.shared.configure(delegate: FerryNotificationDelegate.shared)
         }
-        Task { @MainActor in await MessageNotifier.shared.requestAuthorization() }
+        // UI automation has no paired device and tests only the in-app UI.
+        // An iOS permission sheet appearing over the first bubble tap consumes
+        // XCTest's interaction and makes the media test fail spuriously.
+        // Keep notification authorization unchanged for every normal launch.
+        if !ProcessInfo.processInfo.arguments.contains("-uiTestMock") {
+            Task { @MainActor in await MessageNotifier.shared.requestAuthorization() }
+        }
         return true
     }
 
