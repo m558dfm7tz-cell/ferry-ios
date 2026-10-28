@@ -12,6 +12,7 @@ struct MediaGalleryView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMessage: MessagePayload?
+    @State private var wantsGrid = false
     /// Freeze this chat's media identity for the life of the viewer; a server
     /// refresh cannot silently repopulate the pager with another chat's media.
     @State private var scopedMessages: [MessagePayload]
@@ -34,12 +35,15 @@ struct MediaGalleryView: View {
             if let selectedMessage {
                 MediaPagerView(messages: scopedMessages, startID: selectedMessage.id,
                                model: model,
-                               onReturnToGrid: { self.selectedMessage = nil },
+                               onReturnToGrid: {
+                                   wantsGrid = true
+                                   self.selectedMessage = nil
+                               },
                                onCloseViewer: {
                                    if initialMessageID != nil { dismiss() }
                                    else { self.selectedMessage = nil }
                                })
-            } else if initialMessageID != nil {
+            } else if initialMessageID != nil && !wantsGrid {
                 // A freshly resumed app may not have hydrated mediaMessages
                 // on the first frame. Never flash the all-media grid.
                 Color.black.ignoresSafeArea()
@@ -55,7 +59,7 @@ struct MediaGalleryView: View {
     }
 
     private func reconcileInitialMedia() {
-        guard let target = initialMessageID, selectedMessage == nil else { return }
+        guard !wantsGrid, let target = initialMessageID, selectedMessage == nil else { return }
         let current = model.mediaMessages
         guard let message = current.first(where: { $0.id == target }) else { return }
         scopedMessages = current
