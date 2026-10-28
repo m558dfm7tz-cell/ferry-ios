@@ -355,6 +355,10 @@ struct TimelineView: View {
                         }
                     })
                     .defaultScrollAnchor(.bottom)
+                    // iOS 18 automatically keeps the bottom attached as the
+                    // keyboard changes the viewport size. Do not force another
+                    // scrollTo after its animation (costly with media rows).
+                    .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
                 .onChange(of: pendingScroll) { _, request in
                     guard let request else { return }
                     proxy.scrollTo(request.id, anchor: request.anchor)
@@ -571,56 +575,21 @@ struct TimelineView: View {
         return model.avatarStore.media(for: id)
     }
 
-    /// Keep the newest message visible above the composer when the keyboard
-    /// comes up.
-    ///
-    /// Root cause of the bug this fixes: SwiftUI models the keyboard as a bottom
-    /// safe-area region, so showing it shrinks the ScrollView's **visible**
-    /// height while `contentOffset` stays exactly where it was. The
-    /// `.defaultScrollAnchor(.bottom)` above only re-anchors when the **content**
-    /// size changes (a new message, or first appearance), so it never fires for
-    /// the keyboard; the bottom `keyboardHeight` of the transcript ends up
-    /// underneath it. `atBottom` is captured here — before the layout shrinks —
-    /// and the re-anchor runs after the keyboard animation so the newest message
-    /// lands right above the composer. Someone reading older history is left
-    /// where they are.
+    /// A keyboard safe-area transition changes the ScrollView viewport.
+    /// The sizeChanges bottom anchor above tracks it without a delayed
+    /// scrollTo, which previously jolted media-heavy conversations.
     private func followKeyboard(_ note: Notification) {
-        // A keyboard height-change notification is not another keyboard opening.
-        // Scheduling on each one previously caused repeated jumps.
         guard !keyboardVisible else { return }
         keyboardWasAtBottom = isFollowingTail && atBottom
         keyboardVisible = true
-        guard keyboardWasAtBottom else { return }
-        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         keyboardFollowTask?.cancel()
-        keyboardFollowTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(max(duration, 0.1)))
-            guard !Task.isCancelled else { return }
-            // A single re-anchor on purpose. `scrollToBottomAnchor()` repeats
-            // itself 120ms later to catch LazyVStack height changes; during the
-            // keyboard animation that second scroll lands while the new layout
-            // is still settling and was the main source of the dropped frames.
-            guard keyboardVisible, isFollowingTail, !transcriptUserDragging else { return }
-            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
-        }
     }
 
-    /// A keyboard shrink changes viewport height again; restore the bottom only
-    /// if it was being followed before the keyboard appeared.
     private func restoreAfterKeyboard(_ note: Notification) {
         guard keyboardVisible else { return }
-        let shouldFollow = keyboardWasAtBottom && isFollowingTail
         keyboardVisible = false
         keyboardWasAtBottom = false
         keyboardFollowTask?.cancel()
-        guard shouldFollow else { return }
-        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
-        keyboardFollowTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(max(duration, 0.1) + 0.05))
-            guard !Task.isCancelled, isFollowingTail, !transcriptUserDragging,
-                  !showAlbumPicker, !showAttachmentPanel, jumpHoldingID == nil else { return }
-            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
-        }
     }
 
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
