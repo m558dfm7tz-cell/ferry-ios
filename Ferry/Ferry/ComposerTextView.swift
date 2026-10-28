@@ -361,7 +361,12 @@ final class ComposerUITextView: UITextView {
         // Center actual text/caret and placeholder in the same capsule,
         // including after UIKit changes the keyboard's inputView. Keep the
         // original multiline sizing/scrolling for a growing composer.
-        if bounds.height <= 60, !text.contains("\n") {
+        // UIKit may wrap a single paragraph to 2+ visual lines without any
+        // newline character. Only center an actual *one-line* layout.
+        layoutManager.ensureLayout(for: textContainer)
+        let usedHeight = layoutManager.usedRect(for: textContainer).height
+        let actualLineHeight = font?.lineHeight ?? 20
+        if bounds.height <= 60, usedHeight <= actualLineHeight + 2 {
             let lineHeight = font?.lineHeight ?? 20
             let center = max(0, (bounds.height - lineHeight) / 2)
             if abs(textContainerInset.top - center) > 0.5 {
