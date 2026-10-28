@@ -290,7 +290,36 @@ struct ComposerTextView: UIViewRepresentable {
             }
         }
 
-        // Native UITextView handles edit-menu actions without interception.
+        // iOS sometimes supplies an empty list of native actions when this
+        // UITextView lives inside a SwiftUI ScrollView and inputView has been
+        // replaced by the attachment panel. Explicitly supply the ordinary
+        // editing commands instead of silently presenting no menu.
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                      suggestedActions: [UIMenuElement]) -> UIMenu? {
+            var actions = suggestedActions
+            if actions.isEmpty {
+                if range.length > 0 {
+                    actions.append(UIAction(title: "剪切", image: UIImage(systemName: "scissors")) { [weak textView] _ in
+                        textView?.cut(nil)
+                    })
+                    actions.append(UIAction(title: "复制", image: UIImage(systemName: "doc.on.doc")) { [weak textView] _ in
+                        textView?.copy(nil)
+                    })
+                }
+                if UIPasteboard.general.hasStrings {
+                    actions.append(UIAction(title: "粘贴", image: UIImage(systemName: "doc.on.clipboard")) { [weak textView] _ in
+                        textView?.paste(nil)
+                    })
+                }
+            }
+            let textLength = (textView.text as NSString).length
+            if textLength > 0 && range.length < textLength {
+                actions.append(UIAction(title: "全选") { [weak textView] _ in
+                    textView?.selectAll(nil)
+                })
+            }
+            return actions.isEmpty ? nil : UIMenu(children: actions)
+        }
     }
 }
 
