@@ -51,6 +51,9 @@ struct TimelineView: View {
     // Pin the transcript throughout the keyboard's entire safe-area animation.
     // A media row loading must not flip the bottom anchor mid-transition.
     @State private var keyboardAnchorLocked = false
+    // Keyboard changes the viewport for many frames. These are not manual
+    // scroll gestures and must not detach a media-heavy transcript from tail.
+    @State private var keyboardTransitioning = false
     @State private var mediaAnchorTask: Task<Void, Never>?
     @State private var followMediaMessageID: String?
 
@@ -64,6 +67,8 @@ struct TimelineView: View {
         .publisher(for: UIResponder.keyboardWillHideNotification)
     private let keyboardDidHidePublisher = NotificationCenter.default
         .publisher(for: UIResponder.keyboardDidHideNotification)
+    private let keyboardDidShowPublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardDidShowNotification)
 
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
@@ -430,7 +435,8 @@ struct TimelineView: View {
                     // During keyboard geometry transitions, offset/height
                     // calculations are transient. Writing false here rebuilds
                     // every media row and can detach the bottom anchor.
-                    if !keyboardAnchorLocked && state.atBottom != old.atBottom {
+                    if !keyboardTransitioning && !keyboardAnchorLocked &&
+                       state.atBottom != old.atBottom {
                         atBottom = state.atBottom
                         if state.atBottom { showNewPill = false }
                     }
@@ -440,6 +446,13 @@ struct TimelineView: View {
                 }
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting {
+                        // UIKit keyboard resizing sometimes reports an
+                        // interacting phase while its safe area animates.
+                        // Do not mistake it for a user drag; keep the tail
+                        // pinned until the transition ends.
+                        guard !keyboardTransitioning else { return }
+                        keyboardAnchorLocked = false
+                        keyboardWasAtBottom = false
                         // A real user drag takes precedence over a timed jump.
                         if jumpHoldingID != nil {
                             jumpTask?.cancel()
@@ -466,6 +479,9 @@ struct TimelineView: View {
                 }
                 .onReceive(keyboardDidHidePublisher) { _ in
                     completeKeyboardDismissal()
+                }
+                .onReceive(keyboardDidShowPublisher) { _ in
+                    keyboardTransitioning = false
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
                     if !atBottom {
@@ -594,6 +610,7 @@ struct TimelineView: View {
         guard !keyboardVisible else { return }
         keyboardWasAtBottom = isFollowingTail && !transcriptUserDragging
         keyboardAnchorLocked = keyboardWasAtBottom
+        keyboardTransitioning = true
         keyboardVisible = true
         mediaAnchorTask?.cancel()
         keyboardFollowTask?.cancel()
@@ -602,6 +619,7 @@ struct TimelineView: View {
     private func restoreAfterKeyboard(_ note: Notification) {
         guard keyboardVisible else { return }
         keyboardVisible = false
+        keyboardTransitioning = true
         // Keep the bottom pin until keyboardDidHide. Releasing it at
         // keyboardWillHide caused media rows to remain stranded above the
         // newly enlarged viewport.
@@ -609,6 +627,7 @@ struct TimelineView: View {
     }
 
     private func completeKeyboardDismissal() {
+        keyboardTransitioning = false
         let shouldRestore = keyboardAnchorLocked && keyboardWasAtBottom &&
             isFollowingTail && !transcriptUserDragging &&
             jumpHoldingID == nil && !showAlbumPicker && !showAttachmentPanel
