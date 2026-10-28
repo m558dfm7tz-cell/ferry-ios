@@ -51,6 +51,23 @@ final class AppModel {
         return .assistant(name: name, id: id)
     }
 
+    /// External shares must choose an explicit, validated conversation. A
+    /// legacy server without verified route isolation cannot accept shared
+    /// files, because silent fallback could deliver to the wrong assistant.
+    func destinationForExternalShare(_ assistantID: String?) -> MessageDestination? {
+        guard routeIsolationEnabled else { return nil }
+        guard let assistantID else { return .transfer }
+        guard let assistant = assistantStore.assistants.first(where: { $0.id == assistantID }) else {
+            return nil
+        }
+        if assistant.isBuiltIn,
+           let base = AssistantStore.builtIn.first(where: { $0.id == assistant.id }) {
+            return .assistant(name: base.name, id: base.id)
+        }
+        guard let name = verifiedRouteNamesByID[assistantID], !name.isEmpty else { return nil }
+        return .assistant(name: name, id: assistantID)
+    }
+
     private func destinationForSelection() -> MessageDestination? {
         guard routeIsolationEnabled else { return nil }
         guard let selectedAssistantID else { return .transfer }
@@ -592,10 +609,10 @@ final class AppModel {
     /// accepted it. Shared by the composer (which then clears the draft) and by
     /// the 待查看 reply sheet. On failure `statusMessage` is set, as before.
     @discardableResult
-    func sendText(_ text: String) async -> Bool {
+    func sendText(_ text: String, destinationOverride: MessageDestination? = nil) async -> Bool {
         guard let endpoint, let token, !isSending else { return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        let destination = destinationForSelection()
+        let destination = destinationOverride ?? destinationForSelection()
         if routeIsolationEnabled && destination == nil {
             statusMessage = "助手身份尚未同步，取消发送以防消息误归类。"
             return false
