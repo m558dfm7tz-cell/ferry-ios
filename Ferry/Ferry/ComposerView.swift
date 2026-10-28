@@ -369,7 +369,10 @@ struct ComposerView: View {
                 // Placeholder is already vertically centered by its
                 // native UILabel. Only compensate the text when nonempty;
                 // shifting the empty UITextView moved "输入消息..." too low.
-                .offset(y: !model.draft.isEmpty && textFieldHeight <= 46 ? 4 : 0)
+                // Use the same visible caret baseline before and after
+                // typing. The placeholder itself is counter-shifted inside
+                // ComposerUITextView while the empty field has focus.
+                .offset(y: (focused.wrappedValue || !model.draft.isEmpty) && textFieldHeight <= 46 ? 4 : 0)
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
