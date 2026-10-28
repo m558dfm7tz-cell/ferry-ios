@@ -316,22 +316,32 @@ private struct MediaPagerView: View {
                     .task { await model.loadImage(for: message) }
             }
         } else if PreviewRouter.isVideo(mediaType, name: name) {
-            if !isCurrent {
-                Color.clear.overlay {
-                    if case .some(.some(let thumbnail)) = model.videoThumbnails[message.id] {
-                        Image(uiImage: thumbnail).resizable().scaledToFit()
-                    } else {
-                        Image(systemName: "play.rectangle")
-                            .font(.largeTitle).foregroundStyle(.white.opacity(0.7))
+            // Keep the same hosting page when the TabView selection changes.
+            // Swapping an offscreen thumbnail for an entirely different
+            // VideoPlayerView during an interactive swipe caused the visible
+            // snap-back, even though currentIndex had advanced correctly.
+            ZStack {
+                Color.black
+                if let url = videoURLs[message.id] {
+                    VideoPlayerView(url: url, name: name, mediaType: mediaType,
+                                    isActive: isCurrent,
+                                    onClose: onCloseViewer,
+                                    onVerticalDrag: { verticalDrag = $0 })
+                } else {
+                    Group {
+                        if case .some(.some(let thumbnail)) = model.videoThumbnails[message.id] {
+                            Image(uiImage: thumbnail).resizable().scaledToFit()
+                        } else {
+                            ProgressView().tint(.white)
+                        }
                     }
                 }
-            } else if let url = videoURLs[message.id] {
-                VideoPlayerView(url: url, name: name, mediaType: mediaType,
-                                onClose: onCloseViewer,
-                                onVerticalDrag: { verticalDrag = $0 })
-            } else {
-                Color.clear.overlay { ProgressView().tint(.white) }
-                    .task { await prepareVideo(message) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: isCurrent) {
+                if isCurrent && videoURLs[message.id] == nil {
+                    await prepareVideo(message)
+                }
             }
         } else {
             Color.black
