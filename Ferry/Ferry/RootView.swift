@@ -103,7 +103,7 @@ struct RootView: View {
         Button { shareRecipient = id; shareError = nil } label: {
             HStack(spacing: 12) {
                 Image(systemName: shareRecipient == id ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(shareRecipient == id ? Color.cyan : .secondary)
+                    .foregroundStyle(shareRecipient == id ? Color.cyan : Color.secondary)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).foregroundStyle(.primary)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
