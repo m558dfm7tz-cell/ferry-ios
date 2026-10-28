@@ -297,10 +297,8 @@ struct ComposerView: View {
                                  }
                              })
                 .frame(height: max(44, textFieldHeight), alignment: .center)
-                // Hard guarantee that long text can never be painted outside
-                // the capsule: the text view is sized by `textFieldHeight`, and
-                // clipping keeps a stale intermediate height from overflowing.
-                .clipped()
+                // Keep the native UITextView edit popover outside its
+                // SwiftUI layout bounds. The text view height is constrained.
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
