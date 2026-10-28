@@ -653,21 +653,26 @@ final class AppModel {
     /// Directory navigation stays out of messages/history; the existing Go
     /// device token is used without prompting the user again.
     func helperOperation(action: String, path: String = "") async throws -> [HelperDirectoryEntry] {
+        let result = try await helperOperationPage(action: action, path: path)
+        return result.entries ?? []
+    }
+
+    /// A result includes pagination state only for directory operations.
+    /// Do not write temporary folder data into the regular chat timeline.
+    func helperOperationPage(action: String, path: String = "", offset: Int = 0) async throws -> HelperOperation {
         guard selectedAssistantID == "helper", routeIsolationEnabled,
               let endpoint, let token else {
             throw FerryClient.ClientError.rejected("请先连接支持助手操作的 Ferry Windows 服务。")
         }
         let request = try await client.requestHelperOperation(
-            endpoint: endpoint, token: token, action: action, path: path)
-        // Browsing normally completes in seconds; uploading a large video
-        // may need many minutes. Match the Go queue's longer file TTL.
+            endpoint: endpoint, token: token, action: action, path: path, offset: offset)
         let pollingAttempts = action == "send_file" ? 1600 : 90
         for _ in 0..<pollingAttempts {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(750))
             let result = try await client.pollHelperOperation(
                 endpoint: endpoint, token: token, id: request.id)
-            if result.status == "done" { return result.entries ?? [] }
+            if result.status == "done" { return result }
             if result.status == "failed" {
                 throw FerryClient.ClientError.rejected(result.error ?? "电脑未完成操作")
             }
