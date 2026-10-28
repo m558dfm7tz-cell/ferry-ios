@@ -391,7 +391,9 @@ final class AppModel {
             serverAddress = endpoint.origin
             do { try credentials.save(token: claim.token, for: endpoint.origin) }
             catch { credentialWarning = error.localizedDescription }
-            let space = SpaceKey(origin: endpoint.origin, password: accessPassword)
+            // Reuse the original space even after the access password changes.
+            // This preserves legacy favorites, avatars, hidden IDs and media.
+            let space = space(for: endpoint.origin)
             rememberSpace(space, for: endpoint.origin)
             activate(space: space)
             accessPassword = ""
