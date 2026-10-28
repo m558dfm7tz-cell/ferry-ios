@@ -34,10 +34,26 @@ struct ImageViewer: View {
     private var isDraggingImage: Bool { abs(verticalDragOffset) > 0.5 }
 
     private var previewScale: CGFloat {
-        max(CGFloat(0.88), CGFloat(1) - abs(verticalDragOffset) / CGFloat(2000))
+        // Continuously follow the finger instead of barely shrinking (old
+        // 0.88 minimum was reached only after ~240pt of movement).
+        max(CGFloat(0.68), CGFloat(1) - abs(verticalDragOffset) / CGFloat(640))
     }
     private var previewOpacity: Double {
-        Double(max(CGFloat(0.55), CGFloat(1) - abs(verticalDragOffset) / CGFloat(1100)))
+        Double(max(CGFloat(0.40), CGFloat(1) - abs(verticalDragOffset) / CGFloat(850)))
+    }
+
+    private func animateDismiss() {
+        // Complete the gesture with a short shrink-and-fade before removing
+        // the full-screen cover. Dismissing immediately caused a hard cut.
+        withAnimation(.easeOut(duration: 0.18)) {
+            verticalDragOffset = verticalDragOffset < 0
+                ? -UIScreen.main.bounds.height : UIScreen.main.bounds.height
+            onVerticalDrag?(verticalDragOffset)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(190))
+            if let onClose { onClose() } else { dismiss() }
+        }
     }
 
     var body: some View {
@@ -45,7 +61,7 @@ struct ImageViewer: View {
             Color.black.opacity(Double(max(CGFloat(0), CGFloat(1) - abs(verticalDragOffset) / CGFloat(340))))
                 .ignoresSafeArea()
             ZoomableImageView(image: image,
-                              onDismiss: { if let onClose { onClose() } else { dismiss() } },
+                              onDismiss: { animateDismiss() },
                               onDragChange: { translation in
                                   onVerticalDrag?(translation)
                                   if translation == 0 {
