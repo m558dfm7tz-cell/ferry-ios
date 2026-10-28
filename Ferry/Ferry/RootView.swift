@@ -319,6 +319,28 @@ private struct AccessView: View {
                     }
                     .padding(22).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
 
+                    if !model.savedComputers.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("已保存的电脑").font(.headline)
+                            ForEach(model.savedComputers) { computer in
+                                Button {
+                                    focused = nil
+                                    Task { await model.switchComputer(origin: computer.origin) }
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "desktopcomputer")
+                                        VStack(alignment: .leading) {
+                                            Text(computer.name).font(.body.weight(.medium))
+                                            Text(computer.origin).font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.footnote)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
                     discovery
                 }
             }
