@@ -346,6 +346,8 @@ struct ComposerView: View {
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .semibold))
+                .rotationEffect(.degrees(showPlus ? 45 : 0))
+                .animation(.easeInOut(duration: 0.22), value: showPlus)
                 .frame(width: barButtonSize, height: barButtonSize)
                 .foregroundStyle(.white)
         }
