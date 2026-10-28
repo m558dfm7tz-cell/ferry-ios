@@ -231,6 +231,9 @@ private struct MediaPagerView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            // Stop the pager from finishing a horizontal transition once
+            // a child viewer has committed to a vertical dismiss drag.
+            .scrollDisabled(abs(verticalDrag) > 0.5)
             .background(Color.clear)
             .ignoresSafeArea()
         }
