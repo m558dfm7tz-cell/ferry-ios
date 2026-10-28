@@ -362,8 +362,11 @@ struct ComposerView: View {
                                  }
                              })
                 .frame(height: max(44, textFieldHeight), alignment: .center)
-                // Keep the native UITextView edit popover outside its
-                // SwiftUI layout bounds. The text view height is constrained.
+                // UIKit selection/menu must keep its own text container layout.
+                // Shift the entire one-line native view down slightly inside
+                // the capsule instead of modifying textContainerInset from
+                // layoutSubviews (which previously broke copy/paste).
+                .offset(y: textFieldHeight <= 46 ? 4 : 0)
                 .padding(.horizontal, 4)
                 .overlay(alignment: .topTrailing) {
                     if shouldShowExpand {
