@@ -268,6 +268,11 @@ final class AppModel {
         self.credentials = credentials
         self.defaults = defaults
         serverAddress = defaults.string(forKey: Self.serverKey) ?? ""
+        deviceName = UIDevice.current.name
+        localStore = LocalDataStore(defaults: defaults)
+        reviewStore = ReviewStore(defaults: defaults)
+        // No method call or self-property read until all required stored
+        // properties have been initialized (Swift definite initialization).
         savedComputers = (defaults.data(forKey: Self.savedComputersKey)
             .flatMap { try? JSONDecoder().decode([SavedComputer].self, from: $0) }) ?? []
         if let existing = defaults.string(forKey: Self.serverKey), !existing.isEmpty,
@@ -275,9 +280,6 @@ final class AppModel {
             savedComputers.append(SavedComputer(origin: existing, name: "电脑"))
             persistSavedComputers()
         }
-        deviceName = UIDevice.current.name
-        localStore = LocalDataStore(defaults: defaults)
-        reviewStore = ReviewStore(defaults: defaults)
         uploader.destinationProvider = { [weak self] in self?.destinationForSelection() }
         uploader.routingEnabled = { [weak self] in self?.routeIsolationEnabled == true }
         uploader.onCreated = { [weak self] message in self?.append(message) }
