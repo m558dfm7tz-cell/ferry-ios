@@ -1,0 +1,68 @@
+name: Fast UI Regression (two failures)
+
+on:
+  push:
+    branches: ['fix/ios-108-six-ui-fixes-20261028']
+  workflow_dispatch:
+
+concurrency:
+  group: ferry-two-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  two-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 16.4
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
+
+      - name: Restore simulator compiler cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-derived-data/Build
+          key: ferry-108-two-ui-macos15-xcode164-v1-${{ github.sha }}
+          restore-keys: |
+            ferry-108-two-ui-macos15-xcode164-v1-
+
+      - name: Test only media tap and keyboard handoff
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath "$GITHUB_WORKSPACE/.ci-derived-data" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/ferry-two-ui.xcresult" \
+            -only-testing:FerryUITests/FerryUITests/testChatBubbleOpensPagerWithTopRightMediaGrid \
+            -only-testing:FerryUITests/FerryUITests/testPlusAttachmentKeyboardHandoff \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$RUNNER_TEMP/ferry-two-ui.log"
+
+      - name: Save simulator compiler cache even on test failure
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-derived-data/Build
+          key: ferry-108-two-ui-macos15-xcode164-v1-${{ github.sha }}
+
+      - name: Upload failing test evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferry-two-ui-diagnostics
+          path: |
+            ${{ runner.temp }}/ferry-two-ui.log
+            ${{ runner.temp }}/ferry-two-ui.xcresult
+          if-no-files-found: warn
+          retention-days: 3
