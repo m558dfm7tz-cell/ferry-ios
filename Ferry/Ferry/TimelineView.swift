@@ -217,7 +217,8 @@ struct TimelineView: View {
                     // can no longer animate each grid row during presentation.
                     AlbumPickerView(model: model, onClose: { showAlbumPicker = false })
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .background(Color.chatBackground)
+                        // No opaque backing outside the moved picker content:
+                        // dragging down reveals the actual timeline.
                         .ignoresSafeArea()
                         .offset(y: albumRevealed ? 0 :
                                 max(geometry.size.height, UIScreen.main.bounds.height) + 120)
@@ -342,7 +343,9 @@ struct TimelineView: View {
                     .simultaneousGesture(TapGesture().onEnded {
                         // Tap outside the composer closes the attachment
                         // keyboard without stealing image/menu button taps.
-                        if showAttachmentPanel { dismissKeyboard() }
+                        if showAttachmentPanel || composerFocused || keyboardVisible {
+                            dismissKeyboard()
+                        }
                     })
                     .defaultScrollAnchor(.bottom)
                 .onChange(of: pendingScroll) { _, request in
