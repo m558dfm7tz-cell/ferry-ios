@@ -13,7 +13,9 @@ final class AppModel {
     var draft = ""
     private(set) var phase: Phase = .setup
     private(set) var currentDevice: Device?
-    private(set) var messages: [MessagePayload] = []
+    private(set) var messages: [MessagePayload] = [] {
+        didSet { invalidateTranscriptCache() }
+    }
     private(set) var statusMessage: String?
     private(set) var credentialWarning: String?
     private(set) var isSending = false
@@ -30,10 +32,14 @@ final class AppModel {
     private var dayCountsByConversation: [String: [String: Int]] = [:]
 
     /// Nil means the transfer tab once new routing is verified.
-    var selectedAssistantID: String?
+    var selectedAssistantID: String? {
+        didSet { invalidateTranscriptCache() }
+    }
     /// Fail closed. Do not enable until the actual Go + running FerryHelper
     /// capability contract has been implemented and verified together.
-    private(set) var routeIsolationEnabled = false
+    private(set) var routeIsolationEnabled = false {
+        didSet { invalidateTranscriptCache() }
+    }
     /// Stable server profile identities, to be supplied by future verified
     /// assistant-profiles API. Never manufacture custom server identifiers.
     private var verifiedRouteNamesByID: [String: String] = [:]
@@ -102,6 +108,7 @@ final class AppModel {
               }), current == generation else { return }
 
         assistantStore.adoptServerProfiles(snapshot.profiles)
+        invalidateTranscriptCache()
         verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
             snapshot.profiles.map { ($0.id, $0.routeName) })
         lastProfileRefresh = Date()
@@ -118,6 +125,7 @@ final class AppModel {
         let ids = Set(snapshot.profiles.map(\.id))
         guard ids.count == snapshot.profiles.count else { return }
         assistantStore.adoptServerProfiles(snapshot.profiles)
+        invalidateTranscriptCache()
         verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
             snapshot.profiles.map { ($0.id, $0.routeName) })
         if let selected = selectedAssistantID,
@@ -184,6 +192,18 @@ final class AppModel {
     private(set) var token: String?
     /// The Ferry space the phone-local caches are currently pointed at.
     private(set) var spaceKey: SpaceKey?
+
+    // A media-heavy conversation can contain hundreds of messages. Keyboard
+    // safe-area/layout updates must not refilter all messages and reparse
+    // every RFC3339 timestamp on each SwiftUI view evaluation.
+    @ObservationIgnored private var cachedVisibleMessages: [MessagePayload]?
+    @ObservationIgnored private var cachedDaySections: [DaySection]?
+
+    private func invalidateTranscriptCache() {
+        cachedVisibleMessages = nil
+        cachedDaySections = nil
+    }
+
     private var cursor: Int64 = 0
     /// Deletion-change-log cursor (GET /api/v1/changes?since=…).
     private var changeCursor: Int64 = 0
@@ -257,11 +277,21 @@ final class AppModel {
     /// Messages shown in the timeline, after applying the active assistant
     /// filter (nil = 全部, everything).
     var visibleMessages: [MessagePayload] {
+        // Keep observable dependencies even when returning a cached array.
+        _ = messages.count
+        _ = selectedAssistantID
+        _ = routeIsolationEnabled
+        if let cachedVisibleMessages { return cachedVisibleMessages }
+        let result: [MessagePayload]
         if routeIsolationEnabled {
-            return messages.filter { visibleIdentity(for: $0) == selectedAssistantID }
+            result = messages.filter { visibleIdentity(for: $0) == selectedAssistantID }
+        } else if let selectedAssistantID {
+            result = messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+        } else {
+            result = messages
         }
-        guard let selectedAssistantID else { return messages }
-        return messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
+        cachedVisibleMessages = result
+        return result
     }
 
     /// The pinned 待查看 row belongs to the 总管 page and disappears once
@@ -271,10 +301,13 @@ final class AppModel {
     }
 
     var daySections: [DaySection] {
+        // Reading visibleMessages preserves observation of underlying messages.
+        let visible = visibleMessages
+        if let cachedDaySections { return cachedDaySections }
         var sections: [DaySection] = []
         var current: [MessagePayload] = []
         var currentDay: String?
-        for message in visibleMessages {
+        for message in visible {
             let day = TimestampFormat.dayLabel(from: message.createdAt)
             if day != currentDay {
                 if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
@@ -284,6 +317,7 @@ final class AppModel {
             current.append(message)
         }
         if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
+        cachedDaySections = sections
         return sections
     }
 
@@ -734,6 +768,7 @@ final class AppModel {
         }
         if AssistantStore.builtIn.contains(where: { $0.id == id }) {
             assistantStore.deleteBuiltIn(id: id)
+        invalidateTranscriptCache()
             avatarStore.reset(for: id)
             clearUnread(forAssistant: id)
             unreadAssistantIDs.remove(id)
@@ -758,6 +793,7 @@ final class AppModel {
             return
         }
         assistantStore.restoreBuiltIns()
+        invalidateTranscriptCache()
     }
 
     func hideBuiltInAssistant(id: String) {
@@ -767,6 +803,7 @@ final class AppModel {
             return
         }
         assistantStore.hideBuiltIn(id: id)
+        invalidateTranscriptCache()
         if selectedAssistantID == id { selectAssistant(nil) }
     }
 
@@ -792,6 +829,7 @@ final class AppModel {
     func addAssistant(name: String, avatarText: String, colorIndex: Int) {
         if !routeIsolationEnabled {
             _ = assistantStore.addCustom(name: name, avatarText: avatarText, colorIndex: colorIndex)
+        invalidateTranscriptCache()
             return
         }
         Task {
@@ -848,6 +886,7 @@ final class AppModel {
         unreadAssistantIDs.remove(id)
         avatarStore.reset(for: id)
         assistantStore.removeCustom(id: id)
+        invalidateTranscriptCache()
         if selectedAssistantID == id { selectAssistant(nil) }
     }
 
@@ -1413,6 +1452,7 @@ final class AppModel {
             avatarStore.reset(for: assistant.id)
         }
         assistantStore.replaceCustom(with: adopted)
+        invalidateTranscriptCache()
         knownServerAssistantNames = Set(adopted.map(\.name))
         if let selected = selectedAssistantID,
            !assistantStore.assistants.contains(where: { $0.id == selected }) {
