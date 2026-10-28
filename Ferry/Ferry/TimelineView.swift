@@ -120,6 +120,9 @@ struct TimelineView: View {
                                          ? model.assistantStore.hasHiddenServerProfiles
                                          : !model.assistantStore.hiddenBuiltInIDs.isEmpty,
                                      onRestoreBuiltIns: { model.restoreBuiltInAssistants() })
+                        // Constrain the floating avatar list to its actual
+                        // height, so empty space over chat does not capture taps.
+                        .frame(height: AssistantBarMetrics.height)
                     if model.showsReviewEntry {
                         ReviewEntryRow(count: model.reviewStore.unseenCount) {
                             showReviewList = true
