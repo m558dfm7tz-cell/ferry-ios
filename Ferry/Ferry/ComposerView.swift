@@ -13,6 +13,8 @@ struct ComposerView: View {
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var showEditor = false
+    @State private var showHelperTextInput = false
+    @State private var showHelperFileBrowser = false
     @State private var pasted = false
     @State private var errorMessage: String?
     @State private var textFieldHeight: CGFloat = 44
@@ -40,9 +42,6 @@ struct ComposerView: View {
         VStack(spacing: 8) {
             statusArea
             uploadQueue
-            if model.selectedAssistantID == "helper" {
-                AssistantTaskPanel(model: model)
-            }
             if mentionContext != nil {
                 MentionPickerView(targets: model.catalog.targets,
                                   query: mentionContext?.query ?? "",
@@ -51,7 +50,37 @@ struct ComposerView: View {
                                   onSelectCommand: selectCommand)
                     .frame(maxWidth: 320, alignment: .leading)
             }
-            inputBar
+            if model.selectedAssistantID == "helper" {
+                if showHelperTextInput {
+                    HStack(spacing: 6) {
+                        Button {
+                            focused.wrappedValue = false
+                            showPlus = false
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showHelperTextInput = false
+                            }
+                        } label: {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 19))
+                                .frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("快捷操作")
+                        .buttonStyle(.plain)
+                        inputBar
+                    }
+                } else {
+                    AssistantTaskPanel(model: model) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showHelperTextInput = true
+                        }
+                        focused.wrappedValue = true
+                    } onBrowse: {
+                        showHelperFileBrowser = true
+                    }
+                }
+            } else {
+                inputBar
+            }
         }
         .padding(.horizontal, 12).padding(.bottom, 6)
         // No full-width opaque glass rectangle around the input capsule.
@@ -88,6 +117,9 @@ struct ComposerView: View {
             guard isShown, !didWarmUpAttachments else { return }
             didWarmUpAttachments = true
             AttachmentWarmup.prepare()
+        }
+        .sheet(isPresented: $showHelperFileBrowser) {
+            HelperFileBrowserView(model: model)
         }
         .sheet(isPresented: $showEditor) {
             ExpandEditorView(text: $model.draft,
@@ -704,5 +736,191 @@ struct ExpandEditorView: View {
         insertCommand = TextInsertion(id: UUID(), range: context.range, text: command.insertText)
         mentionContext = nil
         activeTarget = nil
+    }
+}
+
+
+// A Helper-only command surface. No chat messages are created for browsing.
+// The original full composer remains available via a reversible mode switch.
+private struct AssistantTaskPanel: View {
+    let model: AppModel
+    let onText: () -> Void
+    let onBrowse: () -> Void
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                guard !busy else { return }
+                busy = true
+                Task {
+                    defer { busy = false }
+                    do { _ = try await model.helperOperation(action: "screenshot") }
+                    catch { error = error.localizedDescription }
+                }
+            } label: {
+                Label("截图", systemImage: "camera.viewfinder")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .disabled(busy)
+            .accessibilityIdentifier("helper-quick-screenshot")
+
+            Button(action: onBrowse) {
+                Label("找文件", systemImage: "folder")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("helper-quick-browse")
+
+            Button(action: onText) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 19))
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("文字输入")
+            .accessibilityIdentifier("helper-quick-keyboard")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 18))
+        .alert("电脑助手操作失败", isPresented: Binding(
+            get: { error != nil },
+            set: { if !$0 { error = nil } }
+        )) {
+            Button("好", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+}
+
+private struct HelperFileBrowserView: View {
+    let model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var folders: [HelperDirectoryEntry] = []
+    @State private var entries: [HelperDirectoryEntry] = []
+    @State private var chosenFile: HelperDirectoryEntry?
+    @State private var askingSend = false
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "desktopcomputer")
+                        Text(folders.isEmpty ? "此电脑" : folders.map(\.name).joined(separator: " / "))
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        if !folders.isEmpty {
+                            Button("返回") { Task { await goBack() } }
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                if busy {
+                    HStack { Spacer(); ProgressView("正在读取电脑文件…"); Spacer() }
+                }
+                ForEach(entries) { entry in
+                    Button {
+                        if entry.kind == "file" {
+                            chosenFile = entry
+                            askingSend = true
+                        } else {
+                            Task { await openFolder(entry) }
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: entry.kind == "drive" ? "internaldrive" :
+                                    entry.kind == "folder" ? "folder" : "doc")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.name)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                if entry.kind == "file", let size = entry.size {
+                                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if entry.kind != "file" {
+                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("helper-file-\(entry.name)")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.chatBackground)
+            .navigationTitle("电脑文件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") { dismiss() }.disabled(busy)
+                }
+            }
+            .task { await refresh(path: nil) }
+            .confirmationDialog("发送电脑文件到助手？", isPresented: $askingSend,
+                                titleVisibility: .visible) {
+                if let chosenFile {
+                    Button("发送「\(chosenFile.name)」") {
+                        Task { await sendFile(chosenFile) }
+                    }
+                }
+                Button("取消", role: .cancel) { chosenFile = nil }
+            }
+            .alert("读取电脑文件失败", isPresented: Binding(
+                get: { error != nil },
+                set: { if !$0 { error = nil } }
+            )) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+
+    private func refresh(path: String?) async {
+        busy = true
+        defer { busy = false }
+        do {
+            entries = try await model.helperOperation(
+                action: path == nil ? "drives" : "list", path: path ?? "")
+        } catch {
+            error = error.localizedDescription
+        }
+    }
+
+    private func openFolder(_ folder: HelperDirectoryEntry) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let found = try await model.helperOperation(action: "list", path: folder.path)
+            folders.append(folder)
+            entries = found
+        } catch {
+            error = error.localizedDescription
+        }
+    }
+
+    private func goBack() async {
+        guard !folders.isEmpty else { return }
+        folders.removeLast()
+        await refresh(path: folders.last?.path)
+    }
+
+    private func sendFile(_ file: HelperDirectoryEntry) async {
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await model.helperOperation(action: "send_file", path: file.path)
+            dismiss()
+        } catch {
+            error = error.localizedDescription
+        }
     }
 }
