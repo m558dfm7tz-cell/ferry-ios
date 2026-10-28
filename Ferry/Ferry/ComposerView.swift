@@ -95,6 +95,15 @@ struct ComposerView: View {
             .allowsHitTesting(false)
         }
         .onAppear { refreshPasteAvailability() }
+        .onChange(of: model.selectedAssistantID) { _, selected in
+            if selected == "helper" {
+                // New entry into the built-in Helper always starts in the
+                // quick-action mode. Never carry a prior chat's keyboard over.
+                showHelperTextInput = false
+                showPlus = false
+                focused.wrappedValue = false
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardPresented = true
         }
