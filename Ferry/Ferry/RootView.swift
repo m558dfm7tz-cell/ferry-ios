@@ -17,10 +17,14 @@ struct RootView: View {
         }
         .task {
             await model.start()
-            discoverIncomingShare()
+            await importSystemInbox()
+        }
+        .onOpenURL { url in
+            guard url.isFileURL else { return }
+            Task { await importExternalFile(url) }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            discoverIncomingShare()
+            Task { await importSystemInbox() }
         }
         .onChange(of: model.phase == .connected) { _, active in
             if active { discoverIncomingShare() }
@@ -41,14 +45,33 @@ struct RootView: View {
         shareError = nil
     }
 
+    private func importSystemInbox() async {
+        await Task.detached(priority: .userInitiated) {
+            FerryShareInbox.collectSystemInbox()
+        }.value
+        discoverIncomingShare()
+    }
+
+    private func importExternalFile(_ url: URL) async {
+        do {
+            let imported = try await Task.detached(priority: .userInitiated) {
+                try FerryShareInbox.importDocument(url)
+            }.value
+            if imported { discoverIncomingShare() }
+        } catch {
+            shareError = "无法导入文件：\(error.localizedDescription)"
+            discoverIncomingShare()
+        }
+    }
+
     @ViewBuilder
     private func incomingShareSheet(_ batch: FerrySharedBatch) -> some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Label("来自其他 App 的分享", systemImage: "square.and.arrow.down")
+                    Label("从其他 App 导入的文件", systemImage: "square.and.arrow.down")
                         .font(.headline)
-                    Text("请选择收件对话。只有点击确认发送之后，Ferry 才会开始上传；关闭此窗口不会丢弃待发送文件。")
+                    Text("此文件通过 iOS「用 Ferry 打开」导入。请选择对话并确认发送；关闭窗口仍会保留待发送文件。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     ForEach(batch.entries) { entry in
