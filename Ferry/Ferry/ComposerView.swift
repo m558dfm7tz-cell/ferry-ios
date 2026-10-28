@@ -308,7 +308,9 @@ struct ComposerView: View {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.85))
-                                .frame(width: 24, height: 24)
+                                // Same visible icon, minimum 44pt hit region.
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("展开")
