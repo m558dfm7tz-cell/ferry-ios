@@ -808,6 +808,7 @@ private struct HelperFileBrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var folders: [HelperDirectoryEntry] = []
     @State private var entries: [HelperDirectoryEntry] = []
+    @State private var nextOffset: Int?
     @State private var chosenFile: HelperDirectoryEntry?
     @State private var askingSend = false
     @State private var busy = false
@@ -864,6 +865,19 @@ private struct HelperFileBrowserView: View {
                     .disabled(busy)
                     .accessibilityIdentifier("helper-file-\(entry.name)")
                 }
+                if nextOffset != nil {
+                    Button {
+                        Task { await loadMore() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("加载更多文件", systemImage: "arrow.down.circle")
+                            Spacer()
+                        }
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("helper-file-load-more")
+                }
             }
             .scrollContentBackground(.hidden)
             .background(Color.chatBackground)
@@ -883,6 +897,13 @@ private struct HelperFileBrowserView: View {
                     }
                 }
                 Button("取消", role: .cancel) { chosenFile = nil }
+            } message: {
+                if let chosenFile {
+                    let kind = URL(fileURLWithPath: chosenFile.path).pathExtension.uppercased()
+                    let size = ByteCountFormatter.string(fromByteCount: chosenFile.size ?? 0,
+                                                          countStyle: .file)
+                    Text("名称：\(chosenFile.name)\n类型：\(kind.isEmpty ? "文件" : kind)\n大小：\(size)")
+                }
             }
             .alert("读取电脑文件失败", isPresented: Binding(
                 get: { error != nil },
@@ -897,8 +918,10 @@ private struct HelperFileBrowserView: View {
         busy = true
         defer { busy = false }
         do {
-            entries = try await model.helperOperation(
-                action: path == nil ? "drives" : "list", path: path ?? "")
+            let result = try await model.helperOperationPage(
+                action: path == nil ? "drives" : "list", path: path ?? "", offset: 0)
+            entries = result.entries ?? []
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
         } catch {
             self.error = error.localizedDescription
         }
@@ -908,9 +931,26 @@ private struct HelperFileBrowserView: View {
         busy = true
         defer { busy = false }
         do {
-            let found = try await model.helperOperation(action: "list", path: folder.path)
+            let result = try await model.helperOperationPage(
+                action: "list", path: folder.path, offset: 0)
             folders.append(folder)
-            entries = found
+            entries = result.entries ?? []
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func loadMore() async {
+        guard !busy, let offset = nextOffset, let current = folders.last else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await model.helperOperationPage(
+                action: "list", path: current.path, offset: offset)
+            let existing = Set(entries.map(\.path))
+            entries.append(contentsOf: (result.entries ?? []).filter { !existing.contains($0.path) })
+            nextOffset = result.hasMore == true ? result.nextOffset : nil
         } catch {
             self.error = error.localizedDescription
         }
