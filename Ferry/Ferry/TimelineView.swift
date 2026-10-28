@@ -294,33 +294,15 @@ struct TimelineView: View {
                                 .frame(maxWidth: .infinity)
                                 .padding(.top, 6)
                             ForEach(section.messages) { message in
-                                MessageRow(message: message,
-                                           image: model.images[message.id],
-                                           videoThumbnail: model.videoThumbnails[message.id],
-                                           videoDuration: model.videoDurations[message.id] ?? 0,
-                                           loadImage: {
-                                                if case .some(.none) = model.images[message.id] {
-                                                    await model.retryImage(for: message)
-                                                } else {
-                                                    await model.loadImage(for: message)
-                                                }
-                                           },
-                                           loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
-                                           loadFile: { await model.fileData(for: message) },
-                                           loadFileURL: { await model.fileURL(for: message) },
-                                           isCurrent: message.isCurrentDevice,
-                                           isFavorite: model.localStore.isFavorite(message.id),
-                                           onToggleFavorite: { await model.toggleFavorite(message) },
-                                           copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
-                                           onOpenGallery: { openMediaGallery(message.id) },
-                                           onSendEditedImage: { image in sendEditedImage(image, sourceMessage: message) },
-                                           selectionMode: selectionMode,
-                                           isSelected: selectedIDs.contains(message.id),
-                                           isHighlighted: jumpTargetID == message.id,
-                                           highlightOn: highlightOn,
-                                           onToggleSelection: { toggleSelection(message.id) },
-                                           assistant: model.assistantStore.assistant(for: message),
-                                           assistantMedia: avatarMedia(for: message))
+                                TimelineMessageCell(model: model,
+                                                    message: message,
+                                                    selectionMode: selectionMode,
+                                                    isSelected: selectedIDs.contains(message.id),
+                                                    isHighlighted: jumpTargetID == message.id,
+                                                    highlightOn: highlightOn,
+                                                    onOpenGallery: openMediaGallery,
+                                                    onSendEditedImage: sendEditedImage,
+                                                    onToggleSelection: toggleSelection)
                                     // Reserve the floating bar's height above
                                     // the row a jump landed on, so anchoring
                                     // the row to the top of the scroll view
@@ -409,12 +391,14 @@ struct TimelineView: View {
                     scrollToBottomAnchor()
                 }
                 let mediaObserved = messageObserved
-                    .onChange(of: model.images.count) { _, _ in
-                    followPendingMediaLoad()
-                }
-                .onChange(of: model.videoThumbnails.count) { _, _ in
-                    followPendingMediaLoad()
-                }
+                    // Media cells observe their own image/thumbnail state.
+                    // Observing the entire image dictionaries here invalidates
+                    // the WHOLE transcript for each decoded photo, especially
+                    // while the keyboard's safe area is changing.
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: AppModel.mediaDidResolveNotification)) { _ in
+                        followPendingMediaLoad()
+                    }
                 .onChange(of: scenePhase) { _, phase in
                     // SwiftUI restores the geometry when the scene returns.
                     // Avoid a second forced re-anchor which caused two bounces.
@@ -824,6 +808,56 @@ struct TimelineView: View {
     private func exitSelection() {
         selectionMode = false
         selectedIDs = []
+    }
+}
+
+/// Each media row observes only its own presentation state. Keeping the
+/// dictionary reads OUT of TimelineView prevents an arriving thumbnail from
+/// rebuilding the keyboard-aware ScrollView and all day sections.
+private struct TimelineMessageCell: View {
+    let model: AppModel
+    let message: MessagePayload
+    let selectionMode: Bool
+    let isSelected: Bool
+    let isHighlighted: Bool
+    let highlightOn: Bool
+    let onOpenGallery: (String) -> Void
+    let onSendEditedImage: (UIImage, MessagePayload) -> Void
+    let onToggleSelection: (String) -> Void
+
+    var body: some View {
+        MessageRow(message: message,
+                   image: model.images[message.id],
+                   videoThumbnail: model.videoThumbnails[message.id],
+                   videoDuration: model.videoDurations[message.id] ?? 0,
+                   loadImage: {
+                       if case .some(.none) = model.images[message.id] {
+                           await model.retryImage(for: message)
+                       } else {
+                           await model.loadImage(for: message)
+                       }
+                   },
+                   loadVideoThumbnail: { await model.loadVideoThumbnail(for: message) },
+                   loadFile: { await model.fileData(for: message) },
+                   loadFileURL: { await model.fileURL(for: message) },
+                   isCurrent: message.isCurrentDevice,
+                   isFavorite: model.localStore.isFavorite(message.id),
+                   onToggleFavorite: { await model.toggleFavorite(message) },
+                   copyTemporaryLink: { await model.copyTemporaryLink(for: message) },
+                   onOpenGallery: { onOpenGallery(message.id) },
+                   onSendEditedImage: { edited in onSendEditedImage(edited, message) },
+                   selectionMode: selectionMode,
+                   isSelected: isSelected,
+                   isHighlighted: isHighlighted,
+                   highlightOn: highlightOn,
+                   onToggleSelection: { onToggleSelection(message.id) },
+                   assistant: model.assistantStore.assistant(for: message),
+                   assistantMedia: avatarMedia)
+    }
+
+    private var avatarMedia: AssistantAvatarMedia? {
+        guard let id = model.assistantStore.assistant(for: message)?.id else { return nil }
+        return model.avatarStore.media(for: id)
     }
 }
 
