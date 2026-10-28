@@ -48,8 +48,12 @@ struct ComposerTextView: UIViewRepresentable {
         // zero inset relied on a later async measurement and jumped on resume.
         let oneLine = textView.font?.lineHeight ?? 20
         let centerInset = max(0, (minHeight - oneLine) / 2)
-        textView.textContainerInset = UIEdgeInsets(top: centerInset, left: 0,
-                                                   bottom: centerInset, right: 0)
+        // The UITextView text baseline needs a small downward adjustment on
+        // iOS 18. Set it ONCE on creation and later only during text metrics
+        // updates; the placeholder stays centered independently in layout.
+        let oneLineAdjustment: CGFloat = alwaysScrolls ? 0 : 4
+        textView.textContainerInset = UIEdgeInsets(top: centerInset + oneLineAdjustment, left: 0,
+                                                   bottom: max(0, centerInset - oneLineAdjustment), right: 0)
         textView.textContainer.lineFragmentPadding = 0
         textView.isScrollEnabled = alwaysScrolls
         textView.keyboardDismissMode = .interactive
@@ -100,15 +104,9 @@ struct ComposerTextView: UIViewRepresentable {
         textView.textColor = textColor
         textView.tintColor = tintColor
         textView.placeholderLabel.isHidden = !text.isEmpty
-        // The composer offsets its native view by 4pt when the empty input
-        // gains focus, to align the caret with typed text. Counter-translate
-        // only the UILabel (not UITextView insets/contentOffset/selection).
-        // The unfocused placeholder and the focused empty placeholder stay
-        // at exactly the same visual Y position.
-        let compensatePlaceholder = !alwaysScrolls && minHeight >= 44 &&
-            text.isEmpty && isFocused.wrappedValue
-        textView.placeholderLabel.transform = CGAffineTransform(
-            translationX: 0, y: compensatePlaceholder ? -4 : 0)
+        // The native UILabel is centered by ComposerUITextView.layoutSubviews.
+        // Never move its frame/transform in response to focus or text changes.
+        textView.placeholderLabel.transform = .identity
 
         if let command = insertCommand {
             // Apply on the next main-queue turn and clear the binding there
@@ -275,8 +273,15 @@ struct ComposerTextView: UIViewRepresentable {
             let maximum = max(minimum, lineHeight * CGFloat(max(1, maxLines)) + 5)
             let clamped = min(maximum, max(minimum, neededHeight))
             let insetTop = max(0, (clamped - neededHeight) / 2)
-            let insets = UIEdgeInsets(top: insetTop, left: 0,
-                                     bottom: insetTop, right: 0)
+            // Keep the short-line caret and entered glyphs on one stable
+            // baseline, INCLUDING an empty focused field. This avoids the
+            // focus-dependent SwiftUI offset which moved the placeholder.
+            // Multi-line/editor behavior is unchanged, and selection/menu
+            // layout is never touched from layoutSubviews.
+            let baselineAdjustment: CGFloat =
+                clamped <= minimum + 1 && neededHeight <= minimum + 1 ? 4 : 0
+            let insets = UIEdgeInsets(top: insetTop + baselineAdjustment, left: 0,
+                                     bottom: max(0, insetTop - baselineAdjustment), right: 0)
             if textView.textContainerInset != insets {
                 textView.textContainerInset = insets
             }
