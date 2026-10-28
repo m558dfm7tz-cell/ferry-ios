@@ -10,10 +10,15 @@ struct TimelineView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var showDeviceManagement = false
-    @State private var showMediaGallery = false
+    // Bind the selected message and the presentation in one state change.
+    // The previous separate Bool / ID could show the grid on first launch.
+    private struct MediaPresentation: Identifiable {
+        let id = UUID()
+        let initialMessageID: String?
+    }
+    @State private var mediaPresentation: MediaPresentation?
     @State private var showNewAssistant = false
     @State private var showReviewList = false
-    @State private var galleryInitialID: String?
     @State private var atBottom = true
     @State private var isFollowingTail = true
     @State private var transcriptUserDragging = false
@@ -162,8 +167,8 @@ struct TimelineView: View {
                     }
             }
         }
-        .fullScreenCover(isPresented: $showMediaGallery) {
-            MediaGalleryView(model: model, initialMessageID: galleryInitialID)
+        .fullScreenCover(item: $mediaPresentation) { presentation in
+            MediaGalleryView(model: model, initialMessageID: presentation.initialMessageID)
                 .presentationBackground(.clear)
         }
         .sheet(isPresented: $showNewAssistant) {
@@ -205,16 +210,18 @@ struct TimelineView: View {
         .overlay {
             if showAlbumPicker {
                 AlbumPickerView(model: model, onClose: {
-                    withAnimation(.easeInOut(duration: 0.28)) {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40)) {
                         showAlbumPicker = false
                     }
                 })
                 .ignoresSafeArea()
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                // Slide the complete opaque picker, not a cross-faded set of
+                // rows; the closing direction is the same, just more relaxed.
+                .transition(.move(edge: .bottom))
                 .zIndex(10)
             }
         }
-        .animation(.easeInOut(duration: 0.28), value: showAlbumPicker)
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.40), value: showAlbumPicker)
         .overlay { if showToast { toastView } }
 
     }
@@ -306,6 +313,11 @@ struct TimelineView: View {
                     }
                 }
                 let messageObserved = baseTranscript
+                    .simultaneousGesture(TapGesture().onEnded {
+                        // Tap outside the composer closes the attachment
+                        // keyboard without stealing image/menu button taps.
+                        if showAttachmentPanel { dismissKeyboard() }
+                    })
                     .defaultScrollAnchor(.bottom)
                 .onChange(of: pendingScroll) { _, request in
                     guard let request else { return }
@@ -486,8 +498,7 @@ struct TimelineView: View {
                         Button { showDateJump = true } label: { Label("跳转到日期", systemImage: "calendar") }
                         Button { showFavorites = true } label: { Label("收藏", systemImage: "star") }
                         Button {
-                            galleryInitialID = nil
-                            showMediaGallery = true
+                            mediaPresentation = MediaPresentation(initialMessageID: nil)
                         } label: { Label("图片与视频", systemImage: "square.grid.2x2") }
                         Button { enterSelection() } label: { Label("选择", systemImage: "checkmark.circle") }
                         Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
@@ -504,8 +515,7 @@ struct TimelineView: View {
     }
 
     private func openMediaGallery(_ messageID: String) {
-        galleryInitialID = messageID
-        showMediaGallery = true
+        mediaPresentation = MediaPresentation(initialMessageID: messageID)
     }
 
     /// Enqueue an image edited from a preview as a new outgoing message.
