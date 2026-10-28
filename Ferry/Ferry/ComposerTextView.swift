@@ -300,12 +300,23 @@ final class ComposerUITextView: UITextView {
     var isShowingAttachmentInput = false
     var onTapWhileShowingAttachment: (() -> Void)?
     fileprivate var attachmentTap: UITapGestureRecognizer?
+    // UITextView installs its own tap recognizers for caret and selection.
+    // Let the attachment-only recognizer coexist with those recognizers;
+    // it is disabled entirely in normal text-editing mode.
+    private final class AttachmentTapDelegate: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+    }
+    private let attachmentTapDelegate = AttachmentTapDelegate()
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleAttachmentTap))
         tap.cancelsTouchesInView = false
         tap.delaysTouchesBegan = false
+        tap.delegate = attachmentTapDelegate
         tap.isEnabled = false
         attachmentTap = tap
         addGestureRecognizer(tap)
