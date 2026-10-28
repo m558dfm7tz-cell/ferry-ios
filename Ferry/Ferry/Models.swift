@@ -339,9 +339,15 @@ struct FerryCapabilities: Decodable, Sendable {
         case assistantProfilesV1 = "assistant_profiles_v1"
         case helperRouteGuardV1 = "helper_route_guard_v1"
     }
-    var permitsIsolatedTransfer: Bool {
+    // Verified Go routing + authoritative assistant identities are sufficient
+    // for an assistant-targeted file. The Helper guard is a separate runtime
+    // requirement for pure transfer, not for assistant conversations.
+    var permitsAssistantRouting: Bool {
         protocolVersion >= 2 && messageRouteV1 && assistantIdentityV1 &&
-            assistantProfilesV1 && helperRouteGuardV1
+            assistantProfilesV1
+    }
+    var permitsIsolatedTransfer: Bool {
+        permitsAssistantRouting && helperRouteGuardV1
     }
 }
 
