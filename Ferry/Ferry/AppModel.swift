@@ -253,6 +253,8 @@ final class AppModel {
     private var lastBadgeCount = 0
     /// Background grace window that keeps polling alive after leaving the app.
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    private(set) var savedComputers: [SavedComputer] = []
+    private static let savedComputersKey = "ferry.savedComputers.v1"
     private static let serverKey = "ferry.server.origin"
     /// origin → space-key value mapping, persisted at join time so a reconnect
     /// (which has a token but not the password) can restore the same space.
@@ -266,6 +268,13 @@ final class AppModel {
         self.credentials = credentials
         self.defaults = defaults
         serverAddress = defaults.string(forKey: Self.serverKey) ?? ""
+        savedComputers = (defaults.data(forKey: Self.savedComputersKey)
+            .flatMap { try? JSONDecoder().decode([SavedComputer].self, from: $0) }) ?? []
+        if let existing = defaults.string(forKey: Self.serverKey), !existing.isEmpty,
+           !savedComputers.contains(where: { $0.origin == existing }) {
+            savedComputers.append(SavedComputer(origin: existing, name: "电脑"))
+            persistSavedComputers()
+        }
         deviceName = UIDevice.current.name
         localStore = LocalDataStore(defaults: defaults)
         reviewStore = ReviewStore(defaults: defaults)
@@ -274,6 +283,46 @@ final class AppModel {
         uploader.onCreated = { [weak self] message in self?.append(message) }
         uploader.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
         notifier.onRoute = { [weak self] route in self?.apply(notificationRoute: route) }
+    }
+
+    private func persistSavedComputers() {
+        guard let data = try? JSONEncoder().encode(savedComputers) else { return }
+        defaults.set(data, forKey: Self.savedComputersKey)
+    }
+
+    func renameComputer(origin: String, name: String) {
+        guard let index = savedComputers.firstIndex(where: { $0.origin == origin }) else { return }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        savedComputers[index].name = String(clean.prefix(60))
+        persistSavedComputers()
+    }
+
+    func removeSavedComputer(origin: String) {
+        savedComputers.removeAll { $0.origin == origin }
+        persistSavedComputers()
+        // Never delete the credential or local data space as a side effect of
+        // removing a shortcut. Explicit disconnect/revocation is separate.
+        if endpoint?.origin == origin {
+            _ = resetSession(endpoint: endpoint!, token: nil)
+            phase = .setup
+        }
+    }
+
+    func switchComputer(origin: String) async {
+        guard savedComputers.contains(where: { $0.origin == origin }),
+              let next = try? ServerEndpoint(origin) else { return }
+        let stored = try? credentials.token(for: next.origin)
+        let current = resetSession(endpoint: next, token: stored ?? nil)
+        serverAddress = next.origin
+        defaults.set(next.origin, forKey: Self.serverKey)
+        phase = .connecting
+        if stored != nil {
+            await authenticate(generation: current)
+        } else {
+            phase = .setup
+            statusMessage = "该电脑需要重新验证，请输入访问密码。"
+        }
     }
 
     var canSend: Bool {
@@ -389,6 +438,10 @@ final class AppModel {
             currentDevice = claim.device
             defaults.set(endpoint.origin, forKey: Self.serverKey)
             serverAddress = endpoint.origin
+            if !savedComputers.contains(where: { $0.origin == endpoint.origin }) {
+                savedComputers.append(SavedComputer(origin: endpoint.origin, name: "电脑 " + String(savedComputers.count + 1)))
+                persistSavedComputers()
+            }
             do { try credentials.save(token: claim.token, for: endpoint.origin) }
             catch { credentialWarning = error.localizedDescription }
             // Reuse the original space even after the access password changes.
@@ -1277,6 +1330,10 @@ final class AppModel {
             let device = try await client.currentDevice(endpoint: endpoint, token: token)
             guard current == generation else { return }
             currentDevice = device
+            if !savedComputers.contains(where: { $0.origin == endpoint.origin }) {
+                savedComputers.append(SavedComputer(origin: endpoint.origin, name: "电脑 " + String(savedComputers.count + 1)))
+                persistSavedComputers()
+            }
             phase = .connected
             statusMessage = nil
             activate(space: space(for: endpoint.origin))
