@@ -15,6 +15,10 @@ struct VideoPlayerView: View {
     let url: URL
     let name: String
     let mediaType: String
+    /// When hosted by the mixed-media pager, close the whole viewer instead
+    /// of dismissing a nonexistent nested presentation.
+    var onClose: (() -> Void)? = nil
+    var onVerticalDrag: ((CGFloat) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
@@ -31,7 +35,9 @@ struct VideoPlayerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .opacity(max(0, 1 - Double(abs(dragOffset) / 380)))
+                .ignoresSafeArea()
             PlayerLayerView(player: player)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
@@ -39,11 +45,14 @@ struct VideoPlayerView: View {
                 .opacity(opacity)
                 .offset(y: dragOffset)
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() } }
-                .gesture(dismissDrag)
+                // Let the outer TabView handle horizontal paging.
+                .simultaneousGesture(dismissDrag)
         }
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
                 .lineLimit(2).padding(20)
+                .opacity(abs(dragOffset) > 0.5 ? 0 : 1)
+                .allowsHitTesting(abs(dragOffset) <= 0.5)
         }
         .safeAreaInset(edge: .bottom) {
             if showControls {
@@ -54,6 +63,8 @@ struct VideoPlayerView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
                 .transition(.opacity)
+                .opacity(abs(dragOffset) > 0.5 ? 0 : 1)
+                .allowsHitTesting(abs(dragOffset) <= 0.5)
             }
         }
         .overlay { if showToast { toastView } }
@@ -113,13 +124,17 @@ struct VideoPlayerView: View {
             .onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 dragOffset = value.translation.height
+                onVerticalDrag?(dragOffset)
             }
             .onEnded { value in
                 let velocityY = value.predictedEndTranslation.height
                 if abs(dragOffset) > 120 || abs(velocityY) > 900 {
-                    dismiss()
+                    if let onClose { onClose() } else { dismiss() }
                 } else {
-                    withAnimation(.spring()) { dragOffset = 0 }
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                        dragOffset = 0
+                        onVerticalDrag?(0)
+                    }
                 }
             }
     }
