@@ -69,7 +69,7 @@ struct ComposerView: View {
                         inputBar
                     }
                 } else {
-                    AssistantTaskPanel(model: model) {
+                    HelperQuickActionsView(model: model) {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             showHelperTextInput = true
                         }
@@ -742,7 +742,7 @@ struct ExpandEditorView: View {
 
 // A Helper-only command surface. No chat messages are created for browsing.
 // The original full composer remains available via a reversible mode switch.
-private struct AssistantTaskPanel: View {
+private struct HelperQuickActionsView: View {
     let model: AppModel
     let onText: () -> Void
     let onBrowse: () -> Void
