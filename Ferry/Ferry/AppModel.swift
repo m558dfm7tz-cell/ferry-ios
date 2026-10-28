@@ -649,6 +649,29 @@ final class AppModel {
         }
     }
 
+    /// Run a structured action only in the built-in Helper conversation.
+    /// Directory navigation stays out of messages/history; the existing Go
+    /// device token is used without prompting the user again.
+    func helperOperation(action: String, path: String = "") async throws -> [HelperDirectoryEntry] {
+        guard selectedAssistantID == "helper", routeIsolationEnabled,
+              let endpoint, let token else {
+            throw FerryClient.ClientError.rejected("请先连接支持助手操作的 Ferry Windows 服务。")
+        }
+        let request = try await client.requestHelperOperation(
+            endpoint: endpoint, token: token, action: action, path: path)
+        for _ in 0..<90 {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(750))
+            let result = try await client.pollHelperOperation(
+                endpoint: endpoint, token: token, id: request.id)
+            if result.status == "done" { return result.entries ?? [] }
+            if result.status == "failed" {
+                throw FerryClient.ClientError.rejected(result.error ?? "电脑未完成操作")
+            }
+        }
+        throw FerryClient.ClientError.rejected("电脑助手未响应，请检查 FerryHelper 是否在运行。")
+    }
+
     /// Reply to a 待查看 item: an ordinary message quoting it (see
     /// `ReviewReplyFormatter`). A delivered reply implies the item was read,
     /// so it is marked 已看 here.
