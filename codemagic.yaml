@@ -48,3 +48,83 @@ workflows:
     artifacts:
       - build/ipa/Ferry-iOS-V2-Unsigned.ipa
       - build/Ferry-build.log
+
+  ferry-ios-multi-computer-validation:
+    name: Ferry iOS - multi-computer tests and unsigned IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    environment:
+      xcode: 16.4
+    # Manual only: select feat/multi-computer-isolation-20261029 in Codemagic.
+    triggering:
+      events: []
+    scripts:
+      - name: Confirm development branch and toolchain
+        script: |
+          set -euo pipefail
+          test "$CM_BRANCH" = "feat/multi-computer-isolation-20261029" || {
+            echo "This workflow is only for the multi-computer development branch (got $CM_BRANCH)."
+            exit 1
+          }
+          mkdir -p "$CM_BUILD_DIR/build"
+          echo "Building commit $(git rev-parse HEAD)" | tee "$CM_BUILD_DIR/build/source-commit.txt"
+          xcodebuild -version
+          xcrun simctl list devices available
+      - name: Run existing iOS simulator UI regressions
+        script: |
+          set -euo pipefail
+          # Select an installed iPhone simulator instead of hard-coding a runtime.
+          SIMULATOR_ID="$(xcrun simctl list devices available |
+            sed -nE 's/.*iPhone 16 \(([0-9A-F-]{36})\).*/\1/p' | head -n 1)"
+          if [ -z "$SIMULATOR_ID" ]; then
+            SIMULATOR_ID="$(xcrun simctl list devices available |
+              sed -nE 's/.*iPhone[^()]*\(([0-9A-F-]{36})\).*/\1/p' | head -n 1)"
+          fi
+          test -n "$SIMULATOR_ID" || { echo "No available iPhone simulator"; exit 1; }
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          xcodebuild test \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$CM_BUILD_DIR/build/Ferry-multi-computer-tests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee "$CM_BUILD_DIR/build/Ferry-multi-computer-tests.log"
+      - name: Archive unsigned iPhone Release build
+        script: |
+          set -euo pipefail
+          xcodebuild \
+            -project Ferry/Ferry.xcodeproj \
+            -scheme Ferry \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$CM_BUILD_DIR/build/Ferry-multi-computer.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$CM_BUILD_DIR/build/Ferry-multi-computer-build.log"
+      - name: Package and verify unsigned development IPA
+        script: |
+          set -euo pipefail
+          APP="$CM_BUILD_DIR/build/Ferry-multi-computer.xcarchive/Products/Applications/Ferry.app"
+          test -d "$APP"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          test "$BUNDLE_ID" = "com.ferry.test" || {
+            echo "Unexpected bundle identifier: $BUNDLE_ID"
+            exit 1
+          }
+          mkdir -p "$CM_BUILD_DIR/build/multi-computer-ipa/Payload"
+          cp -R "$APP" "$CM_BUILD_DIR/build/multi-computer-ipa/Payload/Ferry.app"
+          cd "$CM_BUILD_DIR/build/multi-computer-ipa"
+          zip -qry -y Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa Payload
+          unzip -t Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa
+          echo "Archive packaged. Real-device verification is still required."
+    artifacts:
+      - build/multi-computer-ipa/Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa
+      - build/Ferry-multi-computer-tests.log
+      - build/Ferry-multi-computer-build.log
+      - build/source-commit.txt
