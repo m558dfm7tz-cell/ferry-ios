@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var shareRecipient: String?
     @State private var shareError: String?
     @State private var sharingNow = false
+    @State private var checkingSharedRoute = false
     @State private var importingNow = false
     @State private var importError: String?
 
@@ -109,10 +110,30 @@ struct RootView: View {
                                                 subtitle: "独立助手对话", id: assistant.id)
                         }
                     } else {
-                        Label("当前服务器尚未确认支持独立消息路由。为防止误发，暂不能发送外部分享。",
-                              systemImage: "exclamationmark.shield")
-                            .foregroundStyle(.orange)
-                            .font(.footnote)
+                        VStack(alignment: .leading, spacing: 9) {
+                            Label("当前服务器尚未确认支持独立消息路由。为防止误发，暂不能发送外部分享。",
+                                  systemImage: "exclamationmark.shield")
+                                .foregroundStyle(.orange)
+                                .font(.footnote)
+                            Text("连接的 Go 服务器：\(model.endpoint?.origin ?? model.serverAddress)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Text("如果电脑 FerryHelper 刚恢复配对，可重新检测；如果仍不支持，请确认手机和 Helper 连接的是同一台 Go 服务。文件会继续保留。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                Task { await verifySharedRoute() }
+                            } label: {
+                                if checkingSharedRoute {
+                                    ProgressView()
+                                } else {
+                                    Label("重新检测服务器支持", systemImage: "arrow.clockwise")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(checkingSharedRoute)
+                        }
                     }
                     if let shareError {
                         Text(shareError).font(.footnote).foregroundStyle(.red)
@@ -133,12 +154,28 @@ struct RootView: View {
             .background(Color.chatBackground.ignoresSafeArea())
             .navigationTitle("分享至 Ferry")
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                if !model.routeIsolationEnabled { await verifySharedRoute() }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("稍后") { sharedBatch = nil }
                         .disabled(sharingNow)
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func verifySharedRoute() async {
+        guard !checkingSharedRoute else { return }
+        checkingSharedRoute = true
+        defer { checkingSharedRoute = false }
+        let supported = await model.retryVerifiedRouting()
+        if supported {
+            shareError = nil
+        } else {
+            shareError = "服务器能力检查未通过。请确认此服务器上的 Go V2 与 FerryHelper 已配对并正常监听。"
         }
     }
 
