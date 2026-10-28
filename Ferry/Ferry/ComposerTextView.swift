@@ -276,7 +276,10 @@ struct ComposerTextView: UIViewRepresentable {
                     self.height.wrappedValue = clamped
                 }
             }
-            if textView.isFirstResponder {
+            if textView.isFirstResponder && neededHeight > clamped + 1 {
+                // Only scroll when the multiline text exceeds the capsule.
+                // scrollRangeToVisible on a short line moves its caret above
+                // the visual vertical center of the input field.
                 let selection = textView.selectedRange
                 DispatchQueue.main.async { [weak textView] in
                     guard let textView, textView.isFirstResponder else { return }
@@ -355,11 +358,17 @@ final class ComposerUITextView: UITextView {
         placeholderLabel.frame = CGRect(origin: origin,
                                         size: CGSize(width: bounds.width - origin.x * 2,
                                                      height: placeholderLabel.font.lineHeight))
-        // Do not leave a single line scrolled upward after a UIKit
-        // keyboard-to-attachment input-view replacement.
-        if !text.contains("\n"), contentSize.height <= bounds.height + 2,
-           abs(contentOffset.y) > 0.5 {
-            contentOffset = .zero
+        // Center actual text/caret and placeholder in the same capsule,
+        // including after UIKit changes the keyboard's inputView. Keep the
+        // original multiline sizing/scrolling for a growing composer.
+        if bounds.height <= 60, !text.contains("\n") {
+            let lineHeight = font?.lineHeight ?? 20
+            let center = max(0, (bounds.height - lineHeight) / 2)
+            if abs(textContainerInset.top - center) > 0.5 {
+                textContainerInset = UIEdgeInsets(top: center, left: 0,
+                                                 bottom: center, right: 0)
+            }
+            if abs(contentOffset.y) > 0.5 { contentOffset = .zero }
         }
     }
 }
@@ -371,10 +380,24 @@ private final class FerryAttachmentInputView: UIInputView {
     var onCamera: (() -> Void)?
 
     init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 256),
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 144),
                    inputViewStyle: .keyboard)
-        backgroundColor = .secondarySystemBackground
-        heightAnchor.constraint(equalToConstant: 256).isActive = true
+        backgroundColor = .clear
+        heightAnchor.constraint(equalToConstant: 144).isActive = true
+
+        // Preserve the original frosted attachment panel rather than an
+        // opaque rectangle. The background belongs to the panel only.
+        let glass = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        glass.layer.cornerRadius = 20
+        glass.clipsToBounds = true
+        addSubview(glass)
+        NSLayoutConstraint.activate([
+            glass.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            glass.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            glass.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            glass.heightAnchor.constraint(equalToConstant: 120)
+        ])
 
         let file = makeButton("文件", symbol: "folder", action: #selector(openFile))
         let camera = makeButton("拍摄", symbol: "camera", action: #selector(openCamera))
@@ -385,7 +408,7 @@ private final class FerryAttachmentInputView: UIInputView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 18),
             row.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 12),
             row.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -12),
             row.heightAnchor.constraint(equalToConstant: 96)
@@ -402,7 +425,7 @@ private final class FerryAttachmentInputView: UIInputView {
         config.imagePlacement = .top
         config.imagePadding = 10
         config.baseForegroundColor = .label
-        config.background.backgroundColor = .tertiarySystemBackground
+        config.background.backgroundColor = UIColor.tertiarySystemBackground.withAlphaComponent(0.58)
         config.cornerStyle = .large
         button.configuration = config
         button.addTarget(self, action: action, for: .touchUpInside)
