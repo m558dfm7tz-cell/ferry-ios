@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import UIKit
 import CryptoKit
+import ImageIO
 
 @MainActor @Observable
 final class AppModel {
@@ -953,42 +954,101 @@ final class AppModel {
         await loadImage(for: message)
     }
 
+    // Chat cells only need a small bitmap. Decode away from the main actor
+    // so opening the keyboard never waits for a full-resolution screenshot.
+    // The original compressed bytes remain in the per-space disk cache.
+    private nonisolated static func chatThumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 960,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
+    }
+
     func loadImage(for message: MessagePayload) async {
         guard let file = message.file, PreviewRouter.isImage(file) else { return }
         guard images[message.id] == nil, !loadingImages.contains(message.id) else { return }
-        // Reuse the same original-extension cache for image decoding and sharing.
         let ext = (file.name as NSString).pathExtension.lowercased()
         let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
-        if let cacheURL, let cached = try? Data(contentsOf: cacheURL),
-           let image = UIImage(data: cached) {
-            images[message.id] = image
-            return
-        }
-        guard let endpoint, let token else { return }
         let current = generation
         loadingImages.insert(message.id)
         defer { loadingImages.remove(message.id) }
+
+        // Never block the main actor on disk I/O or image decompression.
+        if let cacheURL {
+            let cached = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: cacheURL)
+            }.value
+            if let cached {
+                let thumbnail = await Task.detached(priority: .userInitiated) {
+                    Self.chatThumbnail(cached)
+                }.value
+                guard current == generation else { return }
+                if let thumbnail {
+                    images[message.id] = thumbnail
+                    return
+                }
+            }
+        }
+        guard let endpoint, let token else { return }
         do {
             let data = try await client.attachment(endpoint: endpoint, token: token,
                                                     path: file.downloadURL)
             guard current == generation else { return }
-            guard let decoded = UIImage(data: data) else {
-                images[message.id] = UIImage?.none
-                return
-            }
-            images[message.id] = decoded
-            // Do not cache failed responses or huge files; a valid successful
-            // image is kept across ordinary app relaunches.
+            let thumbnail = await Task.detached(priority: .userInitiated) {
+                Self.chatThumbnail(data)
+            }.value
+            guard current == generation else { return }
+            images[message.id] = thumbnail
             if let cacheURL, data.count <= 12_000_000 {
-                let directory = cacheURL.deletingLastPathComponent()
-                try? FileManager.default.createDirectory(at: directory,
-                                                          withIntermediateDirectories: true)
-                try? data.write(to: cacheURL, options: .atomic)
+                // Original quality is retained for fullscreen zoom/edit/save,
+                // but cached off the main thread.
+                Task.detached(priority: .utility) {
+                    try? FileManager.default.createDirectory(
+                        at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? data.write(to: cacheURL, options: .atomic)
+                }
             }
         } catch {
             guard current == generation else { return }
             images[message.id] = UIImage?.none
         }
+    }
+
+    /// Gallery/editor/OCR get the original, never the chat thumbnail. The
+    /// per-space cache is checked first; large uncached files are fetched.
+    func fullImage(for message: MessagePayload) async -> UIImage? {
+        guard let file = message.file, PreviewRouter.isImage(file),
+              let endpoint, let token else { return nil }
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        let cacheURL = mediaCacheURL(for: message, ext: ext.isEmpty ? "jpg" : ext)
+        let current = generation
+        if let cacheURL {
+            let cached = await Task.detached(priority: .userInitiated) {
+                try? Data(contentsOf: cacheURL)
+            }.value
+            if let cached {
+                let image = await Task.detached(priority: .userInitiated) {
+                    UIImage(data: cached)
+                }.value
+                guard current == generation else { return nil }
+                if let image { return image }
+            }
+        }
+        guard let data = try? await client.attachment(
+            endpoint: endpoint, token: token, path: file.downloadURL),
+              current == generation else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)
+        }.value
     }
 
     func loadVideoThumbnail(for message: MessagePayload) async {
