@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 
 struct TimelineView: View {
     @Bindable var model: AppModel
@@ -54,7 +55,6 @@ struct TimelineView: View {
     // Keyboard changes the viewport for many frames. These are not manual
     // scroll gestures and must not detach a media-heavy transcript from tail.
     @State private var keyboardTransitioning = false
-    @State private var mediaAnchorTask: Task<Void, Never>?
     @State private var followMediaMessageID: String?
 
     private static let bottomAnchorID = "timeline-bottom"
@@ -396,7 +396,8 @@ struct TimelineView: View {
                     // the WHOLE transcript for each decoded photo, especially
                     // while the keyboard's safe area is changing.
                     .onReceive(NotificationCenter.default.publisher(
-                        for: AppModel.mediaDidResolveNotification)) { _ in
+                        for: AppModel.mediaDidResolveNotification)
+                        .debounce(for: .milliseconds(240), scheduler: RunLoop.main)) { _ in
                         followPendingMediaLoad()
                     }
                 .onChange(of: scenePhase) { _, phase in
@@ -596,7 +597,6 @@ struct TimelineView: View {
         keyboardAnchorLocked = keyboardWasAtBottom
         keyboardTransitioning = true
         keyboardVisible = true
-        mediaAnchorTask?.cancel()
         keyboardFollowTask?.cancel()
     }
 
@@ -690,19 +690,13 @@ struct TimelineView: View {
             }
             return
         }
-        guard isFollowingTail, !transcriptUserDragging else { return }
-        // A burst of many image/video downloads used to enqueue a separate
-        // scrollTo for EVERY image (80ms after each arrival). Coalesce the
-        // entire burst into one anchor correction and never scroll the list
-        // while the keyboard is animating.
-        mediaAnchorTask?.cancel()
-        mediaAnchorTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(240))
-            guard !Task.isCancelled, !keyboardVisible, !keyboardAnchorLocked,
-                  jumpHoldingID == nil, isFollowingTail,
-                  !transcriptUserDragging else { return }
-            queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
-        }
+        // Combine debounces all thumbnail arrivals before we enter SwiftUI,
+        // so no @State task writes or repeated scroll requests rebuild the
+        // media-heavy transcript during a keyboard transition.
+        guard isFollowingTail, !transcriptUserDragging, !keyboardVisible,
+              !keyboardTransitioning, !keyboardAnchorLocked,
+              jumpHoldingID == nil else { return }
+        queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
     }
 
     /// Open the conversation a tapped notification points at: select the
