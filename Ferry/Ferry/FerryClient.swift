@@ -311,7 +311,7 @@ struct FerryClient: FerryServicing {
             if response.statusCode == 401 { throw ClientError.unauthorized }
             throw ClientError.invalidResponse
         }
-        let destination = Self.cacheURL(for: path, filename: filename)
+        let destination = Self.cacheURL(for: path, filename: filename, origin: endpoint.origin)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination
@@ -323,9 +323,10 @@ struct FerryClient: FerryServicing {
         return try Data(contentsOf: url)
     }
 
-    private static func cacheURL(for path: String, filename: String?) -> URL {
+    private static func cacheURL(for path: String, filename: String?, origin: String) -> URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("FerryAttachments", isDirectory: true)
+            .appendingPathComponent(SpaceKey(origin: origin, password: "").folderName, isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         var leaf = path.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
         if leaf.isEmpty { leaf = "attachment" }
