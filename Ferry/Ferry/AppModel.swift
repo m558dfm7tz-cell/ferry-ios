@@ -659,7 +659,10 @@ final class AppModel {
         }
         let request = try await client.requestHelperOperation(
             endpoint: endpoint, token: token, action: action, path: path)
-        for _ in 0..<90 {
+        // Browsing normally completes in seconds; uploading a large video
+        // may need many minutes. Match the Go queue's longer file TTL.
+        let pollingAttempts = action == "send_file" ? 1600 : 90
+        for _ in 0..<pollingAttempts {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(750))
             let result = try await client.pollHelperOperation(
