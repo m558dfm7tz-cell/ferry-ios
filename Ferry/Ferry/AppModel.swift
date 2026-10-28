@@ -116,6 +116,17 @@ final class AppModel {
         routeIsolationEnabled = true
     }
 
+    /// The Helper can come online after the phone's initial login. Explicitly
+    /// retry the V2 capability handshake without reconnecting, losing local
+    /// drafts, or bypassing the route-isolation guard.
+    func retryVerifiedRouting() async -> Bool {
+        guard phase == .connected else { return false }
+        if routeIsolationEnabled { return true }
+        let current = generation
+        await configureVerifiedRouting(generation: current)
+        return current == generation && routeIsolationEnabled
+    }
+
     private func refreshServerProfiles(force: Bool = false) async {
         guard routeIsolationEnabled, let endpoint, let token else { return }
         if !force, let lastProfileRefresh,
@@ -1007,7 +1018,11 @@ final class AppModel {
                 Self.chatThumbnail(data)
             }.value
             guard current == generation else { return }
-            images[message.id] = thumbnail
+            if let thumbnail {
+                images[message.id] = thumbnail
+            } else {
+                images[message.id] = UIImage?.none
+            }
             if let cacheURL, data.count <= 12_000_000 {
                 // Original quality is retained for fullscreen zoom/edit/save,
                 // but cached off the main thread.
