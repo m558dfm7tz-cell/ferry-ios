@@ -8,12 +8,14 @@ struct NotificationRoute: Equatable {
     let assistantID: String?
     /// Message to scroll to and highlight.
     let messageID: String?
+    let origin: String?
     /// Unique per tap, so tapping the same notification twice re-applies it.
     let nonce: UUID
 
-    init(assistantID: String?, messageID: String?, nonce: UUID = UUID()) {
+    init(assistantID: String?, messageID: String?, origin: String? = nil, nonce: UUID = UUID()) {
         self.assistantID = assistantID
         self.messageID = messageID
+        self.origin = origin
         self.nonce = nonce
     }
 }
@@ -22,6 +24,7 @@ struct NotificationRoute: Equatable {
 enum NotificationPayloadKey {
     static let assistantID = "ferry.assistantID"
     static let messageID = "ferry.messageID"
+    static let origin = "ferry.serverOrigin"
     static let category = "FERRY_NEW_MESSAGE"
 }
 
@@ -55,9 +58,21 @@ final class NotificationSettings {
     /// so the same message is never announced twice (relaunch, reconnect, or a
     /// repeated poll page). `-1` means "nothing announced yet", so a server
     /// whose sequence starts at 0 still announces its first message.
+    var activeOrigin: String?
     var lastNotifiedSequence: Int64 {
-        get { defaults.object(forKey: Self.lastSequenceKey) as? Int64 ?? -1 }
-        set { defaults.set(newValue, forKey: Self.lastSequenceKey) }
+        get {
+            guard let origin = activeOrigin else {
+                return defaults.object(forKey: Self.lastSequenceKey) as? Int64 ?? -1
+            }
+            return defaults.object(forKey: Self.lastSequenceKey + "." + origin) as? Int64 ?? -1
+        }
+        set {
+            if let origin = activeOrigin {
+                defaults.set(newValue, forKey: Self.lastSequenceKey + "." + origin)
+            } else {
+                defaults.set(newValue, forKey: Self.lastSequenceKey)
+            }
+        }
     }
 }
 
