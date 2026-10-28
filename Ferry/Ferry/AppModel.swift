@@ -36,11 +36,13 @@ final class AppModel {
     var selectedAssistantID: String? {
         didSet { invalidateTranscriptCache() }
     }
-    /// Fail closed. Do not enable until the actual Go + running FerryHelper
-    /// capability contract has been implemented and verified together.
+    /// Enable assistant routing only after Go's V2 contract and the complete
+    /// assistant profile list are verified. A live Helper is additionally
+    /// required for pure transfer, not for assistant-addressed messages.
     private(set) var routeIsolationEnabled = false {
         didSet { invalidateTranscriptCache() }
     }
+    private(set) var transferRouteAvailable = false
     /// Stable server profile identities, to be supplied by future verified
     /// assistant-profiles API. Never manufacture custom server identifiers.
     private var verifiedRouteNamesByID: [String: String] = [:]
@@ -63,7 +65,9 @@ final class AppModel {
     /// files, because silent fallback could deliver to the wrong assistant.
     func destinationForExternalShare(_ assistantID: String?) -> MessageDestination? {
         guard routeIsolationEnabled else { return nil }
-        guard let assistantID else { return .transfer }
+        guard let assistantID else {
+            return transferRouteAvailable ? .transfer : nil
+        }
         guard let assistant = assistantStore.assistants.first(where: { $0.id == assistantID }) else {
             return nil
         }
@@ -90,12 +94,13 @@ final class AppModel {
         }
         return .assistant(name: routeName, id: assistant.id)
     }
-    /// V2 stays disabled unless both the Go server and *running* helper
-    /// positively confirm the guard, and their profile list is consistent.
+    /// Go's V2 assistant routing can be verified independently of the Helper.
+    /// Pure transfer stays fail-closed until its *runtime* guard is also true.
     private func configureVerifiedRouting(generation current: UUID) async {
         guard current == generation, let endpoint, let token else { return }
+        transferRouteAvailable = false
         guard let capabilities = try? await client.capabilities(endpoint: endpoint, token: token),
-              capabilities.permitsIsolatedTransfer,
+              capabilities.permitsAssistantRouting,
               let snapshot = try? await client.assistantProfiles(endpoint: endpoint, token: token),
               !snapshot.profiles.isEmpty else { return }
 
@@ -113,15 +118,15 @@ final class AppModel {
         verifiedRouteNamesByID = Dictionary(uniqueKeysWithValues:
             snapshot.profiles.map { ($0.id, $0.routeName) })
         lastProfileRefresh = Date()
+        transferRouteAvailable = capabilities.permitsIsolatedTransfer
         routeIsolationEnabled = true
     }
 
-    /// The Helper can come online after the phone's initial login. Explicitly
-    /// retry the V2 capability handshake without reconnecting, losing local
-    /// drafts, or bypassing the route-isolation guard.
+    /// A Helper may come online or go offline while the phone stays logged in.
+    /// Always refresh the runtime transfer guard; a previously verified
+    /// assistant identity remains routable if the Helper goes offline.
     func retryVerifiedRouting() async -> Bool {
         guard phase == .connected else { return false }
-        if routeIsolationEnabled { return true }
         let current = generation
         await configureVerifiedRouting(generation: current)
         return current == generation && routeIsolationEnabled
@@ -1229,6 +1234,7 @@ final class AppModel {
         countedMessageIDs = []
         selectedAssistantID = nil
         routeIsolationEnabled = false
+        transferRouteAvailable = false
         verifiedRouteNamesByID = [:]
         assistantStore.adoptServerProfiles(nil)
         lastProfileRefresh = nil
