@@ -29,6 +29,10 @@ struct ImageViewer: View {
     @State private var showEditor = false
     @State private var verticalDragOffset: CGFloat = 0
 
+    // The controls disappear as soon as a vertical image drag starts.
+    // They return only after the image has settled back to its resting place.
+    private var isDraggingImage: Bool { abs(verticalDragOffset) > 0.5 }
+
     private var previewScale: CGFloat {
         max(CGFloat(0.88), CGFloat(1) - abs(verticalDragOffset) / CGFloat(2000))
     }
@@ -60,6 +64,8 @@ struct ImageViewer: View {
         .overlay(alignment: .topLeading) {
             Text(name).font(.headline).foregroundStyle(.white.opacity(0.92))
                 .lineLimit(2).padding(20)
+                .opacity(isDraggingImage ? 0 : 1)
+                .allowsHitTesting(!isDraggingImage)
         }
         .overlay(alignment: .bottomTrailing) {
             AttachmentActions(name: name, mediaType: mediaType, load: load,
@@ -67,6 +73,8 @@ struct ImageViewer: View {
                               onToast: { text in flashToast(text) },
                               onOpenGallery: onOpenGallery)
                 .padding(20)
+                .opacity(isDraggingImage ? 0 : 1)
+                .allowsHitTesting(!isDraggingImage)
         }
         .overlay(alignment: .bottomLeading) {
             HStack(spacing: 14) {
@@ -93,6 +101,8 @@ struct ImageViewer: View {
                 .accessibilityLabel("识别文字")
             }
             .padding(20)
+            .opacity(isDraggingImage ? 0 : 1)
+            .allowsHitTesting(!isDraggingImage)
         }
         .overlay { if showToast { toastView } }
         .sheet(isPresented: $showOCR) {
