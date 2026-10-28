@@ -103,12 +103,20 @@ struct RootView: View {
                     Divider()
                     Text("发送到").font(.headline)
                     if model.routeIsolationEnabled {
-                        shareDestinationRow(title: "互传", subtitle: "仅发送到 Windows／iPhone 互传",
-                                            id: "__transfer__")
+                        if model.transferRouteAvailable {
+                            shareDestinationRow(title: "互传", subtitle: "仅发送到 Windows／iPhone 互传",
+                                                id: "__transfer__")
+                        } else {
+                            Label("互传暂不可用：当前 Go 未确认已连接具备路由保护的 FerryHelper。助手对话仍可单独发送。",
+                                  systemImage: "exclamationmark.shield")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
                         ForEach(model.assistantStore.assistants) { assistant in
                             shareDestinationRow(title: assistant.name,
                                                 subtitle: "独立助手对话", id: assistant.id)
                         }
+                        routingRecheckControl
                     } else {
                         VStack(alignment: .leading, spacing: 9) {
                             Label("当前服务器尚未确认支持独立消息路由。为防止误发，暂不能发送外部分享。",
@@ -119,7 +127,7 @@ struct RootView: View {
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
-                            Text("如果电脑 FerryHelper 刚恢复配对，可重新检测；如果仍不支持，请确认手机和 Helper 连接的是同一台 Go 服务。文件会继续保留。")
+                            Text("如果服务器支持独立助手路由，即使 Helper 离线也可以发送到已验证的助手；纯互传仍要求 Helper 在线。文件会继续保留。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                             Button {
@@ -147,7 +155,9 @@ struct RootView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .frame(maxWidth: .infinity)
-                    .disabled(sharingNow || shareRecipient == nil || !model.routeIsolationEnabled)
+                    .disabled(sharingNow || shareRecipient == nil ||
+                              model.destinationForExternalShare(
+                                shareRecipient == "__transfer__" ? nil : shareRecipient) == nil)
                 }
                 .padding(20)
             }
@@ -155,7 +165,7 @@ struct RootView: View {
             .navigationTitle("分享至 Ferry")
             .navigationBarTitleDisplayMode(.inline)
             .task {
-                if !model.routeIsolationEnabled { await verifySharedRoute() }
+                await verifySharedRoute()
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -176,6 +186,24 @@ struct RootView: View {
             shareError = nil
         } else {
             shareError = "服务器能力检查未通过。请确认此服务器上的 Go V2 与 FerryHelper 已配对并正常监听。"
+        }
+    }
+
+    private var routingRecheckControl: some View {
+        HStack {
+            Text("Go：\(model.endpoint?.origin ?? model.serverAddress)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button {
+                Task { await verifySharedRoute() }
+            } label: {
+                if checkingSharedRoute { ProgressView() }
+                else { Label("重新检测", systemImage: "arrow.clockwise") }
+            }
+            .buttonStyle(.bordered)
+            .disabled(checkingSharedRoute)
         }
     }
 
