@@ -20,6 +20,9 @@ struct VideoPlayerView: View {
     var isActive: Bool = true
     var onClose: (() -> Void)? = nil
     var onVerticalDrag: ((CGFloat) -> Void)? = nil
+    // Explicitly relay horizontal video swipes to the outer mixed-media pager.
+    // AVPlayerLayer can consume a parent TabView page gesture on real devices.
+    var onHorizontalSwipe: ((CGFloat) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
@@ -61,7 +64,7 @@ struct VideoPlayerView: View {
                 default:
                     break
                 }
-            })
+            }, onHorizontalSwipe: onHorizontalSwipe)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .scaleEffect(scale)
@@ -208,17 +211,20 @@ struct VideoPlayerView: View {
 private struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
     let onVerticalPan: (UIGestureRecognizer.State, CGFloat, CGFloat) -> Void
+    let onHorizontalSwipe: ((CGFloat) -> Void)?
 
     func makeUIView(context: Context) -> PlayerContainerUIView {
         let view = PlayerContainerUIView()
         view.player = player
         view.onVerticalPan = onVerticalPan
+        view.onHorizontalSwipe = onHorizontalSwipe
         return view
     }
 
     func updateUIView(_ uiView: PlayerContainerUIView, context: Context) {
         uiView.player = player
         uiView.onVerticalPan = onVerticalPan
+        uiView.onHorizontalSwipe = onHorizontalSwipe
     }
 }
 
@@ -231,6 +237,8 @@ private final class PlayerContainerUIView: UIView, UIGestureRecognizerDelegate {
     }
 
     var onVerticalPan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
+    var onHorizontalSwipe: ((CGFloat) -> Void)?
+    private var horizontalPan: UIPanGestureRecognizer!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -238,6 +246,11 @@ private final class PlayerContainerUIView: UIView, UIGestureRecognizerDelegate {
         pan.delegate = self
         pan.cancelsTouchesInView = false
         addGestureRecognizer(pan)
+        let horizontal = UIPanGestureRecognizer(target: self, action: #selector(handleHorizontalPan(_:)))
+        horizontal.delegate = self
+        horizontal.cancelsTouchesInView = false
+        horizontalPan = horizontal
+        addGestureRecognizer(horizontal)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -245,11 +258,23 @@ private final class PlayerContainerUIView: UIView, UIGestureRecognizerDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let velocity = pan.velocity(in: self)
-        // A horizontal or ambiguous drag stays with the parent pager.
+        if pan === horizontalPan {
+            return onHorizontalSwipe != nil && abs(velocity.x) > abs(velocity.y) * 1.25
+        }
+        // Only a primarily vertical gesture closes the video player.
         return abs(velocity.y) > abs(velocity.x) * 1.25
     }
 
     @objc private func handleVerticalPan(_ pan: UIPanGestureRecognizer) {
         onVerticalPan?(pan.state, pan.translation(in: self).y, pan.velocity(in: self).y)
+    }
+
+    @objc private func handleHorizontalPan(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .ended else { return }
+        let distance = pan.translation(in: self).x
+        let velocity = pan.velocity(in: self).x
+        if abs(distance) >= 65 || abs(velocity) >= 550 {
+            onHorizontalSwipe?(distance != 0 ? distance : velocity)
+        }
     }
 }
