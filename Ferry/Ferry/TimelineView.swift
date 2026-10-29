@@ -22,6 +22,7 @@ struct TimelineView: View {
     @State private var showNewAssistant = false
     @State private var showReviewList = false
     @State private var atBottom = true
+    @State private var bottomAnchorVisible = false
     @State private var isFollowingTail = true
     @State private var transcriptUserDragging = false
     @State private var showAttachmentPanel = false
@@ -321,29 +322,40 @@ struct TimelineView: View {
                                         .padding(.top, 100)
                                 }
                             }
+                        // Section gives SwiftUI a stable lazy hierarchy.
+                        // Each message ForEach produces one identified subview,
+                        // even when it owns an optional newer-page gap button.
                         ForEach(model.daySections) { section in
-                            Text(section.dayLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 6)
-                            ForEach(section.messages) { message in
-                                TimelineMessageCell(model: model,
-                                                    message: message,
-                                                    selectionMode: selectionMode,
-                                                    isSelected: selectedIDs.contains(message.id),
-                                                    isHighlighted: jumpTargetID == message.id,
-                                                    highlightOn: highlightOn,
-                                                    onOpenGallery: openMediaGallery,
-                                                    onSendEditedImage: sendEditedImage,
-                                                    onToggleSelection: toggleSelection)
-                                    // Reserve the floating bar's height above
-                                    // the row a jump landed on, so anchoring
-                                    // the row to the top of the scroll view
-                                    // leaves it just below the bar.
-                                    // Jump positioning is a scroll anchor, not
-                                    // permanent padding on the target message.
-                                    .contentShape(Rectangle())
+                            Section {
+                                ForEach(section.messages) { message in
+                                    VStack(spacing: 18) {
+                                        TimelineMessageCell(model: model,
+                                                            message: message,
+                                                            selectionMode: selectionMode,
+                                                            isSelected: selectedIDs.contains(message.id),
+                                                            isHighlighted: jumpTargetID == message.id,
+                                                            highlightOn: highlightOn,
+                                                            onOpenGallery: openMediaGallery,
+                                                            onSendEditedImage: sendEditedImage,
+                                                            onToggleSelection: toggleSelection)
+                                            .contentShape(Rectangle())
+                                        if model.hasMobileNewerGap(after: message) {
+                                            Button {
+                                                Task { await model.loadNewerAcrossGap() }
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    if model.isLoadingNewerGap { ProgressView() }
+                                                    Text("中间还有历史消息 · 加载较新记录")
+                                                }
+                                                .font(.footnote)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 10)
+                                            }
+                                            .disabled(model.isLoadingNewerGap)
+                                            .buttonStyle(.plain)
+                                            .accessibilityIdentifier("load-newer-history-gap")
+                                        }
+                                    }
                                     .id(message.id)
                                     .onAppear {
                                         if message.id == model.visibleMessages.last?.id {
@@ -352,32 +364,24 @@ struct TimelineView: View {
                                         }
                                     }
                                     .onScrollVisibilityChange(threshold: 0.02) { visible in
-                                        // Geometry alone can report a bottom offset
-                                        // while LazyVStack has failed to paint rows.
                                         guard message.id == model.visibleMessages.last?.id else { return }
                                         visibleTailID = visible ? message.id : nil
                                     }
-                                if model.hasMobileNewerGap(after: message) {
-                                    Button {
-                                        Task { await model.loadNewerAcrossGap() }
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            if model.isLoadingNewerGap { ProgressView() }
-                                            Text("中间还有历史消息 · 加载较新记录")
-                                        }
-                                        .font(.footnote)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                    }
-                                    .disabled(model.isLoadingNewerGap)
-                                    .buttonStyle(.plain)
-                                    .accessibilityIdentifier("load-newer-history-gap")
                                 }
+                            } header: {
+                                Text(section.dayLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.top, 6)
                             }
                         }
-                        // Invisible bottom anchor: scrolling to this reaches the
-                        // true bottom regardless of LazyVStack content heights.
-                        Color.clear.frame(height: 1).id(Self.bottomAnchorID)
+                        // Observe the real bottom instead of estimated contentSize.
+                        Color.clear.frame(height: 1)
+                            .id(Self.bottomAnchorID)
+                            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                                bottomAnchorVisible = visible
+                            }
                     }
 
     }
