@@ -33,6 +33,13 @@ enum VideoThumbnailCache {
         return base.appendingPathComponent("Thumbnails", isDirectory: true)
     }
 
+    /// A deleted chat message must not leave a permanent video poster.
+    /// Favorites own a separate protected copy and are never deleted here.
+    static func removeCached(for id: String) {
+        try? FileManager.default.removeItem(at: fileURL(for: id))
+        try? FileManager.default.removeItem(at: durationURL(for: id))
+    }
+
     static func cachedThumbnail(for id: String) -> UIImage? {
         let url = fileURL(for: id)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
