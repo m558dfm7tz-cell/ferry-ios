@@ -1335,6 +1335,18 @@ final class AppModel {
                                 destinationOverride: originalTarget)
     }
 
+    /// Read the independent favorite library even after the original
+    /// message was deleted on another device. The temporary download lands
+    /// in the ordinary reclaimable cache; on-phone offline favorites are
+    /// kept separately under Application Support/Favorites.
+    func protectedFavoriteURL(for message: MessagePayload) async -> URL? {
+        guard message.file != nil, let endpoint, let token else { return nil }
+        return try? await client.attachmentFile(
+            endpoint: endpoint, token: token,
+            path: "/api/v1/favorites/\(message.id)/file",
+            filename: message.file?.name)
+    }
+
     func fileData(for message: MessagePayload) async -> Data? {
         guard let url = await fileURL(for: message) else { return nil }
         return try? Data(contentsOf: url)
@@ -1675,7 +1687,7 @@ final class AppModel {
             file = FileInfo(name: server.fileName,
                             mediaType: Self.mediaType(forFileKind: server.fileKind),
                             size: 0,
-                            downloadURL: "/api/v1/files/\(server.id)")
+                            downloadURL: "/api/v1/favorites/\(server.id)/file")
         } else {
             file = nil
         }
