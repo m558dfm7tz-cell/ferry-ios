@@ -2575,6 +2575,19 @@ final class AppModel {
                                           createdAt: createdAt,
                                           text: "FERRY_KEYBOARD_TAIL_TEST", file: nil)
         messages = [text, image, video, reviewJSONMessage, reviewTextMessage, keyboardTail]
+        if ProcessInfo.processInfo.arguments.contains("-uiTestMockLongHistory") {
+            // Keep the existing newest test bubble last, but force the active
+            // transcript through its LazyVStack (>30) rendering path.
+            let older = (0..<48).map { index in
+                MessagePayload(id: "mock-old-\(index)",
+                               sequence: Int64(index - 48), kind: .text,
+                               senderName: "测试", senderKind: "iphone",
+                               isCurrentDevice: false, createdAt: createdAt,
+                               text: "测试历史消息 \(index) 测试滚动和回到最新消息按钮",
+                               file: nil)
+            }
+            messages.insert(contentsOf: older, at: 0)
+        }
         if ProcessInfo.processInfo.arguments.contains("-uiTestMockAssistant") {
             // An isolated, short assistant conversation reproduces the
             // different keyboard geometry of 总管/助手 compared with transfer.
