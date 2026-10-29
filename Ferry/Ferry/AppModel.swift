@@ -2036,9 +2036,13 @@ final class AppModel {
                     limit: 10, before: nil, after: nil, aroundID: nil,
                     day: day, search: nil, filter: nil)
                 guard current == generation, !Task.isCancelled else { return .cancelled }
-                guard let targetID = page.targetID else { return .empty }
-                markMobileGap(around: page.messages, conversation: mobileConversation)
-                mergeMobileContext(page.messages)
+                guard page.targetID != nil else { return .empty }
+                // A locally deleted message must not become an invisible jump
+                // target just because it is still present on the server.
+                let visible = page.messages.filter { !localStore.isHidden($0) }
+                guard let targetID = visible.first?.id else { return .empty }
+                markMobileGap(around: visible, conversation: mobileConversation)
+                mergeMobileContext(visible)
                 mobileHasOlderByConversation[mobileConversation] = page.hasOlder
                 hasOlder = page.hasOlder
                 return .found(targetID)
@@ -2097,9 +2101,10 @@ final class AppModel {
                     limit: 10, before: nil, after: nil, aroundID: id,
                     day: nil, search: nil, filter: nil)
                 guard current == generation else { return false }
-                guard page.targetID == id else { return false }
-                let target = page.messages.first(where: { $0.id == id })
-                let convID = target.flatMap { visibleIdentity(for: $0) }
+                guard page.targetID == id,
+                      let target = page.messages.first(where: { $0.id == id }),
+                      !localStore.isHidden(target) else { return false }
+                let convID = visibleIdentity(for: target)
                 let conv = convID == nil ? "transfer"
                     : (convID == Self.unclassifiedHistoryID ? "__unclassified__" : convID!)
                 markMobileGap(around: page.messages, conversation: conv)
