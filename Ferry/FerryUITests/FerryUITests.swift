@@ -53,6 +53,38 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(newest.exists, "keyboard dismissal must retain the transcript")
     }
 
+    /// Existential checks alone miss the reported bug: the last message can
+    /// exist in the hierarchy but shift multiple rows above the input bar.
+    /// Mock mode adds a deterministic final text bubble for this geometry test.
+    @MainActor
+    func testNewestBubbleTracksKeyboardResize() throws {
+        let tail = app.staticTexts["FERRY_KEYBOARD_TAIL_TEST"].firstMatch
+        let input = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(tail.waitForExistence(timeout: 10),
+                      "the newest mock message must exist on cold launch")
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        XCTAssertTrue(tail.isHittable,
+                      "the newest bubble must be visible without swiping")
+        let originalGap = input.frame.minY - tail.frame.maxY
+        XCTAssertGreaterThanOrEqual(originalGap, -16)
+
+        tap(input)
+        if app.keyboards.firstMatch.waitForExistence(timeout: 6) {
+            // Sample after the native keyboard animation, not during it.
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    guard tail.isHittable else { return false }
+                    let gap = input.frame.minY - tail.frame.maxY
+                    return gap >= -16 && abs(gap - originalGap) <= 48
+                }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 6),
+                           .completed,
+                           "the final bubble should stay immediately above the composer")
+        } else {
+            print("FERRY_UI_DIAG_KEYBOARD: simulator has no software keyboard; geometry check requires keyboard-enabled simulator/device")
+        }
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
