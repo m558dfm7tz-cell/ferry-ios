@@ -2087,6 +2087,8 @@ final class AppModel {
     /// Load an older favorited message before jumping across conversations.
     /// No server-side mutation; preserve the existing global pagination cursor.
     func ensureMessageLoaded(id: String) async -> Bool {
+        // A message already in the visible window needs no extra network hop.
+        if visibleMessages.contains(where: { $0.id == id }) { return true }
         if mobileHistoryAvailable, let endpoint, let token {
             let current = generation
             do {
@@ -2177,7 +2179,10 @@ final class AppModel {
     /// latest ten. Show a real paging boundary, not fictitiously adjacent rows.
     private func markMobileGap(around incoming: [MessagePayload], conversation: String) {
         guard mobileHistoryAvailable, !incoming.isEmpty else { return }
-        let loaded = visibleMessages
+        ensureTranscriptIndex()
+        let bucketKey = conversation == "transfer" ? Self.transferTranscriptKey
+            : (conversation == "__unclassified__" ? Self.unclassifiedHistoryID : conversation)
+        let loaded = cachedMessagesByConversation?[bucketKey] ?? []
         let context = incoming.filter { message in
             let identity = visibleIdentity(for: message)
             return conversation == "transfer" ? identity == nil
