@@ -18,7 +18,10 @@ final class AppModel {
     private(set) var phase: Phase = .setup
     private(set) var currentDevice: Device?
     private(set) var messages: [MessagePayload] = [] {
-        didSet { invalidateTranscriptCache() }
+        didSet {
+            invalidateTranscriptCache()
+            if mobileHistoryAvailable { scheduleMobileSnapshot() }
+        }
     }
     private(set) var statusMessage: String?
     private(set) var credentialWarning: String?
@@ -35,10 +38,36 @@ final class AppModel {
     private(set) var dayCounts: [String: Int] = [:]
     private var dayCountsByConversation: [String: [String: Int]] = [:]
 
+    // Mobile-only history is additive: older Go servers still use the global
+    // history API. No permanent limit is placed on browsing-session messages.
+    @ObservationIgnored private var mobileHistoryAvailable = false
+    @ObservationIgnored private var mobileHasOlderByConversation: [String: Bool] = [:]
+    @ObservationIgnored private var mobileLoadedConversations: Set<String> = []
+    @ObservationIgnored private var mobileSnapshotTask: Task<Void, Never>?
+    @ObservationIgnored private var locatedSearchResults: [String: MessagePayload] = [:]
+
+    private var mobileConversation: String {
+        if selectedAssistantID == Self.unclassifiedHistoryID { return "__unclassified__" }
+        return selectedAssistantID ?? "transfer"
+    }
+
+    private var availableMobileConversations: [String] {
+        var keys = ["transfer"] + assistantStore.assistants.map(\.id) + ["__unclassified__"]
+        var seen: Set<String> = []
+        keys = keys.filter { seen.insert($0).inserted }
+        return keys
+    }
+
     /// Nil means the transfer tab once new routing is verified.
     // Selection changes the index key, not the underlying message data.
     // Do not discard all conversations' cached sections on each avatar tap.
-    var selectedAssistantID: String?
+    var selectedAssistantID: String? {
+        didSet {
+            if mobileHistoryAvailable {
+                hasOlder = mobileHasOlderByConversation[mobileConversation] ?? false
+            }
+        }
+    }
     /// Enable assistant routing only after Go's V2 contract and the complete
     /// assistant profile list are verified. A live Helper is additionally
     /// required for pure transfer, not for assistant-addressed messages.
@@ -1320,6 +1349,12 @@ final class AppModel {
     private func resetSession(endpoint: ServerEndpoint, token: String?) -> UUID {
         pollTask?.cancel()
         pollTask = nil
+        mobileSnapshotTask?.cancel()
+        mobileSnapshotTask = nil
+        mobileHistoryAvailable = false
+        mobileHasOlderByConversation = [:]
+        mobileLoadedConversations = []
+        locatedSearchResults = [:]
         generation = UUID()
         notificationSettings.activeOrigin = endpoint.origin
         // Old-server banners must not remain actionable after a switch.
@@ -1657,12 +1692,102 @@ final class AppModel {
         }
     }
 
+    private func scheduleMobileSnapshot() {
+        guard mobileHistoryAvailable, spaceKey != nil else { return }
+        mobileSnapshotTask?.cancel()
+        mobileSnapshotTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self, let space = self.spaceKey,
+                  self.mobileHistoryAvailable else { return }
+            self.ensureTranscriptIndex()
+            for conversation in self.availableMobileConversations {
+                let key = conversation == "transfer" ? Self.transferTranscriptKey
+                    : (conversation == "__unclassified__" ? Self.unclassifiedHistoryID : conversation)
+                let records = Array((self.cachedMessagesByConversation?[key] ?? []).suffix(20))
+                await MobileTranscriptCache.shared.write(space: space, conversation: conversation,
+                                                         messages: records)
+                if Task.isCancelled { return }
+            }
+        }
+    }
+
+    /// Display ten cached messages per conversation immediately, then replace
+    /// them with the server's authoritative newest ten. A stale cache is never
+    /// mistaken for an empty conversation on a server that lacks this API.
+    private func loadMobileInitial(generation current: UUID) async -> Bool {
+        guard routeIsolationEnabled, let endpoint, let token, let spaceKey else { return false }
+        let conversations = availableMobileConversations
+        var fromCache: [MessagePayload] = []
+        var seen: Set<String> = []
+        for conversation in conversations {
+            let cached = await MobileTranscriptCache.shared.read(space: spaceKey,
+                                                                  conversation: conversation)
+            guard current == generation else { return true }
+            if cached.count > 10 { mobileHasOlderByConversation[conversation] = true }
+            for message in cached.suffix(10) where seen.insert(message.id).inserted {
+                fromCache.append(message)
+            }
+        }
+        if !fromCache.isEmpty {
+            messages = fromCache.sorted { $0.sequence < $1.sequence }
+            cursor = messages.last?.sequence ?? 0
+            countedMessageIDs = []
+            dayCounts = [:]
+            dayCountsByConversation = [:]
+            countDays(messages)
+            reviewStore.rebuild(from: messages)
+        }
+        // The selected transfer conversation is fetched first; other saved
+        // conversations are hydrated independently (no cross-conversation scan).
+        for (index, conversation) in conversations.enumerated() {
+            let page: MessagesPage
+            do {
+                page = try await client.mobileHistory(
+                    endpoint: endpoint, token: token, conversation: conversation,
+                    limit: 10, before: nil, after: nil, aroundID: nil,
+                    day: nil, search: nil, filter: nil)
+            } catch {
+                guard current == generation else { return true }
+                if index == 0 { return false } // old Go: use compatible global endpoint
+                statusMessage = "部分会话历史暂时无法同步。"
+                break
+            }
+            guard current == generation else { return true }
+            mobileHistoryAvailable = true
+            mobileLoadedConversations.insert(conversation)
+            mobileHasOlderByConversation[conversation] = page.hasOlder
+            let key = conversation == "transfer" ? Self.transferTranscriptKey
+                : (conversation == "__unclassified__" ? Self.unclassifiedHistoryID : conversation)
+            ensureTranscriptIndex()
+            let removed = Set((cachedMessagesByConversation?[key] ?? []).map(\.id))
+            var freshIDs = Set(page.messages.map(\.id))
+            let keep = messages.filter { !removed.contains($0.id) && freshIDs.insert($0.id).inserted }
+            messages = (keep + page.messages).sorted { $0.sequence < $1.sequence }
+            cursor = max(cursor, page.nextCursor, messages.last?.sequence ?? 0)
+            hasOlder = mobileHasOlderByConversation[mobileConversation] ?? false
+            countedMessageIDs = []
+            dayCounts = [:]
+            dayCountsByConversation = [:]
+            countDays(messages)
+            reviewStore.rebuild(from: messages)
+        }
+        return mobileHistoryAvailable
+    }
+
     /// Initial (WeChat-style) load: fetch the newest page and, later, start
     /// scanning older history in the background for the date-jump calendar.
     private func loadInitial(generation current: UUID) async {
         guard current == generation, let endpoint, let token else { return }
         isLoadingInitial = true
         defer { isLoadingInitial = false }
+        if await loadMobileInitial(generation: current) {
+            guard current == generation else { return }
+            phase = .connected
+            statusMessage = nil
+            buildDayIndexIfNeeded()
+            return
+        }
+        guard current == generation else { return }
         do {
             let page = try await client.messagesLatest(endpoint: endpoint, token: token, limit: Self.pageSize)
             guard current == generation else { return }
@@ -1698,6 +1823,27 @@ final class AppModel {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         let current = generation
+        if mobileHistoryAvailable {
+            let conversation = mobileConversation
+            let oldestInConversation = visibleMessages.first?.sequence
+            guard mobileHasOlderByConversation[conversation] == true,
+                  let oldestInConversation else { return false }
+            do {
+                let page = try await client.mobileHistory(
+                    endpoint: endpoint, token: token, conversation: conversation,
+                    limit: 10, before: oldestInConversation, after: nil,
+                    aroundID: nil, day: nil, search: nil, filter: nil)
+                guard current == generation else { return false }
+                prepend(page.messages)
+                mobileHasOlderByConversation[conversation] = page.hasOlder
+                hasOlder = page.hasOlder
+                return !page.messages.isEmpty
+            } catch {
+                guard current == generation else { return false }
+                statusMessage = error.localizedDescription
+                return false
+            }
+        }
         do {
             let page = try await client.messagesBefore(endpoint: endpoint, token: token, before: oldest, limit: Self.pageSize)
             guard current == generation else { return false }
