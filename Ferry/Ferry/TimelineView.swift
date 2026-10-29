@@ -34,6 +34,11 @@ struct TimelineView: View {
     @State private var pendingScroll: PendingScroll?
     @State private var didInitialScroll = false
     @State private var renderedTailID: String?
+    @State private var visibleTailID: String?
+    // A new ScrollView identity forces LazyVStack to rebuild after an actual
+    // background round-trip; stale lazy cells otherwise stay blank until drag.
+    @State private var transcriptGeneration = 0
+    @State private var wasBackgrounded = false
     @State private var initialAnchorTask: Task<Void, Never>?
     @State private var showNewPill = false
     /// Message a date/search jump landed on. It keeps a top gap (see
@@ -60,6 +65,7 @@ struct TimelineView: View {
     @State private var keyboardTransitioning = false
     @State private var keyboardTransitionTask: Task<Void, Never>?
     @State private var keyboardTailNeedsCorrection = false
+    @State private var measuredAtBottom = true
     @State private var keyboardReanchorQueued = false
     @State private var keyboardReanchorTask: Task<Void, Never>?
     // An explicit touch distinguishes a real history drag from UIKit's
@@ -344,6 +350,12 @@ struct TimelineView: View {
                                             scheduleInitialBottomAnchor()
                                         }
                                     }
+                                    .onScrollVisibilityChange(threshold: 0.02) { visible in
+                                        // Geometry alone can report a bottom offset
+                                        // while LazyVStack has failed to paint rows.
+                                        guard message.id == model.visibleMessages.last?.id else { return }
+                                        visibleTailID = visible ? message.id : nil
+                                    }
                                 if model.hasMobileNewerGap(after: message) {
                                     Button {
                                         Task { await model.loadNewerAcrossGap() }
@@ -388,7 +400,7 @@ struct TimelineView: View {
                             .onTapGesture { dismissKeyboard() }
                     }
                 }
-                let messageObserved = baseTranscript
+                let messageObserved = baseTranscript.id(transcriptGeneration)
                     .simultaneousGesture(DragGesture(minimumDistance: 8)
                         .onChanged { _ in
                             // Only a real touch can cancel tail-follow. Allow
@@ -400,6 +412,8 @@ struct TimelineView: View {
                                 jumpHoldingID = nil
                                 keyboardReanchorTask?.cancel()
                                 keyboardReanchorQueued = false
+                                // Invalidate any uncommitted keyboard scroll.
+                                if pendingScroll?.reason == .keyboard { pendingScroll = nil }
                                 keyboardWasAtBottom = false
                                 keyboardAnchorLocked = false
                                 keyboardTailNeedsCorrection = false
@@ -434,6 +448,8 @@ struct TimelineView: View {
                         await Task.yield()
                         guard pendingScroll == request else { return }
                         if request.reason == .keyboard {
+                            guard isFollowingTail, !transcriptUserDragging,
+                                  jumpHoldingID == nil else { return }
                             // Avoid a second animation fighting the native
                             // safe-area animation already in progress.
                             var transaction = Transaction(animation: nil)
@@ -480,13 +496,20 @@ struct TimelineView: View {
                     initialAnchorTask?.cancel()
                     didInitialScroll = false
                     renderedTailID = nil
+                    visibleTailID = nil
                     isFollowingTail = true
                     scheduleInitialBottomAnchor()
                 }
-                .onChange(of: model.isLoadingInitial) { _, loading in
-                    guard !loading, isFollowingTail else { return }
-                    if didInitialScroll { scrollToBottomAnchor(reason: .newMessage) }
-                    else { scheduleInitialBottomAnchor() }
+                .onChange(of: model.isLoadingInitial) { wasLoading, loading in
+                    guard wasLoading, !loading, isFollowingTail,
+                          !model.visibleMessages.isEmpty, jumpHoldingID == nil else { return }
+                    // A cache-to-server replacement can invalidate lazy cell
+                    // geometry even when the current ScrollView reports bottom.
+                    if !didInitialScroll || visibleTailID != model.visibleMessages.last?.id {
+                        rebuildTranscriptAtTail()
+                    } else {
+                        scrollToBottomAnchor(reason: .newMessage)
+                    }
                 }
                 .onAppear { scheduleInitialBottomAnchor() }
                 .onChange(of: model.scrollToBottomToken) { _, _ in
@@ -516,9 +539,16 @@ struct TimelineView: View {
                         keyboardTransitioning = false
                         keyboardVisible = false
                         initialAnchorTask?.cancel()
+                        if phase == .background { wasBackgrounded = true }
+                    } else if wasBackgrounded {
+                        wasBackgrounded = false
+                        // Only rebuild after a genuine background transition.
+                        // Preserve the user's historical scroll when not pinned.
+                        if isFollowingTail, jumpHoldingID == nil,
+                           !model.visibleMessages.isEmpty {
+                            rebuildTranscriptAtTail()
+                        }
                     } else if isFollowingTail && jumpHoldingID == nil {
-                        // Resume with the user's reading intent intact. Do not
-                        // yank an intentionally scrolled-up transcript to tail.
                         if didInitialScroll { scrollToBottomAnchor(reason: .newMessage) }
                         else { scheduleInitialBottomAnchor() }
                     }
@@ -541,7 +571,8 @@ struct TimelineView: View {
                     // the bottom. A queued scrollTo is not proof of success.
                     if !didInitialScroll, !model.isLoadingInitial,
                        let tail = model.visibleMessages.last?.id,
-                       renderedTailID == tail, state.viewportHeight > 0,
+                       renderedTailID == tail, visibleTailID == tail,
+                       state.viewportHeight > 0,
                        state.contentHeight > 0, state.distanceToBottom <= 24,
                        !transcriptUserDragging, jumpHoldingID == nil {
                         didInitialScroll = true
