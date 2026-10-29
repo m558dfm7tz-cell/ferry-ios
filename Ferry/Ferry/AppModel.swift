@@ -2558,3 +2558,96 @@ private struct MobileNewerGap: Equatable {
     let afterSequence: Int64
     let upperSequence: Int64
 }
+
+
+// This actor owns only regenerable media/temp bytes. Application Support's
+// Favorites and MessageSnapshots are deliberately excluded. The quotas are
+// global across saved computers so switching PCs cannot accumulate unbounded
+// discarded videos on the iPhone.
+private actor ManagedDiskCache {
+    static let shared = ManagedDiskCache()
+    private var lastSweep = Date.distantPast
+
+    func sweep(force: Bool = false) {
+        if !force && Date().timeIntervalSince(lastSweep) < 300 { return }
+        lastSweep = Date()
+        let fm = FileManager.default
+        guard let cacheRoot = fm.urls(for: .cachesDirectory, in: .userDomainMask).first,
+              let supportRoot = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let media = cacheRoot.appendingPathComponent("ferry-media", isDirectory: true)
+        let downloads = cacheRoot.appendingPathComponent("FerryAttachments", isDirectory: true)
+        prune([media, downloads], maxBytes: 500 * 1024 * 1024, maxAge: 14 * 86400)
+        let spaces = supportRoot.appendingPathComponent("Ferry/Spaces", isDirectory: true)
+        var posterDirs: [URL] = []
+        if let entries = try? fm.contentsOfDirectory(at: spaces, includingPropertiesForKeys: nil) {
+            for entry in entries {
+                posterDirs.append(entry.appendingPathComponent("Thumbnails", isDirectory: true))
+            }
+        }
+        prune(posterDirs, maxBytes: 100 * 1024 * 1024, maxAge: 30 * 86400)
+        // These are only transient player/QuickLook scratch files, never
+        // user documents, Favorites, or the original source attachments.
+        for name in ["ferry-preview-", "thumb-"] {
+            let temp = fm.temporaryDirectory
+            guard let files = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+            for file in files where file.lastPathComponent.hasPrefix(name) {
+                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                   let modified = attrs.contentModificationDate,
+                   Date().timeIntervalSince(modified) > 86400 {
+                    try? fm.removeItem(at: file)
+                }
+            }
+        }
+    }
+
+    private func prune(_ roots: [URL], maxBytes: Int64, maxAge: TimeInterval) {
+        let fm = FileManager.default
+        var entries: [(url: URL, size: Int64, modified: Date)] = []
+        for root in roots {
+            guard let walker = fm.enumerator(at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in walker {
+                guard let attrs = try? url.resourceValues(forKeys:
+                    [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                    attrs.isRegularFile == true else { continue }
+                entries.append((url, Int64(attrs.fileSize ?? 0),
+                                attrs.contentModificationDate ?? .distantPast))
+            }
+        }
+        let now = Date()
+        var total = entries.reduce(Int64(0)) { $0 + $1.size }
+        // Never delete files only just written; downloads being opened and
+        // recently generated thumbnails may be in use by the UI.
+        for item in entries.sorted(by: { $0.modified < $1.modified }) {
+            let age = now.timeIntervalSince(item.modified)
+            guard age > 600, (age > maxAge || total > maxBytes) else { continue }
+            if (try? fm.removeItem(at: item.url)) != nil { total -= item.size }
+        }
+    }
+
+    func removeMessageArtifacts(_ id: String, mediaDigest: String?) {
+        let fm = FileManager.default
+        guard let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        if let mediaDigest {
+            let media = cache.appendingPathComponent("ferry-media", isDirectory: true)
+            if let items = try? fm.contentsOfDirectory(at: media, includingPropertiesForKeys: nil) {
+                for item in items where item.lastPathComponent.hasPrefix(mediaDigest + ".") {
+                    try? fm.removeItem(at: item)
+                }
+            }
+        }
+        let attachments = cache.appendingPathComponent("FerryAttachments", isDirectory: true)
+        if let spaces = try? fm.contentsOfDirectory(at: attachments, includingPropertiesForKeys: nil) {
+            for space in spaces {
+                if let items = try? fm.contentsOfDirectory(at: space, includingPropertiesForKeys: nil) {
+                    for item in items where item.lastPathComponent.contains(id) {
+                        try? fm.removeItem(at: item)
+                    }
+                }
+            }
+        }
+        // Local offline favorite copies live under Application Support and
+        // are untouched by this deletion cleanup.
+    }
+}
