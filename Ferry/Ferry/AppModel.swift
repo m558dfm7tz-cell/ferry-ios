@@ -1303,8 +1303,8 @@ final class AppModel {
                                                              localFileName: nil), at: now)))
             if message.file != nil {
                 let current = generation
-                if let data = await fileData(for: message), current == generation {
-                    localStore.attachFavoriteFile(message.id, data: data)
+                if let url = await fileURL(for: message), current == generation {
+                    localStore.attachFavoriteFile(message.id, from: url)
                 }
             }
         }
