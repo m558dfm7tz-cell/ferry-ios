@@ -453,7 +453,8 @@ struct TimelineView: View {
                     // keyboard changes the available viewport, rather than
                     // letting a short scroll view alternate between top
                     // offset and bottom content anchoring.
-                    .frame(minHeight: viewport.size.height, alignment: .bottom)
+                    .frame(minHeight: model.visibleMessages.count <= 30
+                           ? viewport.size.height : 0, alignment: .bottom)
                     .background {
                         Color.clear
                             .contentShape(Rectangle())
