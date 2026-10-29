@@ -33,6 +33,9 @@ struct TimelineView: View {
     @State private var selectedIDs: Set<String> = []
     @State private var selectionAlert: SelectionAlert?
     @State private var pendingScroll: PendingScroll?
+    // iOS 18 scrolls to a true edge even when the one-point sentinel has not
+    // been laid out. ScrollViewReader remains for message-ID/date jumps only.
+    @State private var bottomEdgePosition = ScrollPosition(edge: .bottom)
     @State private var didInitialScroll = false
     @State private var renderedTailID: String?
     @State private var visibleTailID: String?
@@ -137,6 +140,19 @@ struct TimelineView: View {
                   jumpHoldingID == nil else { return }
         case .newMessage, .keyboard, .media:
             guard isFollowingTail, !transcriptUserDragging, jumpHoldingID == nil else { return }
+        }
+        if id == Self.bottomAnchorID && reason != .jump && reason != .pagination {
+            // Do not resolve the sentinel through a lazy ScrollViewReader.
+            // In a sparsely populated assistant conversation the tiny anchor
+            // may not exist in the currently realized range, dropping a tap.
+            if reason == .user {
+                withAnimation(.easeOut(duration: 0.20)) {
+                    bottomEdgePosition.scrollTo(edge: .bottom)
+                }
+            } else {
+                bottomEdgePosition.scrollTo(edge: .bottom)
+            }
+            return
         }
         pendingScroll = PendingScroll(id: id, anchor: anchor, reason: reason)
     }
@@ -437,7 +453,9 @@ struct TimelineView: View {
                             .onTapGesture { dismissKeyboard() }
                     }
                 }
-                let messageObserved = baseTranscript.id(transcriptGeneration)
+                let messageObserved = baseTranscript
+                    .id(transcriptGeneration)
+                    .scrollPosition($bottomEdgePosition)
                     .simultaneousGesture(DragGesture(minimumDistance: 8)
                         .onChanged { _ in
                             // Only a real touch can cancel tail-follow. Allow
@@ -1039,6 +1057,16 @@ struct TimelineView: View {
     }
 
     private func scrollToBottom() {
+        // A direct user command wins over earlier search/date jumps, keyboard
+        // correction and history pagination. Don't merely hide the pill.
+        jumpTask?.cancel()
+        jumpHoldingID = nil
+        clearJumpTarget()
+        initialAnchorTask?.cancel()
+        keyboardReanchorTask?.cancel()
+        pendingScroll = nil
+        transcriptUserDragging = false
+        transcriptTouchDragging = false
         isFollowingTail = true
         showNewPill = false
         scrollToBottomAnchor()
