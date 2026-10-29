@@ -44,6 +44,7 @@ final class AppModel {
     @ObservationIgnored private var mobileHistoryAvailable = false
     @ObservationIgnored private var mobileHasOlderByConversation: [String: Bool] = [:]
     @ObservationIgnored private var mobileLoadedConversations: Set<String> = []
+    @ObservationIgnored private var mobileLoadingConversations: Set<String> = []
     @ObservationIgnored private var mobileSnapshotTask: Task<Void, Never>?
     @ObservationIgnored private var locatedSearchResults: [String: MessagePayload] = [:]
 
@@ -890,6 +891,12 @@ final class AppModel {
     /// its unseen messages as seen; selecting 全部 marks everything as seen.
     func selectAssistant(_ id: String?) {
         if selectedAssistantID != id { selectedAssistantID = id }
+        if mobileHistoryAvailable {
+            let conversation = mobileConversation
+            if !mobileLoadedConversations.contains(conversation) {
+                Task { await ensureMobileConversationLoaded(conversation) }
+            }
+        }
         if let id {
             unreadAssistantIDs.remove(id)
             clearUnread(forAssistant: id)
@@ -1379,6 +1386,7 @@ final class AppModel {
         mobileHistoryAvailable = false
         mobileHasOlderByConversation = [:]
         mobileLoadedConversations = []
+        mobileLoadingConversations = []
         mobileCalendarCounts = [:]
         locatedSearchResults = [:]
         generation = UUID()
@@ -1716,6 +1724,29 @@ final class AppModel {
         if let selected = selectedAssistantID,
            !assistantStore.assistants.contains(where: { $0.id == selected }) {
             selectedAssistantID = nil
+        }
+    }
+
+    private func ensureMobileConversationLoaded(_ conversation: String) async {
+        guard mobileHistoryAvailable, !mobileLoadedConversations.contains(conversation),
+              mobileLoadingConversations.insert(conversation).inserted,
+              let endpoint, let token else { return }
+        defer { mobileLoadingConversations.remove(conversation) }
+        let current = generation
+        do {
+            let page = try await client.mobileHistory(
+                endpoint: endpoint, token: token, conversation: conversation,
+                limit: 10, before: nil, after: nil, aroundID: nil,
+                day: nil, search: nil, filter: nil)
+            guard current == generation else { return }
+            mobileLoadedConversations.insert(conversation)
+            mobileHasOlderByConversation[conversation] = page.hasOlder
+            mergeMobileContext(page.messages)
+            if mobileConversation == conversation { hasOlder = page.hasOlder }
+            scheduleMobileSnapshot()
+        } catch {
+            guard current == generation else { return }
+            statusMessage = "加载当前会话失败：" + error.localizedDescription
         }
     }
 
