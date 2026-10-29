@@ -37,6 +37,7 @@ final class AppModel {
     private(set) var isLoadingInitial = false
     private(set) var dayCounts: [String: Int] = [:]
     private var dayCountsByConversation: [String: [String: Int]] = [:]
+    private var mobileCalendarCounts: [String: [String: Int]] = [:]
 
     // Mobile-only history is additive: older Go servers still use the global
     // history API. No permanent limit is placed on browsing-session messages.
@@ -1354,6 +1355,7 @@ final class AppModel {
         mobileHistoryAvailable = false
         mobileHasOlderByConversation = [:]
         mobileLoadedConversations = []
+        mobileCalendarCounts = [:]
         locatedSearchResults = [:]
         generation = UUID()
         notificationSettings.activeOrigin = endpoint.origin
@@ -1724,7 +1726,8 @@ final class AppModel {
                                                                   conversation: conversation)
             guard current == generation else { return true }
             if cached.count > 10 { mobileHasOlderByConversation[conversation] = true }
-            for message in cached.suffix(10) where seen.insert(message.id).inserted {
+            for message in cached.suffix(10) where !localStore.isHidden(message)
+                && seen.insert(message.id).inserted {
                 fromCache.append(message)
             }
         }
@@ -1875,8 +1878,21 @@ final class AppModel {
 
     /// Calendar markers use the active conversation in verified routing mode.
     var visibleDayCounts: [String: Int] {
+        if mobileHistoryAvailable, let counts = mobileCalendarCounts[mobileConversation] {
+            return counts
+        }
         guard routeIsolationEnabled else { return dayCounts }
         return dayCountsByConversation[selectedAssistantID ?? "__transfer__"] ?? [:]
+    }
+
+    func refreshVisibleDayCounts() async {
+        guard mobileHistoryAvailable, let endpoint, let token else { return }
+        let conversation = mobileConversation
+        let current = generation
+        guard let counts = try? await client.mobileDays(endpoint: endpoint, token: token,
+                                                       conversation: conversation),
+              current == generation else { return }
+        mobileCalendarCounts[conversation] = counts
     }
 
     private func countDays(_ msgs: [MessagePayload]) {
