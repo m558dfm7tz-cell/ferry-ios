@@ -17,6 +17,7 @@ protocol FerryServicing {
     func messages(endpoint: ServerEndpoint, token: String, after: Int64) async throws -> MessagesPage
     func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
+    func mobileDays(endpoint: ServerEndpoint, token: String, conversation: String) async throws -> [String: Int]
     func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
                        limit: Int, before: Int64?, after: Int64?,
                        aroundID: String?, day: Date?, search: String?,
@@ -45,6 +46,9 @@ protocol FerryServicing {
 // Test mocks and legacy adapters may implement only the original API.
 // Routing is never silently dropped when an unsupported adapter is used.
 extension FerryServicing {
+    func mobileDays(endpoint: ServerEndpoint, token: String, conversation: String) async throws -> [String: Int] {
+        throw URLError(.unsupportedURL)
+    }
     func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
                        limit: Int, before: Int64?, after: Int64?,
                        aroundID: String?, day: Date?, search: String?,
@@ -242,6 +246,17 @@ struct FerryClient: FerryServicing {
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage {
         try await json(endpoint: endpoint, path: "/api/v1/messages", token: token,
                        query: [URLQueryItem(name: "before", value: String(before)), URLQueryItem(name: "limit", value: String(limit))])
+    }
+
+    func mobileDays(endpoint: ServerEndpoint, token: String,
+                    conversation: String) async throws -> [String: Int] {
+        struct Days: Decodable { let counts: [String: Int] }
+        let payload: Days = try await json(endpoint: endpoint, path: "/api/v1/mobile/days",
+                                           token: token, query: [
+                                               URLQueryItem(name: "conversation", value: conversation),
+                                               URLQueryItem(name: "timezone", value: TimeZone.current.identifier)
+                                           ])
+        return payload.counts
     }
 
     func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
