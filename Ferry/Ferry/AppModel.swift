@@ -1274,8 +1274,11 @@ final class AppModel {
         let path = mediaCacheURL(for: message)?.lastPathComponent ?? ""
         let digest = path.split(separator: ".").first.map(String.init)
         VideoThumbnailCache.removeCached(for: message.id)
+        let originFolder = endpoint.map {
+            SpaceKey(origin: $0.origin, password: "").folderName
+        }
         Task { await ManagedDiskCache.shared.removeMessageArtifacts(
-            message.id, mediaDigest: digest)
+            message.id, mediaDigest: digest, originFolder: originFolder)
         }
     }
 
@@ -1616,7 +1619,11 @@ final class AppModel {
             cleanChatCache(for: message)
         } else {
             VideoThumbnailCache.removeCached(for: id)
-            Task { await ManagedDiskCache.shared.removeMessageArtifacts(id, mediaDigest: nil) }
+            let originFolder = endpoint.map {
+                SpaceKey(origin: $0.origin, password: "").folderName
+            }
+            Task { await ManagedDiskCache.shared.removeMessageArtifacts(
+                id, mediaDigest: nil, originFolder: originFolder) }
         }
         messages.removeAll { $0.id == id }
         images.removeValue(forKey: id)
@@ -2651,7 +2658,7 @@ private actor ManagedDiskCache {
         }
     }
 
-    func removeMessageArtifacts(_ id: String, mediaDigest: String?) {
+    func removeMessageArtifacts(_ id: String, mediaDigest: String?, originFolder: String?) {
         let fm = FileManager.default
         guard let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
         if let mediaDigest {
@@ -2662,13 +2669,12 @@ private actor ManagedDiskCache {
                 }
             }
         }
-        let attachments = cache.appendingPathComponent("FerryAttachments", isDirectory: true)
-        if let spaces = try? fm.contentsOfDirectory(at: attachments, includingPropertiesForKeys: nil) {
-            for space in spaces {
-                if let items = try? fm.contentsOfDirectory(at: space, includingPropertiesForKeys: nil) {
-                    for item in items where item.lastPathComponent.contains(id) {
-                        try? fm.removeItem(at: item)
-                    }
+        if let originFolder {
+            let attachments = cache.appendingPathComponent("FerryAttachments", isDirectory: true)
+                .appendingPathComponent(originFolder, isDirectory: true)
+            if let items = try? fm.contentsOfDirectory(at: attachments, includingPropertiesForKeys: nil) {
+                for item in items where item.lastPathComponent.contains(id) {
+                    try? fm.removeItem(at: item)
                 }
             }
         }
