@@ -171,8 +171,10 @@ final class AppModel {
     }
 
     var hasUnclassifiedHistory: Bool {
-        routeIsolationEnabled &&
-            messages.contains { visibleIdentity(for: $0) == Self.unclassifiedHistoryID }
+        guard routeIsolationEnabled else { return false }
+        _ = messages.count
+        ensureTranscriptIndex()
+        return !(cachedMessagesByConversation?[Self.unclassifiedHistoryID]?.isEmpty ?? true)
     }
 
     func conversationIDForJump(_ message: MessagePayload) -> String? {
