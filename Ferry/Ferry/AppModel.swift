@@ -649,8 +649,30 @@ final class AppModel {
                 switch action.kind {
                 case .add:
                     guard let record = action.record else { return }
-                    _ = try await client.putFavorite(endpoint: endpoint, token: token,
-                                                     messageID: action.messageID, record: record)
+                    do {
+                        _ = try await client.putFavorite(endpoint: endpoint, token: token,
+                                                         messageID: action.messageID, record: record)
+                    } catch {
+                        // If an offline favorite's original message was deleted
+                        // on another device, rescue its local protected copy,
+                        // then replay the original immutable timestamped star.
+                        guard record.kind == "file",
+                              let rejected = error as? FerryClient.ClientError,
+                              case .rejected(let detail) = rejected,
+                              detail.contains("原附件已不存在"),
+                              let local = localStore.favorites.first(where: {
+                                  $0.id == action.messageID
+                              }),
+                              let fileName = local.localFileName else { throw error }
+                        let source = localStore.favoriteFileURL(for: fileName)
+                        guard FileManager.default.fileExists(atPath: source.path) else {
+                            throw error
+                        }
+                        try await client.uploadFavoriteFile(endpoint: endpoint, token: token,
+                                                            messageID: action.messageID, source: source)
+                        _ = try await client.putFavorite(endpoint: endpoint, token: token,
+                                                         messageID: action.messageID, record: record)
+                    }
                 case .remove:
                     _ = try await client.deleteFavorite(endpoint: endpoint, token: token,
                                                         messageID: action.messageID, opAt: action.opAt)
@@ -660,7 +682,9 @@ final class AppModel {
                 persistFavoriteActions()
                 lastFavoritesFetch = nil
             } catch {
-                // Retain the timestamped action for a later retry.
+                // Leave the unsent action intact. If the source is missing
+                // too, never claim this file is safely synced across devices.
+                statusMessage = "收藏仍在本机等待同步：" + error.localizedDescription
                 return
             }
         }
