@@ -713,8 +713,8 @@ struct TimelineView: View {
                     }
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
-                    if !isFollowingTail && !isVisuallyAtBottom &&
-                       !model.visibleMessages.isEmpty && jumpHoldingID == nil {
+                    if didInitialScroll, !isFollowingTail, !isVisuallyAtBottom,
+                       !model.visibleMessages.isEmpty, jumpHoldingID == nil {
                         Button {
                             scrollToBottom()
                         } label: {
