@@ -132,6 +132,51 @@ final class FerryUITests: XCTestCase {
         }
     }
 
+    /// The chief/assistant tab can have shorter content than the scroll view.
+    /// Its last bubble should stay anchored above the composer during native
+    /// keyboard show/dismiss, without a misleading "return to latest" pill.
+    @MainActor
+    func testChiefConversationKeyboardStaysAtBottom() throws {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments = ["-uiTestMock", "-uiTestMockAssistant"]
+        app.launch()
+
+        let chief = app.buttons["总管"].firstMatch
+        XCTAssertTrue(chief.waitForExistence(timeout: 8))
+        tap(chief)
+
+        let newest = app.staticTexts["FERRY_CHIEF_KEYBOARD_TAIL_TEST"].firstMatch
+        let composer = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(newest.waitForExistence(timeout: 8))
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(newest.isHittable, "chief latest message must paint immediately")
+
+        let button = app.buttons["回到最新消息"]
+        XCTAssertFalse(button.exists)
+        let initialGap = composer.frame.minY - newest.frame.maxY
+        XCTAssertGreaterThanOrEqual(initialGap, -18)
+        tap(composer)
+        if app.keyboards.firstMatch.waitForExistence(timeout: 6) {
+            let stable = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    newest.isHittable &&
+                    !button.exists &&
+                    abs(composer.frame.minY - newest.frame.maxY - initialGap) <= 50
+                }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 6),
+                           .completed, "chief latest bubble must track keyboard")
+            // A second round catches accidental scroll offset accumulation.
+            tap(app.buttons["more-menu"].firstMatch)
+            tap(composer)
+            let repeated = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in newest.isHittable && !button.exists },
+                object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [repeated], timeout: 6),
+                           .completed, "second keyboard round must not jump history")
+        }
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
