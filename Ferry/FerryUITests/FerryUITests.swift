@@ -177,6 +177,32 @@ final class FerryUITests: XCTestCase {
         }
     }
 
+    /// ScrollViewReader used to target a one-point sentinel; a UI tap could
+    /// hide the button without actually reaching the newest lazy row. The
+    /// iOS 18 edge position must complete even with 48 unloaded old cells.
+    @MainActor
+    func testReturnToLatestFromLongAssistantLikeHistory() throws {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments = ["-uiTestMock", "-uiTestMockLongHistory"]
+        app.launch()
+        let last = app.staticTexts["FERRY_KEYBOARD_TAIL_TEST"].firstMatch
+        XCTAssertTrue(last.waitForExistence(timeout: 10))
+        XCTAssertTrue(last.isHittable)
+        app.swipeDown()
+        app.swipeDown()
+        let pill = app.buttons["回到最新消息"].firstMatch
+        XCTAssertTrue(pill.waitForExistence(timeout: 8),
+                      "after browsing old history the return pill must appear")
+        tap(pill)
+        let arrived = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in last.isHittable && !pill.exists },
+            object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [arrived], timeout: 8),
+                       .completed,
+                       "tapping latest must actually scroll to latest, not merely hide pill")
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
