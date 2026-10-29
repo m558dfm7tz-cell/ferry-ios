@@ -58,6 +58,13 @@ struct TimelineView: View {
     @State private var keyboardTransitioning = false
     @State private var followMediaMessageID: String?
 
+    // Distinguish an incoming message in the current conversation from an
+    // avatar switch. The latter already scrolls via selectedAssistantID.
+    private struct VisibleTail: Equatable {
+        let conversationID: String?
+        let messageID: String?
+    }
+
     private static let bottomAnchorID = "timeline-bottom"
 
     /// Keyboard-appearance notifications, used to keep the newest message
@@ -367,16 +374,19 @@ struct TimelineView: View {
                           let oldFirst, oldFirst != newFirst else { return }
                     queueScroll(to: oldFirst, anchor: .top, reason: .pagination)
                 }
-                .onChange(of: model.visibleMessages.last?.id) { _, newLast in
-                    guard newLast != nil, jumpHoldingID == nil else { return }
+                .onChange(of: VisibleTail(
+                    conversationID: model.selectedAssistantID,
+                    messageID: model.visibleMessages.last?.id
+                )) { old, latest in
+                    // A conversation switch changes the visible tail too.
+                    // Do not queue two scrollTo calls for the same avatar tap.
+                    guard old.conversationID == latest.conversationID,
+                          latest.messageID != nil, jumpHoldingID == nil else { return }
                     if !didInitialScroll {
                         didInitialScroll = true
                         scrollToBottomAnchor(reason: .newMessage)
                         return
                     }
-                    // The last cell loading can temporarily make geometry say
-                    // !atBottom without a single user scroll. Track user
-                    // intention separately so *every* new photo follows.
                     if isFollowingTail {
                         scrollToBottomAnchor(reason: .newMessage)
                     } else {
