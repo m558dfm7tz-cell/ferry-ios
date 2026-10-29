@@ -1101,7 +1101,9 @@ final class AppModel {
         guard let space = spaceKey?.value,
               let root = FileManager.default.urls(for: .cachesDirectory,
                                                   in: .userDomainMask).first else { return nil }
-        let key = space + ":" + message.id + ":" + (message.file?.downloadURL ?? "")
+        // Immutable message IDs are enough for the key. The URL-inclusive
+        // legacy format could not be reconstructed from a delete-only event.
+        let key = space + ":" + message.id
         let digest = SHA256.hash(data: Data(key.utf8))
             .map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent("ferry-media", isDirectory: true)
@@ -1622,8 +1624,12 @@ final class AppModel {
             let originFolder = endpoint.map {
                 SpaceKey(origin: $0.origin, password: "").folderName
             }
+            let digest: String? = spaceKey.map { space in
+                SHA256.hash(data: Data((space.value + ":" + id).utf8))
+                    .map { String(format: "%02x", Int($0)) }.joined()
+            }
             Task { await ManagedDiskCache.shared.removeMessageArtifacts(
-                id, mediaDigest: nil, originFolder: originFolder) }
+                id, mediaDigest: digest, originFolder: originFolder) }
         }
         messages.removeAll { $0.id == id }
         images.removeValue(forKey: id)
