@@ -448,24 +448,17 @@ struct TimelineView: View {
                                 .onTapGesture { dismissKeyboardIfPresented() }
                                 .accessibilityIdentifier("transcript-blank-area")
                             transcriptContents
+                                // Keep inset space inside the real chat surface;
+                                // the transparent background must fill the
+                                // *entire* available scroll viewport, including
+                                // empty space beside short assistant messages.
+                                .padding(.horizontal, 18)
+                                .padding(.bottom, 20)
+                                .padding(.top, 20 + AssistantBarMetrics.height
+                                         + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
                         }
-                    // Extra top inset so the transcript scrolls *under* the
-                    // floating (background-less) assistant bar and shows through
-                    // it, instead of being permanently hidden behind it.
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 20)
-                    // Reserve room for the floating avatar bar and, when it is
-                    // showing, the pinned 待查看 row underneath it.
-                    .padding(.top, 20 + AssistantBarMetrics.height
-                             + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
-                    // Assistant/chief conversations often contain only a few
-                    // bubbles. Keep these physically bottom-aligned as the
-                    // keyboard changes the available viewport, rather than
-                    // letting a short scroll view alternate between top
-                    // offset and bottom content anchoring.
-                    .frame(minHeight: model.visibleMessages.count <= 30
-                           ? viewport.size.height : 0, alignment: .bottom)
-                    .background(Color.clear)
+                        .frame(minHeight: model.visibleMessages.count <= 30
+                               ? viewport.size.height : 0, alignment: .bottom)
                 }
                 let messageObserved = baseTranscript
                     .id(transcriptGeneration)
