@@ -17,6 +17,10 @@ protocol FerryServicing {
     func messages(endpoint: ServerEndpoint, token: String, after: Int64) async throws -> MessagesPage
     func messagesLatest(endpoint: ServerEndpoint, token: String, limit: Int) async throws -> MessagesPage
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage
+    func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
+                       limit: Int, before: Int64?, after: Int64?,
+                       aroundID: String?, day: Date?, search: String?,
+                       filter: String?) async throws -> MessagesPage
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload
     func sendText(endpoint: ServerEndpoint, token: String, text: String,
                   destination: MessageDestination) async throws -> MessagePayload
@@ -41,6 +45,12 @@ protocol FerryServicing {
 // Test mocks and legacy adapters may implement only the original API.
 // Routing is never silently dropped when an unsupported adapter is used.
 extension FerryServicing {
+    func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
+                       limit: Int, before: Int64?, after: Int64?,
+                       aroundID: String?, day: Date?, search: String?,
+                       filter: String?) async throws -> MessagesPage {
+        throw URLError(.unsupportedURL)
+    }
     func capabilities(endpoint: ServerEndpoint, token: String) async throws -> FerryCapabilities {
         throw URLError(.unsupportedURL)
     }
@@ -232,6 +242,33 @@ struct FerryClient: FerryServicing {
     func messagesBefore(endpoint: ServerEndpoint, token: String, before: Int64, limit: Int) async throws -> MessagesPage {
         try await json(endpoint: endpoint, path: "/api/v1/messages", token: token,
                        query: [URLQueryItem(name: "before", value: String(before)), URLQueryItem(name: "limit", value: String(limit))])
+    }
+
+    func mobileHistory(endpoint: ServerEndpoint, token: String, conversation: String,
+                       limit: Int, before: Int64?, after: Int64?,
+                       aroundID: String?, day: Date?, search: String?,
+                       filter: String?) async throws -> MessagesPage {
+        var query: [URLQueryItem] = [
+            URLQueryItem(name: "conversation", value: conversation),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        if let after { query.append(URLQueryItem(name: "after", value: String(after))) }
+        if let aroundID { query.append(URLQueryItem(name: "around_id", value: aroundID)) }
+        if let day {
+            let start = Calendar.current.startOfDay(for: day)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86400)
+            let formatter = ISO8601DateFormatter()
+            query.append(URLQueryItem(name: "day", value: formatter.string(from: start)))
+            query.append(URLQueryItem(name: "until", value: formatter.string(from: end)))
+        }
+        if let search {
+            query.append(URLQueryItem(name: "search", value: "1"))
+            query.append(URLQueryItem(name: "q", value: search))
+        }
+        if let filter { query.append(URLQueryItem(name: "filter", value: filter)) }
+        return try await json(endpoint: endpoint, path: "/api/v1/mobile/history",
+                              token: token, query: query)
     }
 
     func sendText(endpoint: ServerEndpoint, token: String, text: String) async throws -> MessagePayload {
