@@ -28,3 +28,16 @@ This branch extends the build 18 repair (commit c32a6b0d), without changing prod
 3. Verify no jumps into older messages, no focus failure, no false latest pill.
 4. Test foreground resumption, saved computers, favorites, and search/date jump.
 5. Run Xcode build + UI tests on a simulator with visible software keyboard; **not run here**, so code is still a test candidate.
+
+
+## Build 20 (whitespace dismissal regression repair)
+
+The build-19 fix deliberately removed a whole-scroll simultaneous TapGesture because it could intercept the "return to latest" command. The remaining `.background` handler was behind scroll content, and was not reliably hittable when the assistant/transfer chat viewport contained blank space.
+
+- Add a **dedicated tappable `Color.clear` layer** *inside* the ScrollView's ZStack and **behind** the real transcript content. It is sized with the chat viewport, including the blank space above a short assistant conversation. Taps on chat buttons, media rows and the latest button are not handled by this blanket gesture.
+- Restore blank-tap dismiss only when system keyboard, custom plus attachment panel, or focus is actually present.
+- Resign the native `UITextView` first responder **before** clearing the attachment-mode binding to avoid swapping in the system keyboard during dismiss.
+- Add DEBUG mock short conversation and `testBlankChatTapDismissesKeyboardAndPlusPanel`. Run it with iOS simulator's software keyboard enabled.
+- Increment existing application **and share extension** build numbers to **20**. Bundle IDs `com.ferry.test` and `com.ferry.test.FerryShare` unchanged; do not uninstall the existing app for signing workarounds.
+
+The Swift source is patched; actual macOS Xcode compilation, test run, signed IPA and device verification must still be performed.
