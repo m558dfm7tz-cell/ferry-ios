@@ -962,7 +962,7 @@ struct TimelineView: View {
     private func settleKeyboardViewport(visible: Bool, afterMilliseconds: Int = 90) {
         keyboardTransitionTask?.cancel()
         keyboardTransitionTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(afterMilliseconds))
+            try? await Task.sleep(for: .milliseconds(Int64(afterMilliseconds)))
             guard !Task.isCancelled, keyboardVisible == visible else { return }
             let pinned = isKeyboardTailPinned
             let needsCorrection = pinned && keyboardTailNeedsCorrection
