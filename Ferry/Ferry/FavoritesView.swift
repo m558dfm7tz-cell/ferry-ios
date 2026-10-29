@@ -51,7 +51,10 @@ struct FavoritesView: View {
 
     @MainActor
     private func open(_ favorite: FavoriteMessage) async {
-        guard let preview = await Self.makePreview(for: favorite, model: model) else { return }
+        guard let preview = await Self.makePreview(for: favorite, model: model) else {
+            statusMessage = "此收藏文件当前不可用：本机没有独立副本，服务器的收藏文件也无法读取。"
+            return
+        }
         previewSource = favorite.message
         previewItem = preview
     }
