@@ -33,6 +33,8 @@ protocol FerryServicing {
     func putAssistantState(endpoint: ServerEndpoint, token: String, state: AssistantStatePayload) async throws -> AssistantStatePayload
     func favorites(endpoint: ServerEndpoint, token: String) async throws -> FavoritesPayload
     func putFavorite(endpoint: ServerEndpoint, token: String, messageID: String, record: FavoriteRecord) async throws -> PutFavoriteResponse
+    func uploadFavoriteFile(endpoint: ServerEndpoint, token: String,
+                            messageID: String, source: URL) async throws
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount
     func deleteAllMessages(endpoint: ServerEndpoint, token: String) async throws -> DeletedCount
     func deleteFavorite(endpoint: ServerEndpoint, token: String, messageID: String, opAt: Int64) async throws -> DeletedCount
@@ -46,6 +48,10 @@ protocol FerryServicing {
 // Test mocks and legacy adapters may implement only the original API.
 // Routing is never silently dropped when an unsupported adapter is used.
 extension FerryServicing {
+    func uploadFavoriteFile(endpoint: ServerEndpoint, token: String,
+                            messageID: String, source: URL) async throws {
+        throw URLError(.unsupportedURL)
+    }
     func mobileDays(endpoint: ServerEndpoint, token: String, conversation: String) async throws -> [String: Int] {
         throw URLError(.unsupportedURL)
     }
@@ -332,6 +338,21 @@ struct FerryClient: FerryServicing {
     func putFavorite(endpoint: ServerEndpoint, token: String, messageID: String, record: FavoriteRecord) async throws -> PutFavoriteResponse {
         try await json(endpoint: endpoint, path: "/api/v1/favorites/\(messageID)", method: "PUT", token: token,
                        body: try JSONEncoder().encode(record))
+    }
+
+    func uploadFavoriteFile(endpoint: ServerEndpoint, token: String,
+                            messageID: String, source: URL) async throws {
+        var request = URLRequest(url: endpoint.url(path:
+            "/api/v1/favorites/\(messageID)/file", queryItems: []))
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await transferSession.upload(for: request, fromFile: source)
+        guard let response = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        guard response.statusCode == 201 else {
+            if response.statusCode == 401 { throw ClientError.unauthorized }
+            throw ClientError.rejected("收藏文件补传失败（HTTP \(response.statusCode)）")
+        }
     }
 
     func deleteMessages(endpoint: ServerEndpoint, token: String, ids: [String]) async throws -> DeletedCount {
