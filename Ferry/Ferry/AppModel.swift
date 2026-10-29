@@ -2575,6 +2575,16 @@ final class AppModel {
                                           createdAt: createdAt,
                                           text: "FERRY_KEYBOARD_TAIL_TEST", file: nil)
         messages = [text, image, video, reviewJSONMessage, reviewTextMessage, keyboardTail]
+        if ProcessInfo.processInfo.arguments.contains("-uiTestMockAssistant") {
+            // An isolated, short assistant conversation reproduces the
+            // different keyboard geometry of 总管/助手 compared with transfer.
+            let chiefTail = MessagePayload(
+                id: "mock-chief-keyboard-tail", sequence: 7, kind: .text,
+                senderName: "总管", senderKind: "mac", isCurrentDevice: false,
+                createdAt: createdAt, text: "FERRY_CHIEF_KEYBOARD_TAIL_TEST",
+                file: nil)
+            messages.append(chiefTail)
+        }
         images["mock-image"] = makeMockImage()
         videoThumbnails["mock-video"] = makeMockImage()
         videoDurations["mock-video"] = 5.0
