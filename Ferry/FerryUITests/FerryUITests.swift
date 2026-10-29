@@ -203,6 +203,48 @@ final class FerryUITests: XCTestCase {
                        "tapping latest must actually scroll to latest, not merely hide pill")
     }
 
+    /// A blank viewport tap must dismiss BOTH the native software keyboard
+    /// and Ferry's attachment inputView, without a scroll-wide gesture that
+    /// steals the latest-button or image-bubble taps.
+    @MainActor
+    func testBlankChatTapDismissesKeyboardAndPlusPanel() throws {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments = ["-uiTestMock", "-uiTestMockBlank"]
+        app.launch()
+
+        let input = app.textViews["composer-input"].firstMatch
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        XCTAssertTrue(transcript.waitForExistence(timeout: 8))
+        let whitespace = transcript.coordinate(withNormalizedOffset:
+                                                CGVector(dx: 0.18, dy: 0.38))
+        tap(input)
+        if app.keyboards.firstMatch.waitForExistence(timeout: 6) {
+            whitespace.tap()
+            let dismissed = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in !self.app.keyboards.firstMatch.isHittable },
+                object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 6),
+                           .completed,
+                           "a blank chat tap must dismiss the system keyboard")
+        }
+
+        let plus = app.buttons["添加"].firstMatch
+        XCTAssertTrue(plus.waitForExistence(timeout: 5))
+        tap(plus)
+        let attachmentFile = app.buttons["composer-attachment-file"].firstMatch
+        XCTAssertTrue(attachmentFile.waitForExistence(timeout: 6),
+                      "plus must present Ferry's custom attachment inputView")
+        whitespace.tap()
+        let hidden = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !attachmentFile.isHittable },
+            object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 6),
+                       .completed,
+                       "a blank chat tap must dismiss the plus attachment inputView")
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
