@@ -322,6 +322,22 @@ struct TimelineView: View {
                                     // permanent padding on the target message.
                                     .contentShape(Rectangle())
                                     .id(message.id)
+                                if model.hasMobileNewerGap(after: message) {
+                                    Button {
+                                        Task { await model.loadNewerAcrossGap() }
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            if model.isLoadingNewerGap { ProgressView() }
+                                            Text("中间还有历史消息 · 加载较新记录")
+                                        }
+                                        .font(.footnote)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                    }
+                                    .disabled(model.isLoadingNewerGap)
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("load-newer-history-gap")
+                                }
                             }
                         }
                         // Invisible bottom anchor: scrolling to this reaches the
