@@ -16,7 +16,9 @@ enum LANDiscovery {
     // so the LAN-facing HTTP origin is `<IPv4>:42819`.
     // Current Windows native service and earlier Ferry server installs use
     // different LAN-facing ports; probe both instead of assuming one.
-    static let scanPorts = [42819, 42817]
+    // 43181 is the isolated Ferry two-PC test server. Keep ordinary release
+    // ports first; discovery still validates the Ferry access endpoint.
+    static let scanPorts = [42819, 42817, 43181]
     private static let batchSize = 48
     private static let probeTimeout: TimeInterval = 1.5
 
