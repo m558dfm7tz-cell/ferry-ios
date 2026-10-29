@@ -51,6 +51,7 @@ struct DateJumpSheet: View {
                 }
             }
         }
+        .task { await model.refreshVisibleDayCounts() }
         .presentationDetents([.medium, .large])
     }
 
