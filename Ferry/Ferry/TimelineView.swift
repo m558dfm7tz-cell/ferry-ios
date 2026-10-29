@@ -375,8 +375,8 @@ struct TimelineView: View {
                                                             highlightOn: highlightOn,
                                                             onOpenGallery: openMediaGallery,
                                                             onSendEditedImage: sendEditedImage,
-                                                            onToggleSelection: toggleSelection)
-                                            .contentShape(Rectangle())
+                                                            onToggleSelection: toggleSelection,
+                                                            onTapChatWhitespace: dismissKeyboardIfPresented)
                                         if model.hasMobileNewerGap(after: message) {
                                             Button {
                                                 Task { await model.loadNewerAcrossGap() }
@@ -1240,6 +1240,7 @@ private struct TimelineMessageCell: View {
     let onOpenGallery: (String) -> Void
     let onSendEditedImage: (UIImage, MessagePayload) -> Void
     let onToggleSelection: (String) -> Void
+    let onTapChatWhitespace: () -> Void
 
     var body: some View {
         MessageRow(message: message,
@@ -1268,7 +1269,8 @@ private struct TimelineMessageCell: View {
                    highlightOn: highlightOn,
                    onToggleSelection: { onToggleSelection(message.id) },
                    assistant: model.assistantStore.assistant(for: message),
-                   assistantMedia: avatarMedia)
+                   assistantMedia: avatarMedia,
+                    onTapChatWhitespace: onTapChatWhitespace)
     }
 
     private var avatarMedia: AssistantAvatarMedia? {
