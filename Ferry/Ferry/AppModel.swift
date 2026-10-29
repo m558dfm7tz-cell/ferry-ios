@@ -2039,8 +2039,11 @@ final class AppModel {
                 guard page.targetID != nil else { return .empty }
                 // A locally deleted message must not become an invisible jump
                 // target just because it is still present on the server.
+                let selectedDay = DayKey.string(from: Calendar.current.startOfDay(for: day))
                 let visible = page.messages.filter { !localStore.isHidden($0) }
-                guard let targetID = visible.first?.id else { return .empty }
+                guard let targetID = visible.first(where: {
+                    Self.messageDayKey($0) == selectedDay
+                })?.id else { return .empty }
                 markMobileGap(around: visible, conversation: mobileConversation)
                 mergeMobileContext(visible)
                 mobileHasOlderByConversation[mobileConversation] = page.hasOlder
