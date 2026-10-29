@@ -33,6 +33,8 @@ struct TimelineView: View {
     @State private var selectionAlert: SelectionAlert?
     @State private var pendingScroll: PendingScroll?
     @State private var didInitialScroll = false
+    @State private var renderedTailID: String?
+    @State private var initialAnchorTask: Task<Void, Never>?
     @State private var showNewPill = false
     /// Message a date/search jump landed on. It keeps a top gap (see
     /// `jumpTopInset`) so the row sits below the floating bar, and it is the
@@ -56,6 +58,11 @@ struct TimelineView: View {
     // Keyboard changes the viewport for many frames. These are not manual
     // scroll gestures and must not detach a media-heavy transcript from tail.
     @State private var keyboardTransitioning = false
+    @State private var keyboardTransitionTask: Task<Void, Never>?
+    // An explicit touch distinguishes a real history drag from UIKit's
+    // keyboard-driven scroll-phase events.
+    @State private var transcriptTouchDragging = false
+    @State private var transcriptScrollPhase: ScrollPhase = .idle
     @State private var followMediaMessageID: String?
 
     // Distinguish an incoming message in the current conversation from an
@@ -99,7 +106,8 @@ struct TimelineView: View {
         case .jump:
             guard !transcriptUserDragging else { return }
         case .pagination:
-            guard !transcriptUserDragging, !keyboardVisible, jumpHoldingID == nil else { return }
+            guard !transcriptUserDragging, !keyboardTransitioning,
+                  jumpHoldingID == nil else { return }
         case .newMessage, .keyboard, .media:
             guard isFollowingTail, !transcriptUserDragging, jumpHoldingID == nil else { return }
         }
@@ -322,6 +330,12 @@ struct TimelineView: View {
                                     // permanent padding on the target message.
                                     .contentShape(Rectangle())
                                     .id(message.id)
+                                    .onAppear {
+                                        if message.id == model.visibleMessages.last?.id {
+                                            renderedTailID = message.id
+                                            scheduleInitialBottomAnchor()
+                                        }
+                                    }
                                 if model.hasMobileNewerGap(after: message) {
                                     Button {
                                         Task { await model.loadNewerAcrossGap() }
@@ -367,6 +381,26 @@ struct TimelineView: View {
                     }
                 }
                 let messageObserved = baseTranscript
+                    .simultaneousGesture(DragGesture(minimumDistance: 8)
+                        .onChanged { _ in
+                            guard !keyboardTransitioning, !keyboardAnchorLocked else { return }
+                            transcriptTouchDragging = true
+                            if !transcriptUserDragging {
+                                initialAnchorTask?.cancel()
+                                jumpTask?.cancel()
+                                jumpHoldingID = nil
+                                transcriptUserDragging = true
+                                isFollowingTail = false
+                                keyboardWasAtBottom = false
+                            }
+                        }
+                        .onEnded { _ in
+                            transcriptTouchDragging = false
+                            if transcriptScrollPhase == .idle {
+                                transcriptUserDragging = false
+                                isFollowingTail = atBottom
+                            }
+                        })
                     .simultaneousGesture(TapGesture().onEnded {
                         // Tap outside the composer closes the attachment
                         // keyboard without stealing image/menu button taps.
@@ -381,14 +415,23 @@ struct TimelineView: View {
                     .defaultScrollAnchor((isFollowingTail || keyboardAnchorLocked) ? .bottom : nil, for: .sizeChanges)
                 .onChange(of: pendingScroll) { _, request in
                     guard let request else { return }
-                    proxy.scrollTo(request.id, anchor: request.anchor)
+                    // A message can arrive in the same render transaction as the
+                    // request. Wait for that layout pass before resolving its id.
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard pendingScroll == request else { return }
+                        proxy.scrollTo(request.id, anchor: request.anchor)
+                    }
                 }
-                .onChange(of: model.messages.first?.id) { oldFirst, newFirst in
-                    // Older page prepended: keep the previous first message at
-                    // the top so the content does not visually jump.
-                    guard jumpHoldingID == nil, didInitialScroll,
-                          let oldFirst, oldFirst != newFirst else { return }
-                    queueScroll(to: oldFirst, anchor: .top, reason: .pagination)
+                .onChange(of: model.olderPageAnchor) { _, anchor in
+                    // Only an explicit history prepend can preserve the old
+                    // first visible row. Cache replacement / other conversations
+                    // must never hijack the current scroll position.
+                    guard let anchor, anchor.conversationID == model.selectedAssistantID,
+                          didInitialScroll,
+                          model.visibleMessages.contains(where: { $0.id == anchor.messageID })
+                    else { return }
+                    queueScroll(to: anchor.messageID, anchor: .top, reason: .pagination)
                 }
                 .onChange(of: VisibleTail(
                     conversationID: model.selectedAssistantID,
@@ -399,8 +442,7 @@ struct TimelineView: View {
                     guard old.conversationID == latest.conversationID,
                           latest.messageID != nil, jumpHoldingID == nil else { return }
                     if !didInitialScroll {
-                        didInitialScroll = true
-                        scrollToBottomAnchor(reason: .newMessage)
+                        scheduleInitialBottomAnchor()
                         return
                     }
                     if isFollowingTail {
@@ -412,9 +454,18 @@ struct TimelineView: View {
                 .onChange(of: model.selectedAssistantID) { _, _ in
                     guard jumpHoldingID == nil else { return }
                     clearJumpTarget()
+                    initialAnchorTask?.cancel()
+                    didInitialScroll = false
+                    renderedTailID = nil
                     isFollowingTail = true
-                    scrollToBottomAnchor()
+                    scheduleInitialBottomAnchor()
                 }
+                .onChange(of: model.isLoadingInitial) { _, loading in
+                    guard !loading, isFollowingTail else { return }
+                    if didInitialScroll { scrollToBottomAnchor(reason: .newMessage) }
+                    else { scheduleInitialBottomAnchor() }
+                }
+                .onAppear { scheduleInitialBottomAnchor() }
                 .onChange(of: model.scrollToBottomToken) { _, _ in
                     guard jumpHoldingID == nil else { return }
                     isFollowingTail = true
@@ -431,9 +482,16 @@ struct TimelineView: View {
                         followPendingMediaLoad()
                     }
                 .onChange(of: scenePhase) { _, phase in
-                    // SwiftUI restores the geometry when the scene returns.
-                    // Avoid a second forced re-anchor which caused two bounces.
-                    if phase != .active { keyboardFollowTask?.cancel() }
+                    if phase != .active {
+                        keyboardFollowTask?.cancel()
+                        keyboardTransitionTask?.cancel()
+                        initialAnchorTask?.cancel()
+                    } else if isFollowingTail && jumpHoldingID == nil {
+                        // Resume with the user's reading intent intact. Do not
+                        // yank an intentionally scrolled-up transcript to tail.
+                        if didInitialScroll { scrollToBottomAnchor(reason: .newMessage) }
+                        else { scheduleInitialBottomAnchor() }
+                    }
                 }
                 let geometryObserved = mediaObserved
                     .onScrollGeometryChange(for: ScrollState.self) { geometry in
@@ -441,9 +499,24 @@ struct TimelineView: View {
                         atBottom: geometry.contentOffset.y + geometry.containerSize.height
                             >= geometry.contentSize.height - 120,
                         nearTop: geometry.contentOffset.y < 260,
-                        offsetY: geometry.contentOffset.y
+                        offsetY: geometry.contentOffset.y,
+                        contentHeight: geometry.contentSize.height,
+                        viewportHeight: geometry.containerSize.height,
+                        distanceToBottom: max(0, geometry.contentSize.height
+                            - geometry.contentOffset.y - geometry.containerSize.height)
                     )
                 } action: { old, state in
+                    // An initial scroll is complete only after the final cell
+                    // actually mounted and the viewport is geometrically at
+                    // the bottom. A queued scrollTo is not proof of success.
+                    if !didInitialScroll, !model.isLoadingInitial,
+                       let tail = model.visibleMessages.last?.id,
+                       renderedTailID == tail, state.viewportHeight > 0,
+                       state.contentHeight > 0, state.distanceToBottom <= 24,
+                       !transcriptUserDragging, jumpHoldingID == nil {
+                        didInitialScroll = true
+                        initialAnchorTask?.cancel()
+                    }
                     // The transform above runs on every frame of any scroll and
                     // of the keyboard animation (the visible height changes), so
                     // only write when a value actually flips: an unconditional
@@ -468,23 +541,12 @@ struct TimelineView: View {
                     }
                 }
                 .onScrollPhaseChange { _, phase in
-                    if phase == .interacting {
-                        // UIKit keyboard resizing sometimes reports an
-                        // interacting phase while its safe area animates.
-                        // Do not mistake it for a user drag; keep the tail
-                        // pinned until the transition ends.
-                        guard !keyboardTransitioning else { return }
-                        keyboardAnchorLocked = false
-                        keyboardWasAtBottom = false
-                        // A real user drag takes precedence over a timed jump.
-                        if jumpHoldingID != nil {
-                            jumpTask?.cancel()
-                            jumpHoldingID = nil
-                        }
-                        transcriptUserDragging = true
-                        isFollowingTail = false
-                        if keyboardVisible { keyboardWasAtBottom = false }
-                    } else if phase == .idle && transcriptUserDragging {
+                    transcriptScrollPhase = phase
+                    // UIKit also emits .interacting during keyboard geometry
+                    // changes. Only the explicit DragGesture above may detach
+                    // the chat from tail; phase changes only finish a drag.
+                    if phase == .idle && transcriptUserDragging &&
+                       !transcriptTouchDragging {
                         transcriptUserDragging = false
                         isFollowingTail = atBottom
                     }
@@ -504,7 +566,7 @@ struct TimelineView: View {
                     completeKeyboardDismissal()
                 }
                 .onReceive(keyboardDidShowPublisher) { _ in
-                    keyboardTransitioning = false
+                    finishKeyboardAppearance()
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
                     if !atBottom {
@@ -626,40 +688,68 @@ struct TimelineView: View {
         return model.avatarStore.media(for: id)
     }
 
-    /// A keyboard safe-area transition changes the ScrollView viewport.
-    /// The sizeChanges bottom anchor above tracks it without a delayed
-    /// scrollTo, which previously jolted media-heavy conversations.
+    /// An initial list is laid out in several passes (cached rows, server
+    /// replacement, decoded media). Retry only until geometry confirms the
+    /// latest rendered row is actually at the bottom, not just queued.
+    private func scheduleInitialBottomAnchor() {
+        guard !didInitialScroll, isFollowingTail, !model.visibleMessages.isEmpty,
+              !transcriptUserDragging, jumpHoldingID == nil else { return }
+        initialAnchorTask?.cancel()
+        initialAnchorTask = Task { @MainActor in
+            for pause in [0, 70, 140, 220] {
+                if pause > 0 { try? await Task.sleep(for: .milliseconds(pause)) }
+                guard !Task.isCancelled, !didInitialScroll, isFollowingTail,
+                      !transcriptUserDragging, jumpHoldingID == nil else { return }
+                scrollToBottomAnchor(reason: .newMessage)
+            }
+        }
+    }
+
+    /// Let SwiftUI's native safe-area/sizeChanges bottom anchor do the actual
+    /// movement together with the keyboard. A short transition guard excludes
+    /// UIKit's synthetic scroll phases; it does not issue a late scrollTo.
     private func followKeyboard(_ note: Notification) {
-        guard !keyboardVisible else { return }
-        keyboardWasAtBottom = isFollowingTail && !transcriptUserDragging
-        keyboardAnchorLocked = keyboardWasAtBottom
+        keyboardTransitionTask?.cancel()
+        if !keyboardVisible {
+            keyboardWasAtBottom = isFollowingTail && !transcriptUserDragging
+            keyboardAnchorLocked = keyboardWasAtBottom
+        }
         keyboardTransitioning = true
         keyboardVisible = true
         keyboardFollowTask?.cancel()
     }
 
+    private func finishKeyboardAppearance() {
+        keyboardTransitionTask?.cancel()
+        keyboardTransitionTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled, keyboardVisible else { return }
+            keyboardTransitioning = false
+            keyboardAnchorLocked = false
+        }
+    }
+
     private func restoreAfterKeyboard(_ note: Notification) {
         guard keyboardVisible else { return }
+        keyboardTransitionTask?.cancel()
         keyboardVisible = false
         keyboardTransitioning = true
-        // Keep the bottom pin until keyboardDidHide. Releasing it at
-        // keyboardWillHide caused media rows to remain stranded above the
-        // newly enlarged viewport.
+        // Maintain the bottom anchor until keyboardDidHide and the safe-area
+        // animation finish. The user's own drag may still detach it.
         keyboardFollowTask?.cancel()
     }
 
     private func completeKeyboardDismissal() {
-        keyboardTransitioning = false
-        let shouldRestore = keyboardAnchorLocked && keyboardWasAtBottom &&
-            isFollowingTail && !transcriptUserDragging &&
-            jumpHoldingID == nil && !showAlbumPicker && !showAttachmentPanel
-        keyboardAnchorLocked = false
-        keyboardWasAtBottom = false
-        guard shouldRestore else { return }
-        // Native safe-area bottom anchoring has already followed the entire
-        // keyboard animation. A second manual scrollTo here causes the visible
-        // last message to jump after the keyboard finishes.
-        _ = shouldRestore
+        keyboardTransitionTask?.cancel()
+        keyboardTransitionTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled, !keyboardVisible else { return }
+            keyboardTransitioning = false
+            keyboardAnchorLocked = false
+            keyboardWasAtBottom = false
+            // SwiftUI already followed the viewport resize; no post-animation
+            // manual bottom scroll, which would visibly bounce the last row.
+        }
     }
 
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
@@ -920,6 +1010,9 @@ private struct ScrollState: Hashable {
     let atBottom: Bool
     let nearTop: Bool
     let offsetY: CGFloat
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
+    let distanceToBottom: CGFloat
 }
 
 /// Bottom bar shown while in select mode. 删除 now lives in the top bar, so
