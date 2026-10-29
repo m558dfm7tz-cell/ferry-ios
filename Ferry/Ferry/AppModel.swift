@@ -2567,7 +2567,14 @@ final class AppModel {
                                                senderName: "总管", senderKind: "mac",
                                                isCurrentDevice: false, createdAt: createdAt,
                                                text: reviewText, file: nil)
-        messages = [text, image, video, reviewJSONMessage, reviewTextMessage]
+        // A deterministic last row for keyboard viewport geometry tests.
+        // This is DEBUG-only mock data, never a production message.
+        let keyboardTail = MessagePayload(id: "mock-keyboard-tail", sequence: 6,
+                                          kind: .text, senderName: "测试",
+                                          senderKind: "iphone", isCurrentDevice: true,
+                                          createdAt: createdAt,
+                                          text: "FERRY_KEYBOARD_TAIL_TEST", file: nil)
+        messages = [text, image, video, reviewJSONMessage, reviewTextMessage, keyboardTail]
         images["mock-image"] = makeMockImage()
         videoThumbnails["mock-video"] = makeMockImage()
         videoDurations["mock-video"] = 5.0
