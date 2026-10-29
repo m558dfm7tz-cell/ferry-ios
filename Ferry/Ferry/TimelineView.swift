@@ -87,6 +87,10 @@ struct TimelineView: View {
         .publisher(for: UIResponder.keyboardDidHideNotification)
     private let keyboardDidShowPublisher = NotificationCenter.default
         .publisher(for: UIResponder.keyboardDidShowNotification)
+    private let keyboardWillChangeFramePublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+    private let keyboardDidChangeFramePublisher = NotificationCenter.default
+        .publisher(for: UIResponder.keyboardDidChangeFrameNotification)
 
     /// A scroll request. The `nonce` makes every request unique so the same
     /// message id can be scrolled to more than once (date jump, re-anchor).
@@ -608,6 +612,14 @@ struct TimelineView: View {
                 .onReceive(keyboardDidShowPublisher) { _ in
                     finishKeyboardAppearance()
                 }
+                .onReceive(keyboardWillChangeFramePublisher) { _ in
+                    beginKeyboardFrameChange()
+                }
+                .onReceive(keyboardDidChangeFramePublisher) { _ in
+                    if keyboardVisible && keyboardTransitioning {
+                        settleKeyboardViewport(visible: true)
+                    }
+                }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
                     if !atBottom && !isKeyboardTailPinned {
                         Button {
@@ -782,6 +794,20 @@ struct TimelineView: View {
 
     private func finishKeyboardAppearance() {
         settleKeyboardViewport(visible: true)
+    }
+
+    /// Third-party keyboards, emoji/QuickType changes and the replacement
+    /// attachment inputView can resize without another keyboardWillShow.
+    private func beginKeyboardFrameChange() {
+        guard keyboardVisible else { return }
+        keyboardTransitionTask?.cancel()
+        if !keyboardTransitioning {
+            keyboardWasAtBottom = isFollowingTail &&
+                !transcriptUserDragging && jumpHoldingID == nil
+            keyboardTailNeedsCorrection = false
+        }
+        keyboardAnchorLocked = keyboardWasAtBottom
+        keyboardTransitioning = true
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
