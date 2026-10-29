@@ -38,6 +38,8 @@ final class AppModel {
     private(set) var dayCounts: [String: Int] = [:]
     private var dayCountsByConversation: [String: [String: Int]] = [:]
     private var mobileCalendarCounts: [String: [String: Int]] = [:]
+    private var mobileNewerGaps: [String: MobileNewerGap] = [:]
+    private(set) var isLoadingNewerGap = false
 
     // Mobile-only history is additive: older Go servers still use the global
     // history API. No permanent limit is placed on browsing-session messages.
@@ -1388,6 +1390,8 @@ final class AppModel {
         mobileLoadedConversations = []
         mobileLoadingConversations = []
         mobileCalendarCounts = [:]
+        mobileNewerGaps = [:]
+        isLoadingNewerGap = false
         locatedSearchResults = [:]
         generation = UUID()
         notificationSettings.activeOrigin = endpoint.origin
@@ -2033,6 +2037,7 @@ final class AppModel {
                     day: day, search: nil, filter: nil)
                 guard current == generation, !Task.isCancelled else { return .cancelled }
                 guard let targetID = page.targetID else { return .empty }
+                markMobileGap(around: page.messages, conversation: mobileConversation)
                 mergeMobileContext(page.messages)
                 mobileHasOlderByConversation[mobileConversation] = page.hasOlder
                 hasOlder = page.hasOlder
@@ -2091,6 +2096,11 @@ final class AppModel {
                     day: nil, search: nil, filter: nil)
                 guard current == generation else { return false }
                 guard page.targetID == id else { return false }
+                let target = page.messages.first(where: { $0.id == id })
+                let convID = target.flatMap { visibleIdentity(for: $0) }
+                let conv = convID == nil ? "transfer"
+                    : (convID == Self.unclassifiedHistoryID ? "__unclassified__" : convID!)
+                markMobileGap(around: page.messages, conversation: conv)
                 mergeMobileContext(page.messages)
                 locatedSearchResults.removeValue(forKey: id)
                 return true
@@ -2163,6 +2173,55 @@ final class AppModel {
 
     /// Keep an exact located context in memory so search/date/favorite
     /// results remain navigable even when not among the latest ten.
+    /// A date/search jump can add a distant ten-message window beside the
+    /// latest ten. Show a real paging boundary, not fictitiously adjacent rows.
+    private func markMobileGap(around incoming: [MessagePayload], conversation: String) {
+        guard mobileHistoryAvailable, !incoming.isEmpty else { return }
+        let loaded = visibleMessages
+        let context = incoming.filter { message in
+            let identity = visibleIdentity(for: message)
+            return conversation == "transfer" ? identity == nil
+                : identity == (conversation == "__unclassified__"
+                    ? Self.unclassifiedHistoryID : conversation)
+        }
+        guard let endOfOlderWindow = context.map(\.sequence).max(),
+              let startOfRecentWindow = loaded.map(\.sequence).min(),
+              endOfOlderWindow < startOfRecentWindow else { return }
+        mobileNewerGaps[conversation] = MobileNewerGap(
+            afterSequence: endOfOlderWindow, upperSequence: startOfRecentWindow)
+    }
+
+    func hasMobileNewerGap(after message: MessagePayload) -> Bool {
+        mobileHistoryAvailable && mobileNewerGaps[mobileConversation]?.afterSequence == message.sequence
+    }
+
+    func loadNewerAcrossGap() async {
+        guard mobileHistoryAvailable, !isLoadingNewerGap,
+              let endpoint, let token, let gap = mobileNewerGaps[mobileConversation] else { return }
+        isLoadingNewerGap = true
+        defer { isLoadingNewerGap = false }
+        let current = generation
+        let conversation = mobileConversation
+        do {
+            let page = try await client.mobileHistory(
+                endpoint: endpoint, token: token, conversation: conversation,
+                limit: 10, before: nil, after: gap.afterSequence,
+                aroundID: nil, day: nil, search: nil, filter: nil)
+            guard current == generation else { return }
+            mergeMobileContext(page.messages)
+            if let newest = page.messages.last?.sequence,
+               newest < gap.upperSequence {
+                mobileNewerGaps[conversation] = MobileNewerGap(
+                    afterSequence: newest, upperSequence: gap.upperSequence)
+            } else {
+                mobileNewerGaps.removeValue(forKey: conversation)
+            }
+        } catch {
+            guard current == generation else { return }
+            statusMessage = "加载较新历史失败：" + error.localizedDescription
+        }
+    }
+
     private func mergeMobileContext(_ incoming: [MessagePayload]) {
         guard !incoming.isEmpty else { return }
         var known = Set(messages.map(\.id))
@@ -2451,4 +2510,9 @@ private actor MobileTranscriptCache {
             // Cache failure cannot affect server-authoritative history.
         }
     }
+}
+
+private struct MobileNewerGap: Equatable {
+    let afterSequence: Int64
+    let upperSequence: Int64
 }
