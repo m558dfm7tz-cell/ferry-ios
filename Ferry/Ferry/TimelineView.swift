@@ -807,6 +807,7 @@ struct TimelineView: View {
         visibleTailID = nil
         initialTailAligned = false
         atBottom = true
+        measuredAtBottom = true
         transcriptGeneration &+= 1
         Task { @MainActor in
             await Task.yield()
@@ -863,6 +864,7 @@ struct TimelineView: View {
                 !transcriptUserDragging && jumpHoldingID == nil
             keyboardAnchorLocked = keyboardWasAtBottom
             keyboardTailNeedsCorrection = false
+            measuredAtBottom = atBottom
         }
         keyboardTransitioning = true
         keyboardVisible = true
@@ -882,6 +884,7 @@ struct TimelineView: View {
             keyboardWasAtBottom = isFollowingTail &&
                 !transcriptUserDragging && jumpHoldingID == nil
             keyboardTailNeedsCorrection = false
+            measuredAtBottom = atBottom
         }
         keyboardAnchorLocked = keyboardWasAtBottom
         keyboardTransitioning = true
