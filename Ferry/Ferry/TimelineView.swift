@@ -35,7 +35,7 @@ struct TimelineView: View {
     @State private var pendingScroll: PendingScroll?
     // iOS 18 scrolls to a true edge even when the one-point sentinel has not
     // been laid out. ScrollViewReader remains for message-ID/date jumps only.
-    @State private var bottomEdgePosition = ScrollPosition(edge: .bottom)
+    @State private var bottomEdgePosition = ScrollPosition(idType: String.self, edge: .bottom)
     @State private var didInitialScroll = false
     @State private var renderedTailID: String?
     @State private var visibleTailID: String?
