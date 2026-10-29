@@ -183,6 +183,31 @@ final class LocalDataStore {
         persistFavorites()
     }
 
+    /// Streamed downloads already reside in a cache file. Keep their
+    /// favorite copy out of the reclaimable cache without loading the
+    /// entire video/document into iPhone memory.
+    func attachFavoriteFile(_ id: String, from source: URL) {
+        guard let index = favorites.firstIndex(where: { $0.id == id }),
+              favorites[index].localFileName == nil,
+              let file = favorites[index].message.file else { return }
+        let ext = (file.name as NSString).pathExtension.lowercased()
+        let safeExt = ext.isEmpty ? Self.fileExtension(message: favorites[index].message) : ext
+        let leaf = Self.sanitizedID(id) + (safeExt.isEmpty ? "" : ".\(safeExt)")
+        let target = favoriteFileURL(for: leaf)
+        let staging = favoritesFolder.appendingPathComponent(".favorite-\(UUID().uuidString).partial")
+        do {
+            try FileManager.default.createDirectory(at: favoritesFolder,
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: source, to: staging)
+            try FileManager.default.moveItem(at: staging, to: target)
+            favorites[index] = FavoriteMessage(message: favorites[index].message,
+                                               localFileName: leaf)
+            persistFavorites()
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+        }
+    }
+
     func removeFavorite(_ id: String) {
         guard let index = favorites.firstIndex(where: { $0.id == id }) else { return }
         if let localFileName = favorites[index].localFileName {
