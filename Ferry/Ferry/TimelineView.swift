@@ -704,8 +704,8 @@ struct TimelineView: View {
                 .onReceive(keyboardDidShowPublisher) { _ in
                     finishKeyboardAppearance()
                 }
-                .onReceive(keyboardWillChangeFramePublisher) { _ in
-                    beginKeyboardFrameChange()
+                .onReceive(keyboardWillChangeFramePublisher) { note in
+                    beginKeyboardFrameChange(note)
                 }
                 .onReceive(keyboardDidChangeFramePublisher) { _ in
                     if keyboardVisible && keyboardTransitioning {
@@ -919,7 +919,7 @@ struct TimelineView: View {
 
     /// Third-party keyboards, emoji/QuickType changes and the replacement
     /// attachment inputView can resize without another keyboardWillShow.
-    private func beginKeyboardFrameChange() {
+    private func beginKeyboardFrameChange(_ note: Notification) {
         guard keyboardVisible else { return }
         keyboardTransitionTask?.cancel()
         if !keyboardTransitioning {
@@ -930,9 +930,13 @@ struct TimelineView: View {
         }
         keyboardAnchorLocked = keyboardWasAtBottom
         keyboardTransitioning = true
-        // Do not remain locked if a keyboard implementation skips didChangeFrame.
-        // A real gap check, rather than this timeout, determines any correction.
-        settleKeyboardViewport(visible: true)
+        // UIKit can send willChangeFrame before the animation begins.
+        // Waiting for the advertised animation duration avoids a premature
+        // correction that would fight the keyboard on its way down.
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+                        as? NSNumber)?.doubleValue ?? 0.25
+        let delayMs = Int(max(90, min(650, duration * 1000 + 30)))
+        settleKeyboardViewport(visible: true, afterMilliseconds: delayMs)
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
@@ -955,10 +959,10 @@ struct TimelineView: View {
     /// Only one settlement survives a keyboard event sequence. SwiftUI keeps
     /// the bottom naturally *during* the animation. A single measured correction
     /// after layout handles any remaining gap; no scrollTo feedback loop.
-    private func settleKeyboardViewport(visible: Bool) {
+    private func settleKeyboardViewport(visible: Bool, afterMilliseconds: Int = 90) {
         keyboardTransitionTask?.cancel()
         keyboardTransitionTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(90))
+            try? await Task.sleep(for: .milliseconds(afterMilliseconds))
             guard !Task.isCancelled, keyboardVisible == visible else { return }
             let pinned = isKeyboardTailPinned
             let needsCorrection = pinned && keyboardTailNeedsCorrection
