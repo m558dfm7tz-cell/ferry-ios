@@ -38,6 +38,21 @@ final class FerryUITests: XCTestCase {
         XCTAssertTrue(copyLinkItem.waitForExistence(timeout: 5), "video bubble context menu should appear")
     }
 
+    /// A cold start should render actual message text without requiring a
+    /// preliminary swipe. Keyboard resizing must not unmount that transcript.
+    @MainActor
+    func testColdStartTranscriptAndKeyboardRoundTrip() throws {
+        let newest = app.staticTexts["测试文本消息"].firstMatch
+        let input = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(newest.waitForExistence(timeout: 10),
+                      "the first transcript render must expose messages without a drag")
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        tap(input)
+        XCTAssertTrue(newest.exists, "keyboard appearance must retain the transcript")
+        app.buttons["more-menu"].firstMatch.tap()
+        XCTAssertTrue(newest.exists, "keyboard dismissal must retain the transcript")
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor

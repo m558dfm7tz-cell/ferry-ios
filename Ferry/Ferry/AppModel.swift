@@ -226,6 +226,15 @@ final class AppModel {
     private(set) var scrollToBottomToken = UUID()
     func requestScrollToBottom() { scrollToBottomToken = UUID() }
 
+    // Unlike cache replacement, a real older-page prepend owns one explicit
+    // scroll-preservation request for the conversation that initiated it.
+    struct OlderPageAnchor: Equatable {
+        let conversationID: String?
+        let messageID: String
+        let nonce = UUID()
+    }
+    private(set) var olderPageAnchor: OlderPageAnchor?
+
     /// Number of messages that arrived while their conversation was not on
     /// screen — the app icon badge value.
     var unreadCount: Int { unreadMessageIDs.count }
@@ -1472,6 +1481,7 @@ final class AppModel {
         hasOlder = false
         isLoadingOlder = false
         isLoadingInitial = false
+        olderPageAnchor = nil
         dayCounts = [:]
         dayCountsByConversation = [:]
         dayIndexStarted = false
@@ -1989,6 +1999,8 @@ final class AppModel {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         let current = generation
+        let requestedConversationID = selectedAssistantID
+        let previousVisibleFirst = visibleMessages.first?.id
         if mobileHistoryAvailable {
             let conversation = mobileConversation
             let oldestInConversation = visibleMessages.first?.sequence
@@ -2000,7 +2012,12 @@ final class AppModel {
                     limit: 10, before: oldestInConversation, after: nil,
                     aroundID: nil, day: nil, search: nil, filter: nil)
                 guard current == generation else { return false }
-                prepend(page.messages)
+                let inserted = prepend(page.messages)
+                if inserted, selectedAssistantID == requestedConversationID,
+                   let previousVisibleFirst {
+                    olderPageAnchor = OlderPageAnchor(conversationID: requestedConversationID,
+                                                     messageID: previousVisibleFirst)
+                }
                 mobileHasOlderByConversation[conversation] = page.hasOlder
                 hasOlder = page.hasOlder
                 return !page.messages.isEmpty
@@ -2013,7 +2030,12 @@ final class AppModel {
         do {
             let page = try await client.messagesBefore(endpoint: endpoint, token: token, before: oldest, limit: Self.pageSize)
             guard current == generation else { return false }
-            prepend(page.messages)
+            let inserted = prepend(page.messages)
+            if inserted, selectedAssistantID == requestedConversationID,
+               let previousVisibleFirst {
+                olderPageAnchor = OlderPageAnchor(conversationID: requestedConversationID,
+                                                 messageID: previousVisibleFirst)
+            }
             hasOlder = page.hasOlder
             return true
         } catch is CancellationError {
@@ -2027,15 +2049,17 @@ final class AppModel {
         }
     }
 
-    private func prepend(_ incoming: [MessagePayload]) {
+    @discardableResult
+    private func prepend(_ incoming: [MessagePayload]) -> Bool {
         let existing = Set(messages.map(\.id))
         let visible = incoming.filter { !localStore.isHidden($0) && !existing.contains($0.id) }
-        guard !visible.isEmpty else { return }
+        guard !visible.isEmpty else { return false }
         messages.insert(contentsOf: visible, at: 0)
         messages.sort { $0.sequence < $1.sequence }
         countDays(visible)
         reviewStore.rebuild(from: messages)
         cursor = max(cursor, visible.map(\.sequence).max() ?? cursor)
+        return true
     }
 
     /// Calendar markers use the active conversation in verified routing mode.
