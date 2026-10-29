@@ -35,6 +35,7 @@ struct TimelineView: View {
     @State private var didInitialScroll = false
     @State private var renderedTailID: String?
     @State private var visibleTailID: String?
+    @State private var initialTailAligned = false
     // A new ScrollView identity forces LazyVStack to rebuild after an actual
     // background round-trip; stale lazy cells otherwise stay blank until drag.
     @State private var transcriptGeneration = 0
@@ -497,6 +498,7 @@ struct TimelineView: View {
                     didInitialScroll = false
                     renderedTailID = nil
                     visibleTailID = nil
+                    initialTailAligned = false
                     isFollowingTail = true
                     scheduleInitialBottomAnchor()
                 }
@@ -517,7 +519,7 @@ struct TimelineView: View {
                     // offset: the bottom spacer can be present with blank rows.
                     guard !didInitialScroll, !model.isLoadingInitial,
                           let tailID, tailID == model.visibleMessages.last?.id,
-                          atBottom, !transcriptUserDragging else { return }
+                          initialTailAligned, !transcriptUserDragging else { return }
                     didInitialScroll = true
                     initialAnchorTask?.cancel()
                 }
@@ -578,14 +580,17 @@ struct TimelineView: View {
                     // An initial scroll is complete only after the final cell
                     // actually mounted and the viewport is geometrically at
                     // the bottom. A queued scrollTo is not proof of success.
-                    if !didInitialScroll, !model.isLoadingInitial,
-                       let tail = model.visibleMessages.last?.id,
-                       renderedTailID == tail, visibleTailID == tail,
-                       state.viewportHeight > 0,
-                       state.contentHeight > 0, state.distanceToBottom <= 24,
-                       !transcriptUserDragging, jumpHoldingID == nil {
-                        didInitialScroll = true
-                        initialAnchorTask?.cancel()
+                    if !didInitialScroll {
+                        let aligned = state.viewportHeight > 0 &&
+                            state.contentHeight > 0 && state.distanceToBottom <= 24
+                        if aligned != initialTailAligned { initialTailAligned = aligned }
+                        if aligned, !model.isLoadingInitial,
+                           let tail = model.visibleMessages.last?.id,
+                           renderedTailID == tail, visibleTailID == tail,
+                           !transcriptUserDragging, jumpHoldingID == nil {
+                            didInitialScroll = true
+                            initialAnchorTask?.cancel()
+                        }
                     }
                     // The transform above runs on every frame of any scroll and
                     // of the keyboard animation (the visible height changes), so
@@ -600,7 +605,7 @@ struct TimelineView: View {
                         if measuredAtBottom != aligned {
                             measuredAtBottom = aligned
                         }
-                        if keyboardTailNeedsCorrection == aligned {
+                        if keyboardTailNeedsCorrection != !aligned {
                             keyboardTailNeedsCorrection = !aligned
                         }
                         // A late thumbnail can change content height after the
@@ -800,6 +805,7 @@ struct TimelineView: View {
         didInitialScroll = false
         renderedTailID = nil
         visibleTailID = nil
+        initialTailAligned = false
         atBottom = true
         transcriptGeneration &+= 1
         Task { @MainActor in
