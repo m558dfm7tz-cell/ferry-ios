@@ -85,6 +85,28 @@ final class FerryUITests: XCTestCase {
         }
     }
 
+    /// The report was a *blank* transcript after iOS suspended/resumed the
+    /// app or after force-closing it. Existence alone is insufficient for a lazy
+    /// list: ensure the final bubble becomes actually hittable with no swipes.
+    @MainActor
+    func testNewestMessagePaintedAfterForegroundAndRelaunch() throws {
+        func expectVisibleTail(_ context: String) {
+            let tail = app.staticTexts["FERRY_KEYBOARD_TAIL_TEST"].firstMatch
+            let expectation = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in tail.exists && tail.isHittable },
+                object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 8),
+                           .completed, context)
+        }
+        expectVisibleTail("cold launch should show a painted latest message")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        expectVisibleTail("return from background should paint messages without swiping")
+        app.terminate()
+        app.launch()
+        expectVisibleTail("force-close and relaunch should paint messages without swiping")
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
