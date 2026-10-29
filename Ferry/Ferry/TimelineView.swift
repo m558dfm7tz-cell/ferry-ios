@@ -11,6 +11,7 @@ struct TimelineView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var showDeviceManagement = false
+    @State private var showComputerSwitcher = false
     // Bind the selected message and the presentation in one state change.
     // The previous separate Bool / ID could show the grid on first launch.
     private struct MediaPresentation: Identifiable {
@@ -171,6 +172,9 @@ struct TimelineView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model)
+        }
+        .sheet(isPresented: $showComputerSwitcher) {
+            ComputerSwitcherView(model: model)
         }
         .sheet(isPresented: $showDeviceManagement) {
             NavigationStack {
@@ -516,15 +520,15 @@ struct TimelineView: View {
                 Button("取消") { exitSelection() }
                     .frame(width: 44, height: 44).contentShape(Rectangle())
             } else {
-                Button { showDeviceManagement = true } label: {
+                Button { showComputerSwitcher = true } label: {
                     Image(systemName: connectionIcon.symbol)
                         .foregroundStyle(connectionIcon.color)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("连接状态")
-                .accessibilityIdentifier("connection-status")
+                .accessibilityLabel("切换电脑")
+                .accessibilityIdentifier("computer-switcher-button")
             }
         }
         ToolbarItem(placement: .principal) {
