@@ -107,7 +107,10 @@ struct MessageRow: View {
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
                 metaRow
                 content
-                if (isImage && imageLoaded) || isVideo {
+                // Reserve the action row from the first frame. Previously it
+                // appeared only after the image decoded, abruptly changing
+                // message height during keyboard animation and cold resume.
+                if isImage || isVideo {
                     mediaActionRow
                 }
             }
