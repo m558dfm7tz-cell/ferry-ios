@@ -117,29 +117,30 @@ struct FavoritesView: View {
         guard let file = message.file else { return nil }
         let mediaType = file.mediaType
 
-        let data: Data?
+        // Prefer the device's protected offline copy, but fall back to
+        // Go's separate favorite file even when the original chat is gone.
+        var url: URL?
         if let localName = favorite.localFileName {
-            data = try? Data(contentsOf: model.localStore.favoriteFileURL(for: localName))
-        } else {
-            data = await model.fileData(for: message)
+            let local = model.localStore.favoriteFileURL(for: localName)
+            if FileManager.default.fileExists(atPath: local.path) { url = local }
         }
-        guard let data = data else { return nil }
+        if url == nil { url = await model.protectedFavoriteURL(for: message) }
+        guard let url else { return nil }
 
-        if PreviewRouter.isImage(mediaType) {
-            guard let image = UIImage(data: data) else { return nil }
-            let localURL = favorite.localFileName.map { model.localStore.favoriteFileURL(for: $0) }
-            return MessagePreview(kind: .image, name: file.name, mediaType: mediaType, url: localURL, image: image)
+        if PreviewRouter.isImage(mediaType, name: file.name) {
+            guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+            return MessagePreview(kind: .image, name: file.name, mediaType: mediaType,
+                                  url: url, image: image)
         } else if PreviewRouter.isVideo(mediaType, name: file.name) {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return nil }
             return MessagePreview(kind: .video, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isAudio(mediaType) {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return nil }
             return MessagePreview(kind: .audio, name: file.name, mediaType: mediaType, url: url)
         } else if PreviewRouter.isPlainText(file) {
-            let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) ?? "无法解码文本。"
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .utf16) ?? "无法解码文本。"
             return MessagePreview(kind: .text, name: file.name, mediaType: mediaType, text: text)
         } else {
-            guard let url = PreviewRouter.temporaryURL(for: data, name: file.name, mediaType: mediaType) else { return nil }
             return MessagePreview(kind: .document, name: file.name, mediaType: mediaType, url: url)
         }
     }
