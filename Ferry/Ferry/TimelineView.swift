@@ -59,6 +59,9 @@ struct TimelineView: View {
     // scroll gestures and must not detach a media-heavy transcript from tail.
     @State private var keyboardTransitioning = false
     @State private var keyboardTransitionTask: Task<Void, Never>?
+    @State private var keyboardTailNeedsCorrection = false
+    @State private var keyboardReanchorQueued = false
+    @State private var keyboardReanchorTask: Task<Void, Never>?
     // An explicit touch distinguishes a real history drag from UIKit's
     // keyboard-driven scroll-phase events.
     @State private var transcriptTouchDragging = false
@@ -90,12 +93,13 @@ struct TimelineView: View {
     private struct PendingScroll: Equatable {
         let id: String
         let anchor: UnitPoint
+        let reason: ScrollReason
         let nonce = UUID()
     }
 
     /// A single gate for programmatic scroll. A keyboard/media callback must
     /// never override a drag, or a search/date jump already in progress.
-    private enum ScrollReason {
+    private enum ScrollReason: Equatable {
         case user, newMessage, keyboard, media, pagination, jump
     }
 
@@ -111,7 +115,7 @@ struct TimelineView: View {
         case .newMessage, .keyboard, .media:
             guard isFollowingTail, !transcriptUserDragging, jumpHoldingID == nil else { return }
         }
-        pendingScroll = PendingScroll(id: id, anchor: anchor)
+        pendingScroll = PendingScroll(id: id, anchor: anchor, reason: reason)
     }
 
     private enum SelectionAlert: String, Identifiable {
@@ -383,15 +387,20 @@ struct TimelineView: View {
                 let messageObserved = baseTranscript
                     .simultaneousGesture(DragGesture(minimumDistance: 8)
                         .onChanged { _ in
-                            guard !keyboardTransitioning, !keyboardAnchorLocked else { return }
+                            // Only a real touch can cancel tail-follow. Allow
+                            // a user drag even during interactive dismissal.
                             transcriptTouchDragging = true
                             if !transcriptUserDragging {
                                 initialAnchorTask?.cancel()
                                 jumpTask?.cancel()
                                 jumpHoldingID = nil
+                                keyboardReanchorTask?.cancel()
+                                keyboardReanchorQueued = false
+                                keyboardWasAtBottom = false
+                                keyboardAnchorLocked = false
+                                keyboardTailNeedsCorrection = false
                                 transcriptUserDragging = true
                                 isFollowingTail = false
-                                keyboardWasAtBottom = false
                             }
                         }
                         .onEnded { _ in
@@ -420,7 +429,17 @@ struct TimelineView: View {
                     Task { @MainActor in
                         await Task.yield()
                         guard pendingScroll == request else { return }
-                        proxy.scrollTo(request.id, anchor: request.anchor)
+                        if request.reason == .keyboard {
+                            // Avoid a second animation fighting the native
+                            // safe-area animation already in progress.
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                proxy.scrollTo(request.id, anchor: request.anchor)
+                            }
+                        } else {
+                            proxy.scrollTo(request.id, anchor: request.anchor)
+                        }
                     }
                 }
                 .onChange(of: model.olderPageAnchor) { _, anchor in
@@ -485,6 +504,13 @@ struct TimelineView: View {
                     if phase != .active {
                         keyboardFollowTask?.cancel()
                         keyboardTransitionTask?.cancel()
+                        keyboardReanchorTask?.cancel()
+                        keyboardReanchorQueued = false
+                        keyboardTailNeedsCorrection = false
+                        keyboardWasAtBottom = false
+                        keyboardAnchorLocked = false
+                        keyboardTransitioning = false
+                        keyboardVisible = false
                         initialAnchorTask?.cancel()
                     } else if isFollowingTail && jumpHoldingID == nil {
                         // Resume with the user's reading intent intact. Do not
@@ -521,13 +547,26 @@ struct TimelineView: View {
                     // of the keyboard animation (the visible height changes), so
                     // only write when a value actually flips: an unconditional
                     // @State write re-evaluated the whole body every frame.
-                    // During keyboard geometry transitions, offset/height
-                    // calculations are transient. Writing false here rebuilds
-                    // every media row and can detach the bottom anchor.
-                    if !keyboardTransitioning && !keyboardAnchorLocked &&
-                       state.atBottom != old.atBottom {
+                    // Reconcile with the STORED bottom state. Suppressing the
+                    // update during keyboard animation used to leave it stale
+                    // when the last geometry event occurred before didShow.
+                    if state.atBottom != atBottom {
                         atBottom = state.atBottom
                         if state.atBottom { showNewPill = false }
+                    }
+                    // Native .defaultScrollAnchor handles normal resizing.
+                    // If it misses, repair only the actual measured tail gap.
+                    if isKeyboardTailPinned {
+                        let needsCorrection = state.distanceToBottom > 18
+                        if keyboardTailNeedsCorrection != needsCorrection {
+                            keyboardTailNeedsCorrection = needsCorrection
+                        }
+                        if needsCorrection &&
+                           (abs(state.viewportHeight - old.viewportHeight) > 0.5 ||
+                            abs(state.contentHeight - old.contentHeight) > 0.5 ||
+                            state.distanceToBottom > old.distanceToBottom + 10) {
+                            requestKeyboardTailCorrection()
+                        }
                     }
                     // `onReachTop()` used to fire on every frame spent near the
                     // top, spawning a load task each time.
@@ -545,8 +584,9 @@ struct TimelineView: View {
                     // UIKit also emits .interacting during keyboard geometry
                     // changes. Only the explicit DragGesture above may detach
                     // the chat from tail; phase changes only finish a drag.
-                    if phase == .idle && transcriptUserDragging &&
-                       !transcriptTouchDragging {
+                    if phase == .idle && transcriptUserDragging {
+                        // UIKit may cancel DragGesture without onEnded.
+                        transcriptTouchDragging = false
                         transcriptUserDragging = false
                         isFollowingTail = atBottom
                     }
@@ -569,7 +609,7 @@ struct TimelineView: View {
                     finishKeyboardAppearance()
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
-                    if !atBottom {
+                    if !atBottom && !isKeyboardTailPinned {
                         Button {
                             scrollToBottom()
                         } label: {
