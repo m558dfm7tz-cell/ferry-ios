@@ -1941,6 +1941,23 @@ final class AppModel {
     /// loaded (or history is exhausted / cancelled). Purely client-side: there
     /// is no by-date server endpoint.
     func locateDay(_ day: Date) async -> DateJumpResult {
+        if mobileHistoryAvailable, let endpoint, let token {
+            let current = generation
+            do {
+                let page = try await client.mobileHistory(
+                    endpoint: endpoint, token: token, conversation: mobileConversation,
+                    limit: 10, before: nil, after: nil, aroundID: nil,
+                    day: day, search: nil, filter: nil)
+                guard current == generation, !Task.isCancelled else { return .cancelled }
+                guard let targetID = page.targetID else { return .empty }
+                mergeMobileContext(page.messages)
+                mobileHasOlderByConversation[mobileConversation] = page.hasOlder
+                hasOlder = page.hasOlder
+                return .found(targetID)
+            } catch {
+                return Task.isCancelled ? .cancelled : .empty
+            }
+        }
         let target = Calendar.current.startOfDay(for: day)
         let targetKey = DayKey.string(from: target)
 
@@ -1982,6 +1999,20 @@ final class AppModel {
     /// Load an older favorited message before jumping across conversations.
     /// No server-side mutation; preserve the existing global pagination cursor.
     func ensureMessageLoaded(id: String) async -> Bool {
+        if mobileHistoryAvailable, let endpoint, let token {
+            let current = generation
+            do {
+                let page = try await client.mobileHistory(
+                    endpoint: endpoint, token: token, conversation: "all",
+                    limit: 10, before: nil, after: nil, aroundID: id,
+                    day: nil, search: nil, filter: nil)
+                guard current == generation else { return false }
+                guard page.targetID == id else { return false }
+                mergeMobileContext(page.messages)
+                locatedSearchResults.removeValue(forKey: id)
+                return true
+            } catch { return messages.contains(where: { $0.id == id }) }
+        }
         if messages.contains(where: { $0.id == id }) { return true }
         var count = 0
         while hasOlder && count < Self.maxHistoryPages && !Task.isCancelled {
@@ -1997,6 +2028,33 @@ final class AppModel {
         // File-type filters (图片/视频/文件) may list their whole category
         // without a keyword; text/link still require a search term.
         guard !query.isEmpty || filter.isTypeOnly else { return [] }
+        if mobileHistoryAvailable, let endpoint, let token {
+            let current = generation
+            var results: [MessagePayload] = []
+            var seen: Set<String> = []
+            var before: Int64?
+            for _ in 0..<maxPages {
+                if Task.isCancelled || current != generation { return [] }
+                do {
+                    let page = try await client.mobileHistory(
+                        endpoint: endpoint, token: token, conversation: "all",
+                        limit: 100, before: before, after: nil,
+                        aroundID: nil, day: nil, search: query,
+                        filter: filter.rawValue)
+                    for message in page.messages {
+                        guard !localStore.isHidden(message),
+                              seen.insert(message.id).inserted,
+                              SearchFilter.matches(message, query: query, filter: filter) else { continue }
+                        results.append(message)
+                        locatedSearchResults[message.id] = message
+                    }
+                    guard page.hasOlder, let oldest = page.messages.last?.sequence,
+                          oldest != before else { break }
+                    before = oldest
+                } catch { break }
+            }
+            return results.sorted { $0.sequence > $1.sequence }
+        }
         var results: [MessagePayload] = []
         var seen: Set<String> = []
 
@@ -2018,6 +2076,23 @@ final class AppModel {
         }
         // Newest first.
         return results.sorted { $0.sequence > $1.sequence }
+    }
+
+    /// Keep an exact located context in memory so search/date/favorite
+    /// results remain navigable even when not among the latest ten.
+    private func mergeMobileContext(_ incoming: [MessagePayload]) {
+        guard !incoming.isEmpty else { return }
+        var known = Set(messages.map(\.id))
+        let fresh = incoming.filter { !localStore.isHidden($0) && known.insert($0.id).inserted }
+        guard !fresh.isEmpty else { return }
+        messages.append(contentsOf: fresh)
+        messages.sort { $0.sequence < $1.sequence }
+        countDays(fresh)
+        reviewStore.rebuild(from: messages)
+    }
+
+    func messageForJump(id: String) -> MessagePayload? {
+        messages.first(where: { $0.id == id }) ?? locatedSearchResults[id]
     }
 
     /// Copy the ≈90 s temporary download link for a file message to the
