@@ -745,14 +745,35 @@ struct TimelineView: View {
         }
     }
 
-    /// Let SwiftUI's native safe-area/sizeChanges bottom anchor do the actual
-    /// movement together with the keyboard. A short transition guard excludes
-    /// UIKit's synthetic scroll phases; it does not issue a late scrollTo.
+    /// A keyboard transition may keep the bottom pinned only if the user
+    /// was following the newest message before the viewport began to resize.
+    /// Alignment itself is verified from ScrollGeometry, not assumed.
+    private var isKeyboardTailPinned: Bool {
+        keyboardWasAtBottom && isFollowingTail &&
+            !transcriptUserDragging && jumpHoldingID == nil
+    }
+
+    /// Coalesce rapid geometry events and use the real bottom anchor after
+    /// SwiftUI lays out the latest viewport. A cancelled user drag always wins.
+    private func requestKeyboardTailCorrection() {
+        guard isKeyboardTailPinned, !keyboardReanchorQueued else { return }
+        keyboardReanchorQueued = true
+        keyboardReanchorTask?.cancel()
+        keyboardReanchorTask = Task { @MainActor in
+            await Task.yield()
+            keyboardReanchorQueued = false
+            guard !Task.isCancelled, isKeyboardTailPinned else { return }
+            scrollToBottomAnchor(reason: .keyboard)
+        }
+    }
+
     private func followKeyboard(_ note: Notification) {
         keyboardTransitionTask?.cancel()
         if !keyboardVisible {
-            keyboardWasAtBottom = isFollowingTail && !transcriptUserDragging
+            keyboardWasAtBottom = isFollowingTail &&
+                !transcriptUserDragging && jumpHoldingID == nil
             keyboardAnchorLocked = keyboardWasAtBottom
+            keyboardTailNeedsCorrection = false
         }
         keyboardTransitioning = true
         keyboardVisible = true
@@ -760,13 +781,7 @@ struct TimelineView: View {
     }
 
     private func finishKeyboardAppearance() {
-        keyboardTransitionTask?.cancel()
-        keyboardTransitionTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(160))
-            guard !Task.isCancelled, keyboardVisible else { return }
-            keyboardTransitioning = false
-            keyboardAnchorLocked = false
-        }
+        settleKeyboardViewport(visible: true)
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
@@ -774,21 +789,30 @@ struct TimelineView: View {
         keyboardTransitionTask?.cancel()
         keyboardVisible = false
         keyboardTransitioning = true
-        // Maintain the bottom anchor until keyboardDidHide and the safe-area
-        // animation finish. The user's own drag may still detach it.
+        // Retain the pin through the reverse safe-area resize. A real finger
+        // drag can still cancel it immediately.
         keyboardFollowTask?.cancel()
     }
 
     private func completeKeyboardDismissal() {
+        settleKeyboardViewport(visible: false)
+    }
+
+    /// Cover the final UIKit/SwiftUI layout after didShow/didHide. No extra
+    /// scroll is performed without a measured nonzero tail gap.
+    private func settleKeyboardViewport(visible: Bool) {
         keyboardTransitionTask?.cancel()
         keyboardTransitionTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(160))
-            guard !Task.isCancelled, !keyboardVisible else { return }
+            await Task.yield()
+            guard !Task.isCancelled, keyboardVisible == visible else { return }
+            if keyboardTailNeedsCorrection { requestKeyboardTailCorrection() }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, keyboardVisible == visible else { return }
+            if keyboardTailNeedsCorrection { requestKeyboardTailCorrection() }
             keyboardTransitioning = false
             keyboardAnchorLocked = false
             keyboardWasAtBottom = false
-            // SwiftUI already followed the viewport resize; no post-animation
-            // manual bottom scroll, which would visibly bounce the last row.
+            keyboardTailNeedsCorrection = false
         }
     }
 
