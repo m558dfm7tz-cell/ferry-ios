@@ -85,6 +85,17 @@ struct TimelineView: View {
 
     private static let bottomAnchorID = "timeline-bottom"
 
+    private var isLastMessageVisible: Bool {
+        guard let id = model.visibleMessages.last?.id else { return false }
+        return visibleTailID == id
+    }
+
+    // Unlike contentSize, these signals are actual visible subviews. When the
+    // newest bubble is on screen the user is already effectively at the end.
+    private var isVisuallyAtBottom: Bool {
+        bottomAnchorVisible || isLastMessageVisible
+    }
+
     /// Keyboard-appearance notifications, used to keep the newest message
     /// visible above the composer (see `followKeyboard(_:)`).
     private let keyboardWillShowPublisher = NotificationCenter.default
@@ -374,7 +385,7 @@ struct TimelineView: View {
                                             scheduleInitialBottomAnchor()
                                         }
                                     }
-                                    .onScrollVisibilityChange(threshold: 0.02) { visible in
+                                    .onScrollVisibilityChange(threshold: 0.2) { visible in
                                         guard message.id == model.visibleMessages.last?.id else { return }
                                         visibleTailID = visible ? message.id : nil
                                     }
@@ -391,7 +402,19 @@ struct TimelineView: View {
                         Color.clear.frame(height: 1)
                             .id(Self.bottomAnchorID)
                             .onScrollVisibilityChange(threshold: 0.01) { visible in
+                                guard bottomAnchorVisible != visible else { return }
                                 bottomAnchorVisible = visible
+                                if visible {
+                                    atBottom = true
+                                    keyboardTailNeedsCorrection = false
+                                    if !transcriptUserDragging,
+                                       transcriptScrollPhase == .idle,
+                                       jumpHoldingID == nil {
+                                        isFollowingTail = true
+                                    }
+                                } else if !keyboardTransitioning && !isFollowingTail {
+                                    atBottom = false
+                                }
                             }
     }
 
@@ -439,7 +462,7 @@ struct TimelineView: View {
                             transcriptTouchDragging = false
                             if transcriptScrollPhase == .idle {
                                 transcriptUserDragging = false
-                                isFollowingTail = atBottom
+                                isFollowingTail = isVisuallyAtBottom
                             }
                         })
                     .simultaneousGesture(TapGesture().onEnded {
@@ -511,6 +534,7 @@ struct TimelineView: View {
                     didInitialScroll = false
                     renderedTailID = nil
                     visibleTailID = nil
+                    bottomAnchorVisible = false
                     initialTailAligned = false
                     isFollowingTail = true
                     scheduleInitialBottomAnchor()
@@ -657,7 +681,7 @@ struct TimelineView: View {
                         // UIKit may cancel DragGesture without onEnded.
                         transcriptTouchDragging = false
                         transcriptUserDragging = false
-                        isFollowingTail = atBottom
+                        isFollowingTail = isVisuallyAtBottom
                     }
                 }
                 let keyboardAware = geometryObserved
@@ -686,7 +710,8 @@ struct TimelineView: View {
                     }
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
-                    if !atBottom && !(keyboardTransitioning && isKeyboardTailPinned) {
+                    if !isFollowingTail && !isVisuallyAtBottom &&
+                       !model.visibleMessages.isEmpty && jumpHoldingID == nil {
                         Button {
                             scrollToBottom()
                         } label: {
@@ -818,6 +843,7 @@ struct TimelineView: View {
         didInitialScroll = false
         renderedTailID = nil
         visibleTailID = nil
+        bottomAnchorVisible = false
         initialTailAligned = false
         atBottom = true
         measuredAtBottom = true
