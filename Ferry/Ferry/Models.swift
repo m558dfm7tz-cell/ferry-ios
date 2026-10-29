@@ -115,6 +115,17 @@ enum TimestampFormat {
         return formatter
     }()
 
+    // Day separators are rebuilt as messages arrive. Constructing a
+    // DateFormatter for each historical message was a measurable source of
+    // work during assistant switching. All transcript formatting occurs on
+    // AppModel's MainActor, matching the existing shared time formatter.
+    private static let historicalDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter
+    }()
+
     static func date(from string: String) -> Date? {
         withFraction.date(from: string) ?? withoutFraction.date(from: string)
     }
@@ -124,10 +135,7 @@ enum TimestampFormat {
         guard let date = date(from: string) else { return "" }
         if Calendar.current.isDateInToday(date) { return "今天" }
         if Calendar.current.isDateInYesterday(date) { return "昨天" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日"
-        return formatter.string(from: date)
+        return historicalDay.string(from: date)
     }
 }
 
