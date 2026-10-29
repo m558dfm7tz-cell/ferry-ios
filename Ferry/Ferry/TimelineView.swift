@@ -491,13 +491,11 @@ struct TimelineView: View {
                                 isFollowingTail = isVisuallyAtBottom
                             }
                         })
-                    .simultaneousGesture(TapGesture().onEnded {
-                        // Tap outside the composer closes the attachment
-                        // keyboard without stealing image/menu button taps.
-                        if showAttachmentPanel || composerFocused || keyboardVisible {
-                            dismissKeyboard()
-                        }
-                    })
+                    // Blank-area taps are handled by transcriptContents'
+                    // background. Do not attach a simultaneous tap recognizer
+                    // to the whole ScrollView: it also receives taps on the
+                    // return-to-latest button and can dismiss the keyboard,
+                    // triggering a resize that cancels its scroll command.
                     .defaultScrollAnchor(.bottom)
                     // iOS 18 automatically keeps the bottom attached as the
                     // keyboard changes the viewport size. Do not force another
