@@ -512,6 +512,15 @@ struct TimelineView: View {
                     }
                 }
                 .onAppear { scheduleInitialBottomAnchor() }
+                .onChange(of: visibleTailID) { _, tailID in
+                    // Visibility is a separate proof from the lazy content
+                    // offset: the bottom spacer can be present with blank rows.
+                    guard !didInitialScroll, !model.isLoadingInitial,
+                          let tailID, tailID == model.visibleMessages.last?.id,
+                          atBottom, !transcriptUserDragging else { return }
+                    didInitialScroll = true
+                    initialAnchorTask?.cancel()
+                }
                 .onChange(of: model.scrollToBottomToken) { _, _ in
                     guard jumpHoldingID == nil else { return }
                     isFollowingTail = true
@@ -557,7 +566,7 @@ struct TimelineView: View {
                     .onScrollGeometryChange(for: ScrollState.self) { geometry in
                     ScrollState(
                         atBottom: geometry.contentOffset.y + geometry.containerSize.height
-                            >= geometry.contentSize.height - 120,
+                            >= geometry.contentSize.height - 24,
                         nearTop: geometry.contentOffset.y < 260,
                         offsetY: geometry.contentOffset.y,
                         contentHeight: geometry.contentSize.height,
@@ -582,26 +591,33 @@ struct TimelineView: View {
                     // of the keyboard animation (the visible height changes), so
                     // only write when a value actually flips: an unconditional
                     // @State write re-evaluated the whole body every frame.
-                    // Reconcile with the STORED bottom state. Suppressing the
-                    // update during keyboard animation used to leave it stale
-                    // when the last geometry event occurred before didShow.
-                    if state.atBottom != atBottom {
-                        atBottom = state.atBottom
-                        if state.atBottom { showNewPill = false }
-                    }
-                    // Native .defaultScrollAnchor handles normal resizing.
-                    // If it misses, repair only the actual measured tail gap.
+                    // Keyboard native safe-area changes can generate dozens
+                    // of geometry frames. Do NOT mutate the scroll anchor or
+                    // push scrollTo per frame: finish one native transition,
+                    // then do at most one corrective scroll if still displaced.
                     if isKeyboardTailPinned {
-                        let needsCorrection = state.distanceToBottom > 18
-                        if keyboardTailNeedsCorrection != needsCorrection {
-                            keyboardTailNeedsCorrection = needsCorrection
+                        let aligned = state.distanceToBottom <= 24
+                        if measuredAtBottom != aligned {
+                            measuredAtBottom = aligned
                         }
-                        if needsCorrection &&
-                           (abs(state.viewportHeight - old.viewportHeight) > 0.5 ||
-                            abs(state.contentHeight - old.contentHeight) > 0.5 ||
-                            state.distanceToBottom > old.distanceToBottom + 10) {
+                        if keyboardTailNeedsCorrection == aligned {
+                            keyboardTailNeedsCorrection = !aligned
+                        }
+                        // A late thumbnail can change content height after the
+                        // keyboard has settled. That is a separate layout event
+                        // and may require one non-animated correction.
+                        if !keyboardTransitioning, keyboardVisible, !aligned,
+                           abs(state.contentHeight - old.contentHeight) > 1 {
                             requestKeyboardTailCorrection()
                         }
+                    }
+                    // Keep the toolbar indicator stable throughout the keyboard
+                    // animation. Refresh it from the *latest* measured state at
+                    // settlement; old.atBottom can be stale across that window.
+                    if !keyboardTransitioning && !keyboardAnchorLocked &&
+                       state.atBottom != atBottom {
+                        atBottom = state.atBottom
+                        if state.atBottom { showNewPill = false }
                     }
                     // `onReachTop()` used to fire on every frame spent near the
                     // top, spawning a load task each time.
@@ -771,6 +787,27 @@ struct TimelineView: View {
         return model.avatarStore.media(for: id)
     }
 
+    /// Recreate only the scroll viewport, never AppModel or its local stores.
+    /// A backgrounded LazyVStack can retain invalid visible-range bookkeeping
+    /// even while its data remains populated; a fresh identity restores cells.
+    /// Historical reading deliberately keeps the existing viewport intact.
+    private func rebuildTranscriptAtTail() {
+        guard isFollowingTail, !transcriptUserDragging,
+              jumpHoldingID == nil, !model.visibleMessages.isEmpty else { return }
+        initialAnchorTask?.cancel()
+        keyboardReanchorTask?.cancel()
+        pendingScroll = nil
+        didInitialScroll = false
+        renderedTailID = nil
+        visibleTailID = nil
+        atBottom = true
+        transcriptGeneration &+= 1
+        Task { @MainActor in
+            await Task.yield()
+            scheduleInitialBottomAnchor()
+        }
+    }
+
     /// An initial list is laid out in several passes (cached rows, server
     /// replacement, decoded media). Retry only until geometry confirms the
     /// latest rendered row is actually at the bottom, not just queued.
@@ -801,7 +838,8 @@ struct TimelineView: View {
     /// Coalesce rapid geometry events and use the real bottom anchor after
     /// SwiftUI lays out the latest viewport. A cancelled user drag always wins.
     private func requestKeyboardTailCorrection() {
-        guard isKeyboardTailPinned, !keyboardReanchorQueued else { return }
+        guard isKeyboardTailPinned, !keyboardTransitioning,
+              !keyboardReanchorQueued else { return }
         keyboardReanchorQueued = true
         keyboardReanchorTask?.cancel()
         keyboardReanchorTask = Task { @MainActor in
@@ -863,18 +901,26 @@ struct TimelineView: View {
         settleKeyboardViewport(visible: false)
     }
 
-    /// Cover the final UIKit/SwiftUI layout after didShow/didHide. No extra
-    /// scroll is performed without a measured nonzero tail gap.
+    /// Only one settlement survives a keyboard event sequence. SwiftUI keeps
+    /// the bottom naturally *during* the animation. A single measured correction
+    /// after layout handles any remaining gap; no scrollTo feedback loop.
     private func settleKeyboardViewport(visible: Bool) {
         keyboardTransitionTask?.cancel()
         keyboardTransitionTask = Task { @MainActor in
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(90))
             guard !Task.isCancelled, keyboardVisible == visible else { return }
-            if keyboardTailNeedsCorrection { requestKeyboardTailCorrection() }
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled, keyboardVisible == visible else { return }
-            if keyboardTailNeedsCorrection { requestKeyboardTailCorrection() }
+            let pinned = isKeyboardTailPinned
+            let needsCorrection = pinned && keyboardTailNeedsCorrection
             keyboardTransitioning = false
+            if pinned {
+                atBottom = measuredAtBottom
+                if measuredAtBottom { showNewPill = false }
+            }
+            if needsCorrection {
+                // Queue while the hide-transition pin is still valid.
+                // The reader resolves this command after SwiftUI's next pass.
+                scrollToBottomAnchor(reason: .keyboard)
+            }
             keyboardAnchorLocked = false
             keyboardWasAtBottom = false
             keyboardTailNeedsCorrection = false
