@@ -424,7 +424,8 @@ struct TimelineView: View {
                     ScrollState(
                         atBottom: geometry.contentOffset.y + geometry.containerSize.height
                             >= geometry.contentSize.height - 120,
-                        nearTop: geometry.contentOffset.y < 60
+                        nearTop: geometry.contentOffset.y < 260,
+                        offsetY: geometry.contentOffset.y
                     )
                 } action: { old, state in
                     // The transform above runs on every frame of any scroll and
@@ -441,7 +442,14 @@ struct TimelineView: View {
                     }
                     // `onReachTop()` used to fire on every frame spent near the
                     // top, spawning a load task each time.
-                    if state.nearTop, !old.nearTop { onReachTop() }
+                    // A short ten-message transcript starts near the top.
+                    // Only an actual upward user drag may prefetch history;
+                    // keyboard geometry and initial layout must never do so.
+                    if transcriptUserDragging, !keyboardVisible, !keyboardTransitioning,
+                       !keyboardAnchorLocked, state.nearTop,
+                       state.offsetY < old.offsetY - 2 {
+                        onReachTop()
+                    }
                 }
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting {
@@ -632,9 +640,10 @@ struct TimelineView: View {
         keyboardAnchorLocked = false
         keyboardWasAtBottom = false
         guard shouldRestore else { return }
-        // One post-animation correction for media heights, never a timed
-        // repeated scroll during the keyboard animation itself.
-        queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .keyboard)
+        // Native safe-area bottom anchoring has already followed the entire
+        // keyboard animation. A second manual scrollTo here causes the visible
+        // last message to jump after the keyboard finishes.
+        _ = shouldRestore
     }
 
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
@@ -658,7 +667,18 @@ struct TimelineView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
-            } else if !model.hasOlder {
+            } else if model.hasOlder {
+                Button {
+                    Task { await model.loadOlder() }
+                } label: {
+                    Text("加载更早消息")
+                        .font(.footnote)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("load-older-messages")
+            } else {
                 Text("没有更早的消息了").font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
@@ -742,9 +762,17 @@ struct TimelineView: View {
         didInitialScroll = true
         keyboardFollowTask?.cancel()
         jumpTask = Task { @MainActor in
-            // Let the date-jump sheet finish dismissing before scrolling.
+            // Let the search/date sheet dismiss before loading the target's
+            // local ten-message context. Its original message can be thousands
+            // of entries older than the main ten-message window.
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
+            let loaded = await model.ensureMessageLoaded(id: id)
+            guard !Task.isCancelled, loaded else {
+                if jumpHoldingID == id { jumpHoldingID = nil }
+                flashToast("定位消息失败，请检查电脑连接")
+                return
+            }
             // The user picked another assistant meanwhile: drop the jump.
             guard model.selectedAssistantID == expectedFilter else {
                 if jumpHoldingID == id { jumpHoldingID = nil }
@@ -772,7 +800,7 @@ struct TimelineView: View {
     /// belongs to — or 全部 (nil) when it belongs to no assistant.
     private func jumpFilter(for id: String) -> String? {
         guard !model.visibleMessages.contains(where: { $0.id == id }),
-              let message = model.messages.first(where: { $0.id == id }) else {
+              let message = model.messageForJump(id: id) else {
             return model.selectedAssistantID
         }
         if model.routeIsolationEnabled { return model.conversationIDForJump(message) }
@@ -875,6 +903,7 @@ private struct TimelineMessageCell: View {
 private struct ScrollState: Hashable {
     let atBottom: Bool
     let nearTop: Bool
+    let offsetY: CGFloat
 }
 
 /// Bottom bar shown while in select mode. 删除 now lives in the top bar, so
