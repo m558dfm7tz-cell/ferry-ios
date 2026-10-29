@@ -308,8 +308,19 @@ struct TimelineView: View {
 
     /// Split the lazy row hierarchy and scroll modifiers into smaller view
     /// expressions to keep Xcode's SwiftUI type-checker tractable.
-    private var transcriptContents: some View {
-                        LazyVStack(spacing: 18) {
+    // The initial page is intentionally small (ten messages). Realizing these
+    // rows eagerly avoids LazyVStack retaining an empty/stale viewport after
+    // iOS suspends and restores the app. Large paginated history remains lazy.
+    @ViewBuilder private var transcriptContents: some View {
+        if model.visibleMessages.count <= 30 {
+            VStack(spacing: 18) { transcriptRows }
+        } else {
+            LazyVStack(spacing: 18) { transcriptRows }
+        }
+    }
+
+    @ViewBuilder private var transcriptRows: some View {
+
                             if !model.visibleMessages.isEmpty { topLoader }
                             if model.visibleMessages.isEmpty {
                                 if model.selectedAssistantID != nil {
@@ -382,8 +393,6 @@ struct TimelineView: View {
                             .onScrollVisibilityChange(threshold: 0.01) { visible in
                                 bottomAnchorVisible = visible
                             }
-                    }
-
     }
 
     private var transcriptView: some View {
