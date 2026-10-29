@@ -2106,3 +2106,44 @@ final class AppModel {
         }
     }
 }
+
+
+// Bounded *persistent* message metadata; current-session messages in memory
+// remain unbounded. Runs on its own actor so file IO never blocks SwiftUI.
+private actor MobileTranscriptCache {
+    static let shared = MobileTranscriptCache()
+    private let maximumStoredPerConversation = 20
+
+    private func url(space: SpaceKey, conversation: String) -> URL? {
+        guard let root = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                   in: .userDomainMask).first else { return nil }
+        let digest = SHA256.hash(data: Data(conversation.utf8))
+            .map { String(format: "%02x", Int($0)) }.joined()
+        return root.appendingPathComponent("Ferry", isDirectory: true)
+            .appendingPathComponent("Spaces", isDirectory: true)
+            .appendingPathComponent(space.folderName, isDirectory: true)
+            .appendingPathComponent("MessageSnapshots", isDirectory: true)
+            .appendingPathComponent(digest + ".json")
+    }
+
+    func read(space: SpaceKey, conversation: String) -> [MessagePayload] {
+        guard let url = url(space: space, conversation: conversation),
+              let data = try? Data(contentsOf: url),
+              let items = try? JSONDecoder().decode([MessagePayload].self, from: data)
+        else { return [] }
+        return Array(items.suffix(maximumStoredPerConversation))
+    }
+
+    func write(space: SpaceKey, conversation: String, messages: [MessagePayload]) {
+        guard let url = url(space: space, conversation: conversation),
+              let data = try? JSONEncoder().encode(Array(messages.suffix(maximumStoredPerConversation)))
+        else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            // Cache failure cannot affect server-authoritative history.
+        }
+    }
+}
