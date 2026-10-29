@@ -1509,17 +1509,30 @@ final class AppModel {
     /// connectivity problems), so a transient error just retries next tick.
     private func refreshChanges(generation current: UUID) async {
         guard current == generation, let endpoint, let token else { return }
-        do {
-            let page = try await client.changes(endpoint: endpoint, token: token, since: changeCursor)
-            guard current == generation else { return }
-            for change in page.changes { applyChange(change) }
-            changeCursor = max(changeCursor, page.revision)
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
-        } catch {
-            // Best-effort: retried on the next poll tick.
+        // Go returns at most 500 deletion/favorite events per page. Never
+        // skip the remainder by advancing directly to the server revision.
+        for _ in 0..<30 {
+            do {
+                let page = try await client.changes(endpoint: endpoint, token: token,
+                                                    since: changeCursor)
+                guard current == generation, !Task.isCancelled else { return }
+                for change in page.changes {
+                    applyChange(change)
+                    changeCursor = max(changeCursor, change.seq)
+                }
+                if page.changes.isEmpty {
+                    changeCursor = max(changeCursor, page.revision)
+                    break
+                }
+                if changeCursor >= page.revision { break }
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch {
+                // Keep the last processed sequence and retry on the next poll.
+                break
+            }
         }
         if routeIsolationEnabled {
             await refreshServerProfiles()
@@ -1606,9 +1619,13 @@ final class AppModel {
         } else if let state = try? await client.assistantState(endpoint: endpoint, token: token) {
             await adoptServerAssistants(state)
         }
-        if let page = try? await client.changes(endpoint: endpoint, token: token, since: 0) {
-            changeCursor = max(changeCursor, page.revision)
-        }
+        // Replay the retained deletion log from the beginning on reconnect,
+        // including locally persisted snapshot records. A client that missed
+        // more than one 500-event page must not silently skip the remaining
+        // removals; server-authoritative initial pages still reconcile records
+        // older than the log retention window.
+        changeCursor = 0
+        await refreshChanges(generation: current)
     }
 
     /// The server is authoritative. Local queued actions alone are exempt
@@ -1616,7 +1633,7 @@ final class AppModel {
     private func refreshFavorites(generation current: UUID, force: Bool = false) async {
         guard current == generation, let endpoint, let token, !isRefreshingFavorites else { return }
         if !force, let previous = lastFavoritesFetch,
-           Date().timeIntervalSince(previous) < 3 { return }
+           Date().timeIntervalSince(previous) < 60 { return }
         isRefreshingFavorites = true
         defer { isRefreshingFavorites = false }
         do {
