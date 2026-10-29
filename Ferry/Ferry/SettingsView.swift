@@ -134,6 +134,194 @@ struct SettingsView: View {
 }
 
     
+/// The connection picker is available from Ferry's top-left toolbar, not
+/// buried in Settings. All saved credentials remain in the existing Keychain
+/// store; only one selected Go server is polled at any given time.
+struct ComputerSwitcherView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var model: AppModel
+    @State private var showingAddComputer = false
+    @State private var editingOrigin: String?
+    @State private var editedName = ""
+    @State private var switchingOrigin: String?
+
+    private var selectedOrigin: String? {
+        model.endpoint?.origin ?? model.lastServerOrigin
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if let origin = selectedOrigin {
+                        HStack(spacing: 12) {
+                            Image(systemName: "desktopcomputer")
+                                .font(.title2)
+                                .frame(width: 42, height: 42)
+                                .foregroundStyle(.tint)
+                                .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(model.savedComputers.first(where: { $0.origin == origin })?.name ?? "当前电脑")
+                                    .font(.headline)
+                                Text(origin)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Label(currentStatus, systemImage: currentStatusSymbol)
+                                    .font(.caption)
+                                    .foregroundStyle(currentStatusColor)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                    } else {
+                        Label("尚未选择电脑", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("当前连接")
+                } footer: {
+                    Text("仅与选中的电脑同步聊天、收藏、文件和通知。其他已保存电脑不会在后台连接。")
+                }
+
+                Section("已保存的电脑") {
+                    if model.savedComputers.isEmpty {
+                        ContentUnavailableView("暂无已保存的电脑", systemImage: "desktopcomputer",
+                                               description: Text("点击下方「添加电脑」连接第一台电脑。"))
+                    }
+                    ForEach(model.savedComputers) { computer in
+                        Button {
+                            guard switchingOrigin == nil else { return }
+                            guard computer.origin != selectedOrigin || model.phase != .connected else {
+                                dismiss()
+                                return
+                            }
+                            switchingOrigin = computer.origin
+                            Task { @MainActor in
+                                await model.switchComputer(origin: computer.origin)
+                                switchingOrigin = nil
+                                dismiss()
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "desktopcomputer")
+                                    .font(.title3)
+                                    .frame(width: 38, height: 38)
+                                    .foregroundStyle(computer.origin == selectedOrigin ? Color.accentColor : .secondary)
+                                    .background(Color.accentColor.opacity(computer.origin == selectedOrigin ? 0.13 : 0.06),
+                                                in: RoundedRectangle(cornerRadius: 12))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(computer.name)
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(computer.origin)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                if switchingOrigin == computer.origin {
+                                    ProgressView()
+                                } else if computer.origin == selectedOrigin {
+                                    Label("当前", systemImage: "checkmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.tertiary)
+                                        .font(.caption.weight(.medium))
+                                }
+                            }
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(switchingOrigin != nil)
+                        .contextMenu {
+                            Button("修改名称", systemImage: "pencil") {
+                                editedName = computer.name
+                                editingOrigin = computer.origin
+                            }
+                            Button("移除保存的电脑", systemImage: "trash", role: .destructive) {
+                                model.removeSavedComputer(origin: computer.origin)
+                            }
+                        }
+                        .accessibilityIdentifier("saved-computer-\(computer.origin)")
+                    }
+                }
+            }
+            .navigationTitle("切换电脑")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Button {
+                    showingAddComputer = true
+                } label: {
+                    Label("添加电脑", systemImage: "plus.circle.fill")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(switchingOrigin != nil)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(.bar)
+                .accessibilityIdentifier("computer-switcher-add")
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingAddComputer) {
+                AddComputerSheet(model: model) {
+                    showingAddComputer = false
+                    dismiss()
+                }
+            }
+            .alert("修改电脑名称", isPresented: Binding(
+                get: { editingOrigin != nil },
+                set: { if !$0 { editingOrigin = nil } }
+            )) {
+                TextField("电脑名称", text: $editedName)
+                Button("保存") {
+                    if let origin = editingOrigin {
+                        model.renameComputer(origin: origin, name: editedName)
+                    }
+                    editingOrigin = nil
+                }
+                Button("取消", role: .cancel) { editingOrigin = nil }
+            }
+        }
+        .accessibilityIdentifier("computer-switcher")
+    }
+
+    private var currentStatus: String {
+        switch model.phase {
+        case .connected: return "已连接"
+        case .connecting: return "正在连接"
+        case .offline: return "离线"
+        case .setup: return "需要连接或重新验证"
+        }
+    }
+    private var currentStatusSymbol: String {
+        switch model.phase {
+        case .connected: return "checkmark.circle.fill"
+        case .connecting: return "arrow.triangle.2.circlepath"
+        case .offline: return "wifi.exclamationmark"
+        case .setup: return "lock.trianglebadge.exclamationmark"
+        }
+    }
+    private var currentStatusColor: Color {
+        switch model.phase {
+        case .connected: return .green
+        case .connecting: return .orange
+        case .offline: return .orange
+        case .setup: return .secondary
+        }
+    }
+}
+
 /// Adds a server to the same saved-computer collection used by the switcher.
 /// The existing model.connect() still owns credentials, per-server cache and
 /// notification routing; no second server is polled in the background.
