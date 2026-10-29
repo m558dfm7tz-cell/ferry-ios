@@ -107,9 +107,9 @@ workflows:
           cp -R "$APP" "$CM_BUILD_DIR/build/multi-computer-ipa/Payload/Ferry.app"
           cd "$CM_BUILD_DIR/build/multi-computer-ipa"
           zip -qry -y Ferry-MultiComputer-INPLACE-UNSIGNED.ipa Payload
-          unzip -t Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa
+          unzip -t Ferry-MultiComputer-INPLACE-UNSIGNED.ipa
           echo "Unsigned IPA keeps com.ferry.test; sideload using the same signing identity as the installed app to preserve its data."
     artifacts:
-      - build/multi-computer-ipa/Ferry-MultiComputer-UNSIGNED-UNVERIFIED.ipa
+      - build/multi-computer-ipa/Ferry-MultiComputer-INPLACE-UNSIGNED.ipa
       - build/Ferry-multi-computer-build.log
       - build/source-commit.txt
