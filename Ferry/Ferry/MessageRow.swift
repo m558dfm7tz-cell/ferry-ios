@@ -56,6 +56,9 @@ struct MessageRow: View {
     let assistant: Assistant?
     /// Custom avatar media for that assistant (nil = default letter disc).
     let assistantMedia: AssistantAvatarMedia?
+    /// Only the physical blank space opposite this message bubble dismisses
+    /// the composer. Bubble buttons, text selection and context menus stay live.
+    let onTapChatWhitespace: () -> Void
 
     @State private var copied = false
     @State private var saved = false
@@ -99,6 +102,9 @@ struct MessageRow: View {
                 AssistantAvatarView(assistant: assistant, size: 32, media: assistantMedia)
                     .padding(.bottom, 1)
             }
+            if isCurrent {
+                tapToDismissWhitespace
+            }
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
                 metaRow
                 content
@@ -109,8 +115,12 @@ struct MessageRow: View {
                     mediaActionRow
                 }
             }
-            .frame(maxWidth: .infinity, alignment: isCurrent ? .trailing : .leading)
+            .fixedSize(horizontal: true, vertical: false)
+            if !isCurrent {
+                tapToDismissWhitespace
+            }
         }
+        .frame(maxWidth: .infinity)
         .overlay { if showToast { toastView } }
         .background {
             if isHighlighted {
@@ -134,6 +144,16 @@ struct MessageRow: View {
             previewView(for: preview)
                 .presentationBackground(.clear)
         }
+    }
+
+    // A flexible, separately hittable blank region, NOT a gesture over the
+    // entire message row. It fills the space beside an outgoing/incoming bubble
+    // and does not compete with taps on images, file cards or selection controls.
+    private var tapToDismissWhitespace: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onTapChatWhitespace)
     }
 
     @ViewBuilder private func previewView(for preview: MessagePreview) -> some View {
