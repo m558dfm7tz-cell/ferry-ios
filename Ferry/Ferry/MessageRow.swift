@@ -86,11 +86,6 @@ struct MessageRow: View {
         let name = file?.name ?? ""
         return PreviewRouter.isImage(mime, name: name) || PreviewRouter.isVideo(mime, name: name)
     }
-    private var imageLoaded: Bool {
-        if case .some(.some(_)) = image { return true }
-        return false
-    }
-
     private var fileContentType: UTType {
         let mime = message.file?.mediaType ?? "application/octet-stream"
         let name = message.file?.name ?? ""
