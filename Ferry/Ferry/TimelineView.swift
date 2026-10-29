@@ -604,14 +604,15 @@ struct TimelineView: View {
                 let geometryObserved = mediaObserved
                     .onScrollGeometryChange(for: ScrollState.self) { geometry in
                     ScrollState(
-                        atBottom: geometry.contentOffset.y + geometry.containerSize.height
-                            >= geometry.contentSize.height - 24,
+                        // Account for the chat composer's safe-area inset.
+                        atBottom: geometry.visibleRect.maxY
+                            >= geometry.contentSize.height + geometry.contentInsets.bottom - 48,
                         nearTop: geometry.contentOffset.y < 260,
                         offsetY: geometry.contentOffset.y,
                         contentHeight: geometry.contentSize.height,
                         viewportHeight: geometry.containerSize.height,
                         distanceToBottom: max(0, geometry.contentSize.height
-                            - geometry.contentOffset.y - geometry.containerSize.height)
+                            + geometry.contentInsets.bottom - geometry.visibleRect.maxY)
                     )
                 } action: { old, state in
                     // An initial scroll is complete only after the final cell
@@ -619,7 +620,8 @@ struct TimelineView: View {
                     // the bottom. A queued scrollTo is not proof of success.
                     if !didInitialScroll {
                         let aligned = state.viewportHeight > 0 &&
-                            state.contentHeight > 0 && state.distanceToBottom <= 24
+                            state.contentHeight > 0 &&
+                            (bottomAnchorVisible || state.distanceToBottom <= 48)
                         if aligned != initialTailAligned { initialTailAligned = aligned }
                         if aligned, !model.isLoadingInitial,
                            let tail = model.visibleMessages.last?.id,
@@ -638,7 +640,8 @@ struct TimelineView: View {
                     // push scrollTo per frame: finish one native transition,
                     // then do at most one corrective scroll if still displaced.
                     if isKeyboardTailPinned {
-                        let aligned = state.distanceToBottom <= 24
+                        let aligned = bottomAnchorVisible ||
+                            (isLastMessageVisible && state.distanceToBottom <= 64)
                         if measuredAtBottom != aligned {
                             measuredAtBottom = aligned
                         }
@@ -657,9 +660,9 @@ struct TimelineView: View {
                     // animation. Refresh it from the *latest* measured state at
                     // settlement; old.atBottom can be stale across that window.
                     if !keyboardTransitioning && !keyboardAnchorLocked &&
-                       state.atBottom != atBottom {
-                        atBottom = state.atBottom
-                        if state.atBottom { showNewPill = false }
+                       (isVisuallyAtBottom || state.atBottom) != atBottom {
+                        atBottom = isVisuallyAtBottom || state.atBottom
+                        if atBottom { showNewPill = false }
                     }
                     // `onReachTop()` used to fire on every frame spent near the
                     // top, spawning a load task each time.
@@ -903,7 +906,7 @@ struct TimelineView: View {
                 !transcriptUserDragging && jumpHoldingID == nil
             keyboardAnchorLocked = keyboardWasAtBottom
             keyboardTailNeedsCorrection = false
-            measuredAtBottom = atBottom
+            measuredAtBottom = isVisuallyAtBottom || atBottom
         }
         keyboardTransitioning = true
         keyboardVisible = true
@@ -923,7 +926,7 @@ struct TimelineView: View {
             keyboardWasAtBottom = isFollowingTail &&
                 !transcriptUserDragging && jumpHoldingID == nil
             keyboardTailNeedsCorrection = false
-            measuredAtBottom = atBottom
+            measuredAtBottom = isVisuallyAtBottom || atBottom
         }
         keyboardAnchorLocked = keyboardWasAtBottom
         keyboardTransitioning = true
