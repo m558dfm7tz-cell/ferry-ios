@@ -808,6 +808,9 @@ struct TimelineView: View {
         }
         keyboardAnchorLocked = keyboardWasAtBottom
         keyboardTransitioning = true
+        // Do not remain locked if a keyboard implementation skips didChangeFrame.
+        // A real gap check, rather than this timeout, determines any correction.
+        settleKeyboardViewport(visible: true)
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
