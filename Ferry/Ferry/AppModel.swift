@@ -2622,7 +2622,7 @@ private actor ManagedDiskCache {
         for item in entries.sorted(by: { $0.modified < $1.modified }) {
             let age = now.timeIntervalSince(item.modified)
             guard age > 600, (age > maxAge || total > maxBytes) else { continue }
-            if (try? fm.removeItem(at: item.url)) != nil { total -= item.size }
+            do { try fm.removeItem(at: item.url); total -= item.size } catch {}
         }
     }
 
