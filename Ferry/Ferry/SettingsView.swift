@@ -158,8 +158,8 @@ struct ComputerSwitcherView: View {
                             Image(systemName: "desktopcomputer")
                                 .font(.title2)
                                 .frame(width: 42, height: 42)
-                                .foregroundStyle(.tint)
-                                .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                                .foregroundStyle(Color.accentColor)
+                                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(model.savedComputers.first(where: { $0.origin == origin })?.name ?? "当前电脑")
                                     .font(.headline)
@@ -207,7 +207,7 @@ struct ComputerSwitcherView: View {
                                 Image(systemName: "desktopcomputer")
                                     .font(.title3)
                                     .frame(width: 38, height: 38)
-                                    .foregroundStyle(computer.origin == selectedOrigin ? Color.accentColor : .secondary)
+                                    .foregroundStyle(computer.origin == selectedOrigin ? Color.accentColor : Color.secondary)
                                     .background(Color.accentColor.opacity(computer.origin == selectedOrigin ? 0.13 : 0.06),
                                                 in: RoundedRectangle(cornerRadius: 12))
                                 VStack(alignment: .leading, spacing: 4) {
