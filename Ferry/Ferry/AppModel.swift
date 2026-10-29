@@ -2575,6 +2575,11 @@ final class AppModel {
                                           createdAt: createdAt,
                                           text: "FERRY_KEYBOARD_TAIL_TEST", file: nil)
         messages = [text, image, video, reviewJSONMessage, reviewTextMessage, keyboardTail]
+        if ProcessInfo.processInfo.arguments.contains("-uiTestMockBlank") {
+            // A single short message leaves tappable whitespace above the
+            // composer for testing keyboard and plus-panel dismissal.
+            messages = [keyboardTail]
+        }
         if ProcessInfo.processInfo.arguments.contains("-uiTestMockLongHistory") {
             // Keep the existing newest test bubble last, but force the active
             // transcript through its LazyVStack (>30) rendering path.
