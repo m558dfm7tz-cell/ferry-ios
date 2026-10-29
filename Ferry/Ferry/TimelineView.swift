@@ -435,6 +435,7 @@ struct TimelineView: View {
     }
 
     private var transcriptView: some View {
+        GeometryReader { viewport in
                 ScrollViewReader { proxy in
                     let baseTranscript = ScrollView {
                         transcriptContents
@@ -447,6 +448,12 @@ struct TimelineView: View {
                     // showing, the pinned 待查看 row underneath it.
                     .padding(.top, 20 + AssistantBarMetrics.height
                              + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
+                    // Assistant/chief conversations often contain only a few
+                    // bubbles. Keep these physically bottom-aligned as the
+                    // keyboard changes the available viewport, rather than
+                    // letting a short scroll view alternate between top
+                    // offset and bottom content anchoring.
+                    .frame(minHeight: viewport.size.height, alignment: .bottom)
                     .background {
                         Color.clear
                             .contentShape(Rectangle())
@@ -759,6 +766,7 @@ struct TimelineView: View {
                     }
                 }
             }
+        }
     }
 
     /// Connection status icon for the top bar leading slot (tap opens device
