@@ -438,7 +438,17 @@ struct TimelineView: View {
         GeometryReader { viewport in
                 ScrollViewReader { proxy in
                     let baseTranscript = ScrollView {
-                        transcriptContents
+                        // A real background *inside* the viewport receives
+                        // taps only in uncovered chat whitespace. Attaching a
+                        // simultaneous TapGesture to ScrollView itself also
+                        // catches message buttons and the latest-message pill.
+                        ZStack(alignment: .bottom) {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { dismissKeyboardIfPresented() }
+                                .accessibilityIdentifier("transcript-blank-area")
+                            transcriptContents
+                        }
                     // Extra top inset so the transcript scrolls *under* the
                     // floating (background-less) assistant bar and shows through
                     // it, instead of being permanently hidden behind it.
@@ -455,11 +465,7 @@ struct TimelineView: View {
                     // offset and bottom content anchoring.
                     .frame(minHeight: model.visibleMessages.count <= 30
                            ? viewport.size.height : 0, alignment: .bottom)
-                    .background {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { dismissKeyboard() }
-                    }
+                    .background(Color.clear)
                 }
                 let messageObserved = baseTranscript
                     .id(transcriptGeneration)
@@ -1010,13 +1016,19 @@ struct TimelineView: View {
     /// Dismiss the keyboard when a blank chat area is tapped. The composer is a
     /// UITextView (not a SwiftUI TextField), so clear the focus binding and also
     /// resign the first responder directly via the responder chain.
+    private func dismissKeyboardIfPresented() {
+        guard showAttachmentPanel || composerFocused || keyboardVisible else { return }
+        dismissKeyboard()
+    }
+
     private func dismissKeyboard() {
-        if showAttachmentPanel {
-            withAnimation(.easeOut(duration: 0.18)) { showAttachmentPanel = false }
-        }
+        // The plus panel is a custom UITextView.inputView. Resign FIRST,
+        // while it is still installed; clearing the panel beforehand briefly
+        // swaps the native keyboard back in during the hide animation.
         composerFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                         to: nil, from: nil, for: nil)
+                                        to: nil, from: nil, for: nil)
+        showAttachmentPanel = false
     }
 
     private var topLoader: some View {
