@@ -1703,6 +1703,9 @@ final class AppModel {
                   self.mobileHistoryAvailable else { return }
             self.ensureTranscriptIndex()
             for conversation in self.availableMobileConversations {
+                // Do not overwrite another conversation's saved twenty items
+                // until that conversation has successfully synchronized.
+                guard self.mobileLoadedConversations.contains(conversation) else { continue }
                 let key = conversation == "transfer" ? Self.transferTranscriptKey
                     : (conversation == "__unclassified__" ? Self.unclassifiedHistoryID : conversation)
                 let records = Array((self.cachedMessagesByConversation?[key] ?? []).suffix(20))
@@ -1740,6 +1743,12 @@ final class AppModel {
             countDays(messages)
             reviewStore.rebuild(from: messages)
         }
+        // Capture the global high-water mark before fetching individual
+        // conversations. A message arriving while the other conversations
+        // load must not be skipped by the later global polling cursor.
+        let highWaterMark = (try? await client.messagesLatest(
+            endpoint: endpoint, token: token, limit: 1).nextCursor) ?? cursor
+        guard current == generation else { return true }
         // The selected transfer conversation is fetched first; other saved
         // conversations are hydrated independently (no cross-conversation scan).
         for (index, conversation) in conversations.enumerated() {
@@ -1766,7 +1775,9 @@ final class AppModel {
             var freshIDs = Set(page.messages.map(\.id))
             let keep = messages.filter { !removed.contains($0.id) && freshIDs.insert($0.id).inserted }
             messages = (keep + page.messages).sorted { $0.sequence < $1.sequence }
-            cursor = max(cursor, page.nextCursor, messages.last?.sequence ?? 0)
+            // Global polling starts at the pre-fetch high-water mark rather
+            // than the latest of the per-conversation pages.
+            cursor = highWaterMark
             hasOlder = mobileHasOlderByConversation[mobileConversation] ?? false
             countedMessageIDs = []
             dayCounts = [:]
