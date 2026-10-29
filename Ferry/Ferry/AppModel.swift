@@ -1267,7 +1267,20 @@ final class AppModel {
         }
     }
 
+    // Chat deletion removes re-downloadable bytes, never the independent
+    // Application Support/Favorites copy. Digests are captured before the
+    // corresponding message disappears from the in-memory timeline.
+    private func cleanChatCache(for message: MessagePayload) {
+        let path = mediaCacheURL(for: message)?.lastPathComponent ?? ""
+        let digest = path.split(separator: ".").first.map(String.init)
+        VideoThumbnailCache.removeCached(for: message.id)
+        Task { await ManagedDiskCache.shared.removeMessageArtifacts(
+            message.id, mediaDigest: digest)
+        }
+    }
+
     func deleteSelected(_ ids: Set<String>) {
+        for message in messages where ids.contains(message.id) { cleanChatCache(for: message) }
         localStore.hide(ids)
         messages.removeAll { ids.contains($0.id) }
         reviewStore.rebuild(from: messages)
@@ -1281,6 +1294,7 @@ final class AppModel {
             return
         }
         let maxSequence = messages.map(\.sequence).max() ?? 0
+        for message in messages { cleanChatCache(for: message) }
         localStore.clearAll(upTo: maxSequence)
         messages.removeAll()
         reviewStore.rebuild(from: messages)
@@ -1378,7 +1392,10 @@ final class AppModel {
                     at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? FileManager.default.removeItem(at: cacheURL)
                 try? FileManager.default.copyItem(at: url, to: cacheURL)
-                if FileManager.default.fileExists(atPath: cacheURL.path) { return cacheURL }
+                if FileManager.default.fileExists(atPath: cacheURL.path) {
+                    Task { await ManagedDiskCache.shared.sweep() }
+                    return cacheURL
+                }
             }
             return url
         } catch {
@@ -1407,6 +1424,7 @@ final class AppModel {
         locatedSearchResults = [:]
         generation = UUID()
         notificationSettings.activeOrigin = endpoint.origin
+        Task { await ManagedDiskCache.shared.sweep(force: true) }
         // Old-server banners must not remain actionable after a switch.
         Task { await notifier.clearAll() }
         self.endpoint = endpoint
@@ -1570,6 +1588,7 @@ final class AppModel {
                 // Clear-all: the server dropped the whole history.
                 let maxSequence = messages.map(\.sequence).max() ?? 0
                 localStore.clearAll(upTo: maxSequence)
+                for message in messages { cleanChatCache(for: message) }
                 messages.removeAll()
                 images = [:]
                 videoThumbnails = [:]
@@ -1593,6 +1612,12 @@ final class AppModel {
     /// video poster, unread badge), so a message deleted on another device
     /// disappears from the timeline and the media gallery.
     private func removeMessageLocally(id: String) {
+        if let message = messages.first(where: { $0.id == id }) {
+            cleanChatCache(for: message)
+        } else {
+            VideoThumbnailCache.removeCached(for: id)
+            Task { await ManagedDiskCache.shared.removeMessageArtifacts(id, mediaDigest: nil) }
+        }
         messages.removeAll { $0.id == id }
         images.removeValue(forKey: id)
         videoThumbnails.removeValue(forKey: id)
