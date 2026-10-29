@@ -41,3 +41,24 @@ The build-19 fix deliberately removed a whole-scroll simultaneous TapGesture bec
 - Increment existing application **and share extension** build numbers to **20**. Bundle IDs `com.ferry.test` and `com.ferry.test.FerryShare` unchanged; do not uninstall the existing app for signing workarounds.
 
 The Swift source is patched; actual macOS Xcode compilation, test run, signed IPA and device verification must still be performed.
+
+
+## Build 21 (tap in actual message-row whitespace)
+
+**User result from build 20:** blank-area dismissal worked only at the very edge of the screen, not in the large empty strip beside a chat bubble.
+
+### Verified structural cause
+- `TimelineView` was applying `.contentShape(Rectangle())` to **each entire message row**.
+- `MessageRow` expanded its message VStack to `maxWidth: .infinity`, meaning the empty strip opposite the bubble belonged to the row's hit-test surface. The transparent ZStack backdrop could not receive taps there.
+- Merely enlarging another backdrop would not fix this overlap without possibly stealing image, file, copy, selection or return-to-latest taps.
+
+### Focused fix
+- Every message row now has an **explicit flexible `Color.clear` hit region on the side opposite the bubble**: left of outgoing/right of incoming. That region alone invokes `dismissKeyboardIfPresented` (works for standard keyboard and custom plus `inputView`).
+- The bubble/metadata/actions VStack uses its intrinsic width; the former whole-row `.contentShape(Rectangle())` is removed.
+- Keep the earlier ZStack backdrop for vertical gaps, top whitespace and very short conversations. No whole-ScrollView TapGesture is reintroduced.
+- Test `testBlankChatTapDismissesKeyboardAndPlusPanel` now clicks at **the same height as the actual newest message and to its left**, not the top/edge of the screen; tests both native keyboard and custom plus panel.
+- The repair does not modify the iOS 18 native return-to-latest, bottom-follow state, assistant/chief layout, message routing or persistent data.
+- Increment app and share-extension build number **20 -> 21**, preserving both bundle IDs and entitlements.
+
+### Not yet verified
+The source and static consistency checks are not substitutes for an Xcode build and simulator/iPhone UI tests. Build branch `fix/ios-assistant-keyboard-latest-20261030` in Codemagic with `ferry-ios-sideloadly`. The IPA is unsigned; perform a compatible signed in-place upgrade and **do not uninstall** the existing Ferry.
