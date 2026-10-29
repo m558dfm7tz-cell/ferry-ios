@@ -621,7 +621,7 @@ struct TimelineView: View {
                     }
                 }
                 keyboardAware.overlay(alignment: .bottomTrailing) {
-                    if !atBottom && !isKeyboardTailPinned {
+                    if !atBottom && !(keyboardTransitioning && isKeyboardTailPinned) {
                         Button {
                             scrollToBottom()
                         } label: {
@@ -761,8 +761,10 @@ struct TimelineView: View {
     /// was following the newest message before the viewport began to resize.
     /// Alignment itself is verified from ScrollGeometry, not assumed.
     private var isKeyboardTailPinned: Bool {
-        keyboardWasAtBottom && isFollowingTail &&
-            !transcriptUserDragging && jumpHoldingID == nil
+        // Keep following the tail even AFTER didShow: a late-arriving photo
+        // layout can otherwise strand the chat several messages behind.
+        isFollowingTail && !transcriptUserDragging && jumpHoldingID == nil &&
+            (keyboardVisible || keyboardWasAtBottom)
     }
 
     /// Coalesce rapid geometry events and use the real bottom anchor after
@@ -816,10 +818,13 @@ struct TimelineView: View {
     private func restoreAfterKeyboard(_ note: Notification) {
         guard keyboardVisible else { return }
         keyboardTransitionTask?.cancel()
+        // Re-snapshot reading intent: a user may have scrolled back to the
+        // bottom while the keyboard was open.
+        keyboardWasAtBottom = isFollowingTail &&
+            !transcriptUserDragging && jumpHoldingID == nil
+        keyboardAnchorLocked = keyboardWasAtBottom
         keyboardVisible = false
         keyboardTransitioning = true
-        // Retain the pin through the reverse safe-area resize. A real finger
-        // drag can still cancel it immediately.
         keyboardFollowTask?.cancel()
     }
 
@@ -923,10 +928,14 @@ struct TimelineView: View {
             }
             return
         }
-        // Combine debounces all thumbnail arrivals before we enter SwiftUI,
-        // so no @State task writes or repeated scroll requests rebuild the
-        // media-heavy transcript during a keyboard transition.
-        guard isFollowingTail, !transcriptUserDragging, !keyboardVisible,
+        // Combine debounces thumbnail arrivals. During keyboard display,
+        // let measured geometry decide whether a correction is necessary
+        // instead of ignoring late media-size changes outright.
+        if keyboardVisible {
+            if keyboardTailNeedsCorrection { requestKeyboardTailCorrection() }
+            return
+        }
+        guard isFollowingTail, !transcriptUserDragging,
               !keyboardTransitioning, !keyboardAnchorLocked,
               jumpHoldingID == nil else { return }
         queueScroll(to: Self.bottomAnchorID, anchor: .bottom, reason: .media)
