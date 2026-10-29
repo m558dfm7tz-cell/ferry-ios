@@ -107,6 +107,31 @@ final class FerryUITests: XCTestCase {
         expectVisibleTail("force-close and relaunch should paint messages without swiping")
     }
 
+    /// A visible final message must never coexist with the persistent
+    /// "return to latest" pill. Earlier code used an estimated contentSize and
+    /// could render the pill while already at the physical end of a lazy list.
+    @MainActor
+    func testLatestMessageNeverShowsFalseReturnPill() throws {
+        let tail = app.staticTexts["FERRY_KEYBOARD_TAIL_TEST"].firstMatch
+        let jump = app.buttons["回到最新消息"]
+        XCTAssertTrue(tail.waitForExistence(timeout: 10))
+        XCTAssertTrue(tail.isHittable, "the latest message must paint immediately")
+        XCTAssertFalse(jump.exists, "return pill must be hidden at the visible tail")
+
+        let input = app.textViews["composer-input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        tap(input)
+        if app.keyboards.firstMatch.waitForExistence(timeout: 6) {
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    tail.isHittable && !jump.exists
+                }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 6),
+                           .completed,
+                           "keyboard must not create a false return-to-latest pill")
+        }
+    }
+
     /// Direct bubble tap opens the tapped photo, supports mixed-media
     /// horizontal paging and keeps the chat-wide gallery on the top right.
     @MainActor
