@@ -36,9 +36,9 @@ final class AppModel {
     private var dayCountsByConversation: [String: [String: Int]] = [:]
 
     /// Nil means the transfer tab once new routing is verified.
-    var selectedAssistantID: String? {
-        didSet { invalidateTranscriptCache() }
-    }
+    // Selection changes the index key, not the underlying message data.
+    // Do not discard all conversations' cached sections on each avatar tap.
+    var selectedAssistantID: String?
     /// Enable assistant routing only after Go's V2 contract and the complete
     /// assistant profile list are verified. A live Helper is additionally
     /// required for pure transfer, not for assistant-addressed messages.
@@ -213,15 +213,48 @@ final class AppModel {
     /// The Ferry space the phone-local caches are currently pointed at.
     private(set) var spaceKey: SpaceKey?
 
-    // A media-heavy conversation can contain hundreds of messages. Keyboard
-    // safe-area/layout updates must not refilter all messages and reparse
-    // every RFC3339 timestamp on each SwiftUI view evaluation.
-    @ObservationIgnored private var cachedVisibleMessages: [MessagePayload]?
-    @ObservationIgnored private var cachedDaySections: [DaySection]?
+    // One per-message snapshot is classified once, then every conversation
+    // shares that index. Switching assistants must not scan all messages,
+    // rebuild the date separators, or invalidate unrelated conversations.
+    // These are derived in-memory caches, never persisted to disk or Keychain.
+    private static let transferTranscriptKey = "__ferry_transcript_transfer__"
+    private static let allTranscriptKey = "__ferry_transcript_all__"
+    @ObservationIgnored private var cachedMessagesByConversation: [String: [MessagePayload]]?
+    @ObservationIgnored private var cachedMessageByID: [String: MessagePayload] = [:]
+    @ObservationIgnored private var cachedDaySectionsByConversation: [String: [DaySection]] = [:]
 
     private func invalidateTranscriptCache() {
-        cachedVisibleMessages = nil
-        cachedDaySections = nil
+        cachedMessagesByConversation = nil
+        cachedMessageByID.removeAll(keepingCapacity: true)
+        cachedDaySectionsByConversation.removeAll(keepingCapacity: true)
+    }
+
+    private var selectedTranscriptKey: String {
+        selectedAssistantID ?? (routeIsolationEnabled
+            ? Self.transferTranscriptKey : Self.allTranscriptKey)
+    }
+
+    private func ensureTranscriptIndex() {
+        guard cachedMessagesByConversation == nil else { return }
+        var grouped: [String: [MessagePayload]] = [:]
+        var byID: [String: MessagePayload] = [:]
+        byID.reserveCapacity(messages.count)
+        for message in messages {
+            byID[message.id] = message
+            let assistantID: String?
+            if routeIsolationEnabled {
+                assistantID = visibleIdentity(for: message)
+            } else {
+                assistantID = assistantStore.assistant(for: message)?.id
+            }
+            if let assistantID {
+                grouped[assistantID, default: []].append(message)
+            } else if routeIsolationEnabled {
+                grouped[Self.transferTranscriptKey, default: []].append(message)
+            }
+        }
+        cachedMessageByID = byID
+        cachedMessagesByConversation = grouped
     }
 
     private var cursor: Int64 = 0
@@ -345,24 +378,16 @@ final class AppModel {
         }
     }
 
-    /// Messages shown in the timeline, after applying the active assistant
-    /// filter (nil = 全部, everything).
+    /// Messages are indexed once per snapshot. Switching between 互传/总管/
+    /// 助手 is an O(1) bucket lookup instead of an O(all messages) scan.
     var visibleMessages: [MessagePayload] {
-        // Keep observable dependencies even when returning a cached array.
+        // Preserve Swift Observation dependencies when returning derived data.
         _ = messages.count
         _ = selectedAssistantID
         _ = routeIsolationEnabled
-        if let cachedVisibleMessages { return cachedVisibleMessages }
-        let result: [MessagePayload]
-        if routeIsolationEnabled {
-            result = messages.filter { visibleIdentity(for: $0) == selectedAssistantID }
-        } else if let selectedAssistantID {
-            result = messages.filter { assistantStore.assistant(for: $0)?.id == selectedAssistantID }
-        } else {
-            result = messages
-        }
-        cachedVisibleMessages = result
-        return result
+        if !routeIsolationEnabled && selectedAssistantID == nil { return messages }
+        ensureTranscriptIndex()
+        return cachedMessagesByConversation?[selectedTranscriptKey] ?? []
     }
 
     /// The pinned 待查看 row belongs to the 总管 page and disappears once
@@ -372,23 +397,27 @@ final class AppModel {
     }
 
     var daySections: [DaySection] {
-        // Reading visibleMessages preserves observation of underlying messages.
         let visible = visibleMessages
-        if let cachedDaySections { return cachedDaySections }
+        let key = selectedTranscriptKey
+        if let sections = cachedDaySectionsByConversation[key] { return sections }
         var sections: [DaySection] = []
         var current: [MessagePayload] = []
         var currentDay: String?
         for message in visible {
             let day = TimestampFormat.dayLabel(from: message.createdAt)
             if day != currentDay {
-                if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
+                if !current.isEmpty {
+                    sections.append(DaySection(dayLabel: currentDay ?? "", messages: current))
+                }
                 current = []
                 currentDay = day
             }
             current.append(message)
         }
-        if !current.isEmpty { sections.append(DaySection(dayLabel: currentDay ?? "", messages: current)) }
-        cachedDaySections = sections
+        if !current.isEmpty {
+            sections.append(DaySection(dayLabel: currentDay ?? "", messages: current))
+        }
+        cachedDaySectionsByConversation[key] = sections
         return sections
     }
 
@@ -826,7 +855,7 @@ final class AppModel {
     /// Select an assistant filter (nil = 全部). Selecting an assistant marks
     /// its unseen messages as seen; selecting 全部 marks everything as seen.
     func selectAssistant(_ id: String?) {
-        selectedAssistantID = id
+        if selectedAssistantID != id { selectedAssistantID = id }
         if let id {
             unreadAssistantIDs.remove(id)
             clearUnread(forAssistant: id)
@@ -1938,8 +1967,10 @@ final class AppModel {
     }
 
     private func clearUnreadForVisibleConversation() {
+        guard !unreadMessageIDs.isEmpty else { return }
+        ensureTranscriptIndex()
         unreadMessageIDs = unreadMessageIDs.filter { id in
-            guard let message = messages.first(where: { $0.id == id }) else { return true }
+            guard let message = cachedMessageByID[id] else { return true }
             return visibleIdentity(for: message) != selectedAssistantID
         }
         updateBadge()
@@ -1947,8 +1978,9 @@ final class AppModel {
 
     private func clearUnread(forAssistant id: String) {
         guard !unreadMessageIDs.isEmpty else { return }
+        ensureTranscriptIndex()
         unreadMessageIDs = unreadMessageIDs.filter { messageID in
-            guard let message = messages.first(where: { $0.id == messageID }) else { return true }
+            guard let message = cachedMessageByID[messageID] else { return true }
             if routeIsolationEnabled { return visibleIdentity(for: message) != id }
             return assistantStore.assistant(for: message)?.id != id
         }
