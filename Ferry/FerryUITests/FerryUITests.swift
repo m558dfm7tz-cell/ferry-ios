@@ -217,11 +217,20 @@ final class FerryUITests: XCTestCase {
         let transcript = app.scrollViews.firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 8))
         XCTAssertTrue(transcript.waitForExistence(timeout: 8))
-        let whitespace = transcript.coordinate(withNormalizedOffset:
-                                                CGVector(dx: 0.18, dy: 0.38))
+        let lastBubble = app.staticTexts["FERRY_KEYBOARD_TAIL_TEST"].firstMatch
+        XCTAssertTrue(lastBubble.waitForExistence(timeout: 8))
+        // Tap horizontally beside the *actual last message*, not near the
+        // edge of the screen or far above the chat. Previously a full-width
+        // MessageRow swallowed these taps while the background never saw them.
+        func besideBubble() -> XCUICoordinate {
+            let frame = lastBubble.frame
+            XCTAssertGreaterThan(frame.minX, 65, "fixture should leave blank space left of bubble")
+            return app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+                .withOffset(CGVector(dx: 45, dy: frame.midY))
+        }
         tap(input)
         if app.keyboards.firstMatch.waitForExistence(timeout: 6) {
-            whitespace.tap()
+            besideBubble().tap()
             let dismissed = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in !self.app.keyboards.firstMatch.isHittable },
                 object: nil)
@@ -236,7 +245,7 @@ final class FerryUITests: XCTestCase {
         let attachmentFile = app.buttons["composer-attachment-file"].firstMatch
         XCTAssertTrue(attachmentFile.waitForExistence(timeout: 6),
                       "plus must present Ferry's custom attachment inputView")
-        whitespace.tap()
+        besideBubble().tap()
         let hidden = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in !attachmentFile.isHittable },
             object: nil)
