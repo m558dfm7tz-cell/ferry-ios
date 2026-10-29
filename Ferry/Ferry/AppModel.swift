@@ -309,6 +309,8 @@ final class AppModel {
     private var generation = UUID()
     private var loadingImages: Set<String> = []
     private var loadingThumbnails: Set<String> = []
+    @ObservationIgnored private var recentDecodedMediaIDs: [String] = []
+    private let decodedMediaLimit = 48
     private var pollTask: Task<Void, Never>?
     private var isActive = true
     private var dayIndexStarted = false
@@ -1097,6 +1099,19 @@ final class AppModel {
                    .appendingPathComponent(digest + "." + ext)
     }
 
+    /// Text messages have no fixed RAM limit, but decoded image/video
+    /// thumbnails are capped. Original files remain on disk or the server.
+    private func rememberDecodedMedia(_ id: String) {
+        recentDecodedMediaIDs.removeAll { $0 == id }
+        recentDecodedMediaIDs.append(id)
+        while recentDecodedMediaIDs.count > decodedMediaLimit {
+            let evicted = recentDecodedMediaIDs.removeFirst()
+            images.removeValue(forKey: evicted)
+            videoThumbnails.removeValue(forKey: evicted)
+            videoDurations.removeValue(forKey: evicted)
+        }
+    }
+
     func retryImage(for message: MessagePayload) async {
         images.removeValue(forKey: message.id)
         await loadImage(for: message)
@@ -1145,6 +1160,7 @@ final class AppModel {
                 guard current == generation else { return }
                 if let thumbnail {
                     images[message.id] = thumbnail
+                    rememberDecodedMedia(message.id)
                     return
                 }
             }
@@ -1160,6 +1176,7 @@ final class AppModel {
             guard current == generation else { return }
             if let thumbnail {
                 images[message.id] = thumbnail
+                rememberDecodedMedia(message.id)
             } else {
                 images[message.id] = UIImage?.none
             }
@@ -1209,18 +1226,24 @@ final class AppModel {
     func loadVideoThumbnail(for message: MessagePayload) async {
         guard let file = message.file, PreviewRouter.isVideo(file) else { return }
         guard videoThumbnails[message.id] == nil, !loadingThumbnails.contains(message.id) else { return }
-        if let cached = VideoThumbnailCache.cachedThumbnail(for: message.id) {
-            videoThumbnails[message.id] = cached
-            videoDurations[message.id] = VideoThumbnailCache.cachedDuration(for: message.id)
-            return
-        }
-        guard let endpoint, let token else { return }
         let current = generation
         loadingThumbnails.insert(message.id)
         defer {
             loadingThumbnails.remove(message.id)
             NotificationCenter.default.post(name: Self.mediaDidResolveNotification, object: nil)
         }
+        let cached = await Task.detached(priority: .utility) {
+            (VideoThumbnailCache.cachedThumbnail(for: message.id),
+             VideoThumbnailCache.cachedDuration(for: message.id))
+        }.value
+        guard current == generation else { return }
+        if let image = cached.0 {
+            videoThumbnails[message.id] = image
+            videoDurations[message.id] = cached.1
+            rememberDecodedMedia(message.id)
+            return
+        }
+        guard let endpoint, let token else { return }
         do {
             let url = try await client.attachmentFile(endpoint: endpoint, token: token, path: file.downloadURL, filename: file.name)
             guard current == generation else { return }
@@ -1228,6 +1251,7 @@ final class AppModel {
             guard current == generation else { return }
             videoThumbnails[message.id] = poster.image
             videoDurations[message.id] = poster.duration
+            if poster.image != nil { rememberDecodedMedia(message.id) }
         } catch {
             guard current == generation else { return }
             videoThumbnails[message.id] = UIImage?.none
@@ -1370,6 +1394,7 @@ final class AppModel {
         videoDurations = [:]
         loadingImages = []
         loadingThumbnails = []
+        recentDecodedMediaIDs = []
         cursor = 0
         changeCursor = 0
         knownServerAssistantNames = []
