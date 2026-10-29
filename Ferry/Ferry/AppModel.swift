@@ -1784,7 +1784,8 @@ final class AppModel {
             guard current == generation else { return }
             phase = .connected
             statusMessage = nil
-            buildDayIndexIfNeeded()
+            // Mobile date jumps are server-indexed. Do not start the old
+            // 40-page background history scan during chat/keyboard rendering.
             return
         }
         guard current == generation else { return }
