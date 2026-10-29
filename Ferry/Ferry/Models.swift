@@ -227,9 +227,11 @@ struct MessagesPage: Decodable, Sendable {
     let nextCursor: Int64
     let hasOlder: Bool
     let revision: Int64
+    let targetID: String?
 
     enum CodingKeys: String, CodingKey {
         case messages, revision
+        case targetID = "target_id"
         case nextCursor = "next_cursor"
         case hasOlder = "has_older"
     }
@@ -240,6 +242,7 @@ struct MessagesPage: Decodable, Sendable {
         nextCursor = try container.decodeIfPresent(Int64.self, forKey: .nextCursor) ?? 0
         hasOlder = try container.decodeIfPresent(Bool.self, forKey: .hasOlder) ?? false
         revision = try container.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
+        targetID = try container.decodeIfPresent(String.self, forKey: .targetID)
     }
 }
 
