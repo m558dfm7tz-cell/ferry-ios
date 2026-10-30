@@ -102,9 +102,8 @@ struct MessageRow: View {
                 AssistantAvatarView(assistant: assistant, size: 32, media: assistantMedia)
                     .padding(.bottom, 1)
             }
-            if isCurrent {
-                tapToDismissWhitespace
-            }
+            // Spacer only flexes horizontally, so it can never stretch the row.
+            if isCurrent { Spacer(minLength: 0) }
             VStack(alignment: isCurrent ? .trailing : .leading, spacing: 6) {
                 metaRow
                 content
@@ -115,12 +114,18 @@ struct MessageRow: View {
                     mediaActionRow
                 }
             }
-            .fixedSize(horizontal: true, vertical: false)
-            if !isCurrent {
-                tapToDismissWhitespace
-            }
+            // Always take the full natural height. Without this a row that is
+            // offered less height than its text needs lets the text spill out
+            // of its bubble (bubble background clipped short, text floating
+            // over neighbouring rows).
+            .fixedSize(horizontal: true, vertical: true)
+            if !isCurrent { Spacer(minLength: 0) }
         }
+        // Width-flexible only. The row must NEVER be vertically flexible: a
+        // `maxHeight: .infinity` child here makes every row grab a share of any
+        // extra height the transcript is offered (huge gaps between messages).
         .frame(maxWidth: .infinity)
+        .background { tapToDismissWhitespace }
         .overlay { if showToast { toastView } }
         .background {
             if isHighlighted {
@@ -146,12 +151,12 @@ struct MessageRow: View {
         }
     }
 
-    // A flexible, separately hittable blank region, NOT a gesture over the
-    // entire message row. It fills the space beside an outgoing/incoming bubble
-    // and does not compete with taps on images, file cards or selection controls.
+    // Hittable blank region behind the row. As a *background* it is sized by
+    // the row (never influences row height) and sits below the bubble, so taps
+    // on images, file cards, buttons, text selection and selection controls
+    // still win; only the blank space beside the bubble reaches it.
     private var tapToDismissWhitespace: some View {
         Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .onTapGesture(perform: onTapChatWhitespace)
     }
@@ -252,6 +257,7 @@ struct MessageRow: View {
         if let text = message.text {
             LinkedText(text: text, linkColor: isCurrent ? .white : .blue)
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(width: textContentWidth(text), alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(isCurrent ? Color.accentColor : .incomingBubble,
