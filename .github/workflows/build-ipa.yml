@@ -2,6 +2,9 @@ name: Build IPA
 
 on:
   workflow_dispatch:
+  # TEMP: auto-build this fix branch only (remove before merging to main)
+  push:
+    branches: [fix/chat-spacing-txt]
 
 concurrency:
   group: ferry-ios-${{ github.workflow }}-${{ github.ref }}
