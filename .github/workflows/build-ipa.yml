@@ -2,6 +2,9 @@ name: Build IPA
 
 on:
   workflow_dispatch:
+  # TEMP: auto-build this fix branch only (remove before merging to main)
+  push:
+    branches: [test/baseline-main-ui-20261031]
 
 concurrency:
   group: ferry-ios-${{ github.workflow }}-${{ github.ref }}
