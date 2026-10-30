@@ -78,6 +78,14 @@ struct TimelineView: View {
     @State private var transcriptTouchDragging = false
     @State private var transcriptScrollPhase: ScrollPhase = .idle
     @State private var followMediaMessageID: String?
+    // Track the latest viewport height so a keyboard transition can freeze the
+    // min-height at the value just before the safe area starts to move.
+    @State private var latestViewportHeight: CGFloat = 0
+    /// Frozen viewport height while the keyboard is animating; nil once settled.
+    @State private var keyboardFrozenViewportHeight: CGFloat?
+    /// The keyboard's own curve and duration, reused for any corrective scroll
+    /// so a post-transition fix never lands as a hard, animation-less jump.
+    @State private var keyboardSettleAnimation: Animation = .easeInOut(duration: 0.25)
 
     // Distinguish an incoming message in the current conversation from an
     // avatar switch. The latter already scrolls via selectedAssistantID.
@@ -458,7 +466,8 @@ struct TimelineView: View {
                                          + (model.showsReviewEntry ? ReviewEntryMetrics.height : 0))
                         }
                         .frame(minHeight: model.visibleMessages.count <= 30
-                               ? viewport.size.height : 0, alignment: .bottom)
+                               ? (keyboardFrozenViewportHeight ?? viewport.size.height) : 0,
+                               alignment: .bottom)
                 }
                 let messageObserved = baseTranscript
                     .id(transcriptGeneration)
@@ -624,7 +633,11 @@ struct TimelineView: View {
                         else { scheduleInitialBottomAnchor() }
                     }
                 }
-                let geometryObserved = mediaObserved
+                let heightObserved = mediaObserved
+                    .onChange(of: viewport.size.height) { _, height in
+                        latestViewportHeight = height
+                    }
+                let geometryObserved = heightObserved
                     .onScrollGeometryChange(for: ScrollState.self) { geometry in
                     ScrollState(
                         // Account for the chat composer's safe-area inset.
@@ -932,6 +945,10 @@ struct TimelineView: View {
             keyboardTailNeedsCorrection = false
             measuredAtBottom = isVisuallyAtBottom || atBottom
         }
+        if !keyboardTransitioning {
+            keyboardFrozenViewportHeight = latestViewportHeight
+        }
+        keyboardSettleAnimation = keyboardAnimation(from: note)
         keyboardTransitioning = true
         keyboardVisible = true
         keyboardFollowTask?.cancel()
@@ -951,16 +968,16 @@ struct TimelineView: View {
                 !transcriptUserDragging && jumpHoldingID == nil
             keyboardTailNeedsCorrection = false
             measuredAtBottom = isVisuallyAtBottom || atBottom
+            keyboardFrozenViewportHeight = latestViewportHeight
         }
         keyboardAnchorLocked = keyboardWasAtBottom
+        keyboardSettleAnimation = keyboardAnimation(from: note)
         keyboardTransitioning = true
-        // UIKit can send willChangeFrame before the animation begins.
-        // Waiting for the advertised animation duration avoids a premature
-        // correction that would fight the keyboard on its way down.
-        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
-                        as? NSNumber)?.doubleValue ?? 0.25
-        let delayMs = Int(max(90, min(650, duration * 1000 + 30)))
-        settleKeyboardViewport(visible: true, afterMilliseconds: delayMs)
+        // A candidate-bar resize only changes the keyboard height; the native
+        // size-change anchor keeps the tail pinned. Do not schedule a settle
+        // here — keyboardDidChangeFrame / keyboardDidShow own the single
+        // settlement, so a Chinese IME candidate bar never triggers a second,
+        // redundant correction.
     }
 
     private func restoreAfterKeyboard(_ note: Notification) {
@@ -971,6 +988,9 @@ struct TimelineView: View {
         keyboardWasAtBottom = isFollowingTail &&
             !transcriptUserDragging && jumpHoldingID == nil
         keyboardAnchorLocked = keyboardWasAtBottom
+        if !keyboardTransitioning {
+            keyboardFrozenViewportHeight = latestViewportHeight
+        }
         keyboardVisible = false
         keyboardTransitioning = true
         keyboardFollowTask?.cancel()
@@ -991,18 +1011,38 @@ struct TimelineView: View {
             let pinned = isKeyboardTailPinned
             let needsCorrection = pinned && keyboardTailNeedsCorrection
             keyboardTransitioning = false
+            keyboardFrozenViewportHeight = nil
             if pinned {
                 atBottom = measuredAtBottom
                 if measuredAtBottom { showNewPill = false }
             }
             if needsCorrection {
-                // Queue while the hide-transition pin is still valid.
-                // The reader resolves this command after SwiftUI's next pass.
-                scrollToBottomAnchor(reason: .keyboard)
+                // Only correct a genuinely displaced tail (distance already
+                // measured > 64pt by the geometry observer), and match the
+                // keyboard's own curve/duration instead of a hard jump.
+                withAnimation(keyboardSettleAnimation) {
+                    bottomEdgePosition.scrollTo(edge: .bottom)
+                }
             }
             keyboardAnchorLocked = false
             keyboardWasAtBottom = false
             keyboardTailNeedsCorrection = false
+        }
+    }
+
+    /// Build a SwiftUI animation that mirrors the keyboard's own curve and
+    /// duration, so a post-transition correction follows the same easing
+    /// instead of snapping instantly.
+    private func keyboardAnimation(from note: Notification) -> Animation {
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+                        as? NSNumber)?.doubleValue ?? 0.25
+        let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey]
+                     as? NSNumber)?.intValue ?? 7
+        switch curve {
+        case UIView.AnimationCurve.easeIn.rawValue: return .easeIn(duration: duration)
+        case UIView.AnimationCurve.easeOut.rawValue: return .easeOut(duration: duration)
+        case UIView.AnimationCurve.linear.rawValue: return .linear(duration: duration)
+        default: return .easeInOut(duration: duration)
         }
     }
 
